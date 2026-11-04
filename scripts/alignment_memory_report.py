@@ -1,0 +1,1 @@
+../../GenomeHarbor/scripts/alignment_memory_report.py

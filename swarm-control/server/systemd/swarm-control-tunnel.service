@@ -1,0 +1,13 @@
+[Unit]
+Description=Swarm Control HTTPS tunnel
+After=network-online.target swarm-control-api.service
+Wants=swarm-control-api.service
+PartOf=swarm-control.target
+[Service]
+ExecStart={{HOME}}/.local/bin/cloudflared --no-autoupdate tunnel run --token-file {{HOME}}/.config/map-master/compai-tunnel-token
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+UMask=0077
+[Install]
+WantedBy=swarm-control.target

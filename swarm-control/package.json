@@ -1,0 +1,22 @@
+{
+  "name": "swarm-control",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "python3 build-test.py",
+    "test:transport": "node test-pidp-browser.mjs",
+    "start": "python3 run.py start",
+    "stop": "python3 run.py stop",
+    "status": "python3 run.py status",
+    "test": "python3 run.py test",
+    "test:markdown": "node test-markdown.mjs",
+    "test:pidp-browser": "node test-pidp-browser.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.59.1"
+  },
+  "dependencies": {
+    "marked": "18.1.2"
+  }
+}

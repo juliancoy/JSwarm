@@ -1,0 +1,2297 @@
+{
+  "workspace": "Organization",
+  "files": [
+    {
+      "previous_path": "scripts/deploy_pipeline_view.py",
+      "path": "scripts/deploy_pipeline_view.py"
+    },
+    {
+      "previous_path": "scripts/task_bottlenecks.py",
+      "path": "scripts/task_bottlenecks.py"
+    },
+    {
+      "previous_path": "scripts/launcher_peer_supervisor.py",
+      "path": "scripts/launcher_peer_supervisor.py"
+    },
+    {
+      "previous_path": "scripts/swarm_node.py",
+      "path": "scripts/swarm_node.py"
+    },
+    {
+      "previous_path": "scripts/launcher_agent.py",
+      "path": "scripts/launcher_agent.py"
+    },
+    {
+      "previous_path": "scripts/swarm_transfer_audit.py",
+      "path": "scripts/swarm_transfer_audit.py"
+    },
+    {
+      "previous_path": "scripts/launcher_registration.py",
+      "path": "scripts/launcher_registration.py"
+    },
+    {
+      "previous_path": "scripts/run_input_source.py",
+      "path": "scripts/run_input_source.py"
+    },
+    {
+      "previous_path": "scripts/check_peer_browser.py",
+      "path": "scripts/check_peer_browser.py"
+    },
+    {
+      "previous_path": "scripts/launcher_update.py",
+      "path": "scripts/launcher_update.py"
+    },
+    {
+      "previous_path": "scripts/agent_container.py",
+      "path": "scripts/agent_container.py"
+    },
+    {
+      "previous_path": "scripts/run_manager.py",
+      "path": "scripts/run_manager.py"
+    },
+    {
+      "previous_path": "scripts/reclaim_download_chunks.py",
+      "path": "scripts/reclaim_download_chunks.py"
+    },
+    {
+      "previous_path": "scripts/swarm_transfer_benchmark.py",
+      "path": "scripts/swarm_transfer_benchmark.py"
+    },
+    {
+      "previous_path": "scripts/deploy_swarm_inputs.py",
+      "path": "scripts/deploy_swarm_inputs.py"
+    },
+    {
+      "previous_path": "scripts/task_runtime_stats.py",
+      "path": "scripts/task_runtime_stats.py"
+    },
+    {
+      "previous_path": "scripts/launcher_streams.py",
+      "path": "scripts/launcher_streams.py"
+    },
+    {
+      "previous_path": "scripts/deploy_swarm_bulk.py",
+      "path": "scripts/deploy_swarm_bulk.py"
+    },
+    {
+      "previous_path": "scripts/launcher_commands.py",
+      "path": "scripts/launcher_commands.py"
+    },
+    {
+      "previous_path": "scripts/swarm_bulk.py",
+      "path": "scripts/swarm_bulk.py"
+    },
+    {
+      "previous_path": "scripts/launcher_peers.py",
+      "path": "scripts/launcher_peers.py"
+    },
+    {
+      "previous_path": "scripts/run_inputs.py",
+      "path": "scripts/run_inputs.py"
+    },
+    {
+      "previous_path": "scripts/swarm_tls_transfer.py",
+      "path": "scripts/swarm_tls_transfer.py"
+    },
+    {
+      "previous_path": "scripts/swarm_stream_verify.py",
+      "path": "scripts/swarm_stream_verify.py"
+    },
+    {
+      "previous_path": "scripts/run_input_cache.py",
+      "path": "scripts/run_input_cache.py"
+    },
+    {
+      "previous_path": "scripts/SWARM_TLS_TRANSFER.md",
+      "path": "scripts/SWARM_TLS_TRANSFER.md"
+    },
+    {
+      "previous_path": "scripts/worker_maintenance.py",
+      "path": "scripts/worker_maintenance.py"
+    },
+    {
+      "previous_path": "scripts/onboard_node.py",
+      "path": "scripts/onboard_node.py"
+    },
+    {
+      "previous_path": "scripts/swarm_runtime.py",
+      "path": "scripts/swarm_runtime.py"
+    },
+    {
+      "previous_path": "scripts/deploy_stream_work.py",
+      "path": "scripts/deploy_stream_work.py"
+    },
+    {
+      "previous_path": "scripts/swarm_command.py",
+      "path": "scripts/swarm_command.py"
+    },
+    {
+      "previous_path": "scripts/ssh_multipath.py",
+      "path": "scripts/ssh_multipath.py"
+    },
+    {
+      "previous_path": "scripts/swarm_pressure_guard.py",
+      "path": "scripts/swarm_pressure_guard.py"
+    },
+    {
+      "previous_path": "scripts/run_cache_peers.py",
+      "path": "scripts/run_cache_peers.py"
+    },
+    {
+      "previous_path": "scripts/launcher_registry.py",
+      "path": "scripts/launcher_registry.py"
+    },
+    {
+      "previous_path": "scripts/launcher_discovery.py",
+      "path": "scripts/launcher_discovery.py"
+    },
+    {
+      "previous_path": "scripts/enroll_launcher_peers.py",
+      "path": "scripts/enroll_launcher_peers.py"
+    },
+    {
+      "previous_path": "scripts/swarm_stream_work.py",
+      "path": "scripts/swarm_stream_work.py"
+    },
+    {
+      "previous_path": "docker_utils/images.py",
+      "path": "docker_utils/images.py"
+    },
+    {
+      "previous_path": "docker_utils/policy.py",
+      "path": "docker_utils/policy.py"
+    },
+    {
+      "previous_path": "docker_utils/cli.py",
+      "path": "docker_utils/cli.py"
+    },
+    {
+      "previous_path": "docker_utils/__init__.py",
+      "path": "docker_utils/__init__.py"
+    },
+    {
+      "previous_path": "docker_utils/README.md",
+      "path": "docker_utils/README.md"
+    },
+    {
+      "previous_path": "docker_utils/sdk.py",
+      "path": "docker_utils/sdk.py"
+    },
+    {
+      "previous_path": "docker_utils/__main__.py",
+      "path": "docker_utils/__main__.py"
+    },
+    {
+      "previous_path": "swarm-control/package.json",
+      "path": "swarm-control/package.json"
+    },
+    {
+      "previous_path": "swarm-control/.gitignore",
+      "path": "swarm-control/.gitignore"
+    },
+    {
+      "previous_path": "swarm-control/package-lock.json",
+      "path": "swarm-control/package-lock.json"
+    },
+    {
+      "previous_path": "swarm-control/test-markdown.mjs",
+      "path": "swarm-control/test-markdown.mjs"
+    },
+    {
+      "previous_path": "swarm-control/test-queue-dismiss.mjs",
+      "path": "swarm-control/test-queue-dismiss.mjs"
+    },
+    {
+      "previous_path": "swarm-control/run.py",
+      "path": "swarm-control/run.py"
+    },
+    {
+      "previous_path": "swarm-control/requirements.txt",
+      "path": "swarm-control/requirements.txt"
+    },
+    {
+      "previous_path": "swarm-control/README.md",
+      "path": "swarm-control/README.md"
+    },
+    {
+      "previous_path": "swarm-control/test-console.mjs",
+      "path": "swarm-control/test-console.mjs"
+    },
+    {
+      "previous_path": "swarm-control/build-test.py",
+      "path": "swarm-control/build-test.py"
+    },
+    {
+      "previous_path": "swarm-control/test-pidp-browser.mjs",
+      "path": "swarm-control/test-pidp-browser.mjs"
+    },
+    {
+      "previous_path": "swarm-control/android/build.gradle",
+      "path": "swarm-control/android/build.gradle"
+    },
+    {
+      "previous_path": "swarm-control/android/gradlew",
+      "path": "swarm-control/android/gradlew"
+    },
+    {
+      "previous_path": "swarm-control/android/settings.gradle",
+      "path": "swarm-control/android/settings.gradle"
+    },
+    {
+      "previous_path": "swarm-control/docs/MESSAGE_DELIVERY_TESTING.md",
+      "path": "swarm-control/docs/MESSAGE_DELIVERY_TESTING.md"
+    },
+    {
+      "previous_path": "swarm-control/server/p2p_remote.py",
+      "path": "swarm-control/server/p2p_remote.py"
+    },
+    {
+      "previous_path": "swarm-control/server/distributed_images.py",
+      "path": "swarm-control/server/distributed_images.py"
+    },
+    {
+      "previous_path": "swarm-control/server/p2p_network.py",
+      "path": "swarm-control/server/p2p_network.py"
+    },
+    {
+      "previous_path": "swarm-control/server/package.json",
+      "path": "swarm-control/server/package.json"
+    },
+    {
+      "previous_path": "swarm-control/server/resource_history.py",
+      "path": "swarm-control/server/resource_history.py"
+    },
+    {
+      "previous_path": "swarm-control/server/run_manager_projection.py",
+      "path": "swarm-control/server/run_manager_projection.py"
+    },
+    {
+      "previous_path": "swarm-control/server/agent_updates.py",
+      "path": "swarm-control/server/agent_updates.py"
+    },
+    {
+      "previous_path": "swarm-control/server/wgs_evidence.py",
+      "path": "swarm-control/server/wgs_evidence.py"
+    },
+    {
+      "previous_path": "swarm-control/server/router_flows.py",
+      "path": "swarm-control/server/router_flows.py"
+    },
+    {
+      "previous_path": "swarm-control/server/research_jobs.py",
+      "path": "swarm-control/server/research_jobs.py"
+    },
+    {
+      "previous_path": "swarm-control/server/SECURITY-AUDIT-2026-10-24.md",
+      "path": "swarm-control/server/SECURITY-AUDIT-2026-10-24.md"
+    },
+    {
+      "previous_path": "swarm-control/server/VOICE-AND-QUEUE.md",
+      "path": "swarm-control/server/VOICE-AND-QUEUE.md"
+    },
+    {
+      "previous_path": "swarm-control/server/identity.py",
+      "path": "swarm-control/server/identity.py"
+    },
+    {
+      "previous_path": "swarm-control/server/geography.py",
+      "path": "swarm-control/server/geography.py"
+    },
+    {
+      "previous_path": "swarm-control/server/CONNECTION-DISTRIBUTION.md",
+      "path": "swarm-control/server/CONNECTION-DISTRIBUTION.md"
+    },
+    {
+      "previous_path": "swarm-control/server/capture_config.py",
+      "path": "swarm-control/server/capture_config.py"
+    },
+    {
+      "previous_path": "swarm-control/server/work_queue.py",
+      "path": "swarm-control/server/work_queue.py"
+    },
+    {
+      "previous_path": "swarm-control/server/message_queue.py",
+      "path": "swarm-control/server/message_queue.py"
+    },
+    {
+      "previous_path": "swarm-control/server/cpu.py",
+      "path": "swarm-control/server/cpu.py"
+    },
+    {
+      "previous_path": "swarm-control/server/image_registry.py",
+      "path": "swarm-control/server/image_registry.py"
+    },
+    {
+      "previous_path": "swarm-control/server/task_dashboard.py",
+      "path": "swarm-control/server/task_dashboard.py"
+    },
+    {
+      "previous_path": "swarm-control/server/test_requests.py",
+      "path": "swarm-control/server/test_requests.py"
+    },
+    {
+      "previous_path": "swarm-control/server/socket_owners.py",
+      "path": "swarm-control/server/socket_owners.py"
+    },
+    {
+      "previous_path": "swarm-control/server/early_p2p.py",
+      "path": "swarm-control/server/early_p2p.py"
+    },
+    {
+      "previous_path": "swarm-control/server/lan-map-mdns.service",
+      "path": "swarm-control/server/lan-map-mdns.service"
+    },
+    {
+      "previous_path": "swarm-control/server/remote_ips.py",
+      "path": "swarm-control/server/remote_ips.py"
+    },
+    {
+      "previous_path": "swarm-control/server/mdns.py",
+      "path": "swarm-control/server/mdns.py"
+    },
+    {
+      "previous_path": "swarm-control/server/suite_cache.py",
+      "path": "swarm-control/server/suite_cache.py"
+    },
+    {
+      "previous_path": "swarm-control/server/mobile_gpu.mjs",
+      "path": "swarm-control/server/mobile_gpu.mjs"
+    },
+    {
+      "previous_path": "swarm-control/server/apk_delivery.py",
+      "path": "swarm-control/server/apk_delivery.py"
+    },
+    {
+      "previous_path": "swarm-control/server/post_deployment.py",
+      "path": "swarm-control/server/post_deployment.py"
+    },
+    {
+      "previous_path": "swarm-control/server/input_runtime_release.py",
+      "path": "swarm-control/server/input_runtime_release.py"
+    },
+    {
+      "previous_path": "swarm-control/server/packet_monitor.py",
+      "path": "swarm-control/server/packet_monitor.py"
+    },
+    {
+      "previous_path": "swarm-control/server/granular_dispatch.py",
+      "path": "swarm-control/server/granular_dispatch.py"
+    },
+    {
+      "previous_path": "swarm-control/server/test_scope.py",
+      "path": "swarm-control/server/test_scope.py"
+    },
+    {
+      "previous_path": "swarm-control/server/snapshot_staging.py",
+      "path": "swarm-control/server/snapshot_staging.py"
+    },
+    {
+      "previous_path": "swarm-control/server/codex.py",
+      "path": "swarm-control/server/codex.py"
+    },
+    {
+      "previous_path": "swarm-control/server/worker_preparation.py",
+      "path": "swarm-control/server/worker_preparation.py"
+    },
+    {
+      "previous_path": "swarm-control/server/task_pipeline.py",
+      "path": "swarm-control/server/task_pipeline.py"
+    },
+    {
+      "previous_path": "swarm-control/server/retry_jobs.py",
+      "path": "swarm-control/server/retry_jobs.py"
+    },
+    {
+      "previous_path": "swarm-control/server/conversation_connection.py",
+      "path": "swarm-control/server/conversation_connection.py"
+    },
+    {
+      "previous_path": "swarm-control/server/fleet_backups.py",
+      "path": "swarm-control/server/fleet_backups.py"
+    },
+    {
+      "previous_path": "swarm-control/server/gpu_worker.py",
+      "path": "swarm-control/server/gpu_worker.py"
+    },
+    {
+      "previous_path": "swarm-control/server/requirements-codex.txt",
+      "path": "swarm-control/server/requirements-codex.txt"
+    },
+    {
+      "previous_path": "swarm-control/server/measurements.py",
+      "path": "swarm-control/server/measurements.py"
+    },
+    {
+      "previous_path": "swarm-control/server/MASTER_API.md",
+      "path": "swarm-control/server/MASTER_API.md"
+    },
+    {
+      "previous_path": "swarm-control/server/status.py",
+      "path": "swarm-control/server/status.py"
+    },
+    {
+      "previous_path": "swarm-control/server/process_resources.py",
+      "path": "swarm-control/server/process_resources.py"
+    },
+    {
+      "previous_path": "swarm-control/server/master_http.py",
+      "path": "swarm-control/server/master_http.py"
+    },
+    {
+      "previous_path": "swarm-control/server/device_names.py",
+      "path": "swarm-control/server/device_names.py"
+    },
+    {
+      "previous_path": "swarm-control/server/disk_metrics.py",
+      "path": "swarm-control/server/disk_metrics.py"
+    },
+    {
+      "previous_path": "swarm-control/server/wgs_progress.py",
+      "path": "swarm-control/server/wgs_progress.py"
+    },
+    {
+      "previous_path": "swarm-control/server/task_events.py",
+      "path": "swarm-control/server/task_events.py"
+    },
+    {
+      "previous_path": "swarm-control/server/paths.py",
+      "path": "swarm-control/server/paths.py"
+    },
+    {
+      "previous_path": "swarm-control/server/router.py",
+      "path": "swarm-control/server/router.py"
+    },
+    {
+      "previous_path": "swarm-control/server/mobile_worker.py",
+      "path": "swarm-control/server/mobile_worker.py"
+    },
+    {
+      "previous_path": "swarm-control/server/TRANSFER_TRANSPORT.md",
+      "path": "swarm-control/server/TRANSFER_TRANSPORT.md"
+    },
+    {
+      "previous_path": "swarm-control/server/research.py",
+      "path": "swarm-control/server/research.py"
+    },
+    {
+      "previous_path": "swarm-control/server/interface_metrics.py",
+      "path": "swarm-control/server/interface_metrics.py"
+    },
+    {
+      "previous_path": "swarm-control/server/website_capture.py",
+      "path": "swarm-control/server/website_capture.py"
+    },
+    {
+      "previous_path": "swarm-control/server/requirements-p2p.txt",
+      "path": "swarm-control/server/requirements-p2p.txt"
+    },
+    {
+      "previous_path": "swarm-control/server/lan-monitor.service",
+      "path": "swarm-control/server/lan-monitor.service"
+    },
+    {
+      "previous_path": "swarm-control/server/master_api.py",
+      "path": "swarm-control/server/master_api.py"
+    },
+    {
+      "previous_path": "swarm-control/server/GENOME-EXPLORER.md",
+      "path": "swarm-control/server/GENOME-EXPLORER.md"
+    },
+    {
+      "previous_path": "swarm-control/server/connections.py",
+      "path": "swarm-control/server/connections.py"
+    },
+    {
+      "previous_path": "swarm-control/server/task_registry.py",
+      "path": "swarm-control/server/task_registry.py"
+    },
+    {
+      "previous_path": "swarm-control/server/monitor_access.py",
+      "path": "swarm-control/server/monitor_access.py"
+    },
+    {
+      "previous_path": "swarm-control/server/WEBSITE-OBSERVATORY.md",
+      "path": "swarm-control/server/WEBSITE-OBSERVATORY.md"
+    },
+    {
+      "previous_path": "swarm-control/server/worker_controls.py",
+      "path": "swarm-control/server/worker_controls.py"
+    },
+    {
+      "previous_path": "swarm-control/server/gpu_metrics.py",
+      "path": "swarm-control/server/gpu_metrics.py"
+    },
+    {
+      "previous_path": "swarm-control/server/work_history.py",
+      "path": "swarm-control/server/work_history.py"
+    },
+    {
+      "previous_path": "swarm-control/server/docker_downloads.py",
+      "path": "swarm-control/server/docker_downloads.py"
+    },
+    {
+      "previous_path": "swarm-control/server/web_checks.py",
+      "path": "swarm-control/server/web_checks.py"
+    },
+    {
+      "previous_path": "swarm-control/server/visual_artifacts.py",
+      "path": "swarm-control/server/visual_artifacts.py"
+    },
+    {
+      "previous_path": "swarm-control/server/history.py",
+      "path": "swarm-control/server/history.py"
+    },
+    {
+      "previous_path": "swarm-control/server/README.md",
+      "path": "swarm-control/server/README.md"
+    },
+    {
+      "previous_path": "swarm-control/server/task_progress.py",
+      "path": "swarm-control/server/task_progress.py"
+    },
+    {
+      "previous_path": "swarm-control/server/agent_client.py",
+      "path": "swarm-control/server/agent_client.py"
+    },
+    {
+      "previous_path": "swarm-control/server/github_sources.py",
+      "path": "swarm-control/server/github_sources.py"
+    },
+    {
+      "previous_path": "swarm-control/server/portal_sync.py",
+      "path": "swarm-control/server/portal_sync.py"
+    },
+    {
+      "previous_path": "swarm-control/server/run_activity.py",
+      "path": "swarm-control/server/run_activity.py"
+    },
+    {
+      "previous_path": "swarm-control/server/distributed_worker.py",
+      "path": "swarm-control/server/distributed_worker.py"
+    },
+    {
+      "previous_path": "swarm-control/server/submission_queue.py",
+      "path": "swarm-control/server/submission_queue.py"
+    },
+    {
+      "previous_path": "swarm-control/server/wgs_eta.py",
+      "path": "swarm-control/server/wgs_eta.py"
+    },
+    {
+      "previous_path": "swarm-control/server/nginx.conf",
+      "path": "swarm-control/server/nginx.conf"
+    },
+    {
+      "previous_path": "swarm-control/server/resource_server.py",
+      "path": "swarm-control/server/resource_server.py"
+    },
+    {
+      "previous_path": "swarm-control/server/input_progress.py",
+      "path": "swarm-control/server/input_progress.py"
+    },
+    {
+      "previous_path": "swarm-control/server/GPU_QC.md",
+      "path": "swarm-control/server/GPU_QC.md"
+    },
+    {
+      "previous_path": "swarm-control/server/network_health.py",
+      "path": "swarm-control/server/network_health.py"
+    },
+    {
+      "previous_path": "swarm-control/server/CODEX_UI_REVIEW.md",
+      "path": "swarm-control/server/CODEX_UI_REVIEW.md"
+    },
+    {
+      "previous_path": "swarm-control/server/master_mcp.py",
+      "path": "swarm-control/server/master_mcp.py"
+    },
+    {
+      "previous_path": "swarm-control/server/Dockerfile.shard-qc",
+      "path": "swarm-control/server/Dockerfile.shard-qc"
+    },
+    {
+      "previous_path": "swarm-control/server/benchmark.py",
+      "path": "swarm-control/server/benchmark.py"
+    },
+    {
+      "previous_path": "swarm-control/server/voice.py",
+      "path": "swarm-control/server/voice.py"
+    },
+    {
+      "previous_path": "swarm-control/server/server.py",
+      "path": "swarm-control/server/server.py"
+    },
+    {
+      "previous_path": "swarm-control/server/devices.py",
+      "path": "swarm-control/server/devices.py"
+    },
+    {
+      "previous_path": "swarm-control/server/runtime_stats.py",
+      "path": "swarm-control/server/runtime_stats.py"
+    },
+    {
+      "previous_path": "swarm-control/server/live_distributed.py",
+      "path": "swarm-control/server/live_distributed.py"
+    },
+    {
+      "previous_path": "swarm-control/server/websites.py",
+      "path": "swarm-control/server/websites.py"
+    },
+    {
+      "previous_path": "swarm-control/server/recovery_deployment.py",
+      "path": "swarm-control/server/recovery_deployment.py"
+    },
+    {
+      "previous_path": "swarm-control/server/setup-identity.py",
+      "path": "swarm-control/server/setup-identity.py"
+    },
+    {
+      "previous_path": "swarm-control/server/api.py",
+      "path": "swarm-control/server/api.py"
+    },
+    {
+      "previous_path": "swarm-control/server/containers.py",
+      "path": "swarm-control/server/containers.py"
+    },
+    {
+      "previous_path": "swarm-control/server/task_event_collector.py",
+      "path": "swarm-control/server/task_event_collector.py"
+    },
+    {
+      "previous_path": "swarm-control/server/granular_worker.py",
+      "path": "swarm-control/server/granular_worker.py"
+    },
+    {
+      "previous_path": "swarm-control/server/remote_map.py",
+      "path": "swarm-control/server/remote_map.py"
+    },
+    {
+      "previous_path": "swarm-control/server/distributed.py",
+      "path": "swarm-control/server/distributed.py"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build.gradle",
+      "path": "swarm-control/android/app/build.gradle"
+    },
+    {
+      "previous_path": "swarm-control/android/.gradle/file-system.probe",
+      "path": "swarm-control/android/.gradle/file-system.probe"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/tmp/compileDebugJavaWithJavac/previous-compilation-data.bin",
+      "path": "swarm-control/android/app/build/tmp/compileDebugJavaWithJavac/previous-compilation-data.bin"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/outputs/logs/manifest-merger-debug-report.txt",
+      "path": "swarm-control/android/app/build/outputs/logs/manifest-merger-debug-report.txt"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/outputs/apk/debug/output-metadata.json",
+      "path": "swarm-control/android/app/build/outputs/apk/debug/output-metadata.json"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/outputs/apk/debug/app-debug.apk",
+      "path": "swarm-control/android/app/build/outputs/apk/debug/app-debug.apk"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/apk_ide_redirect_file/debug/createDebugApkListingFileRedirect/redirect.txt",
+      "path": "swarm-control/android/app/build/intermediates/apk_ide_redirect_file/debug/createDebugApkListingFileRedirect/redirect.txt"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/merged_res/debug/mergeDebugResources/drawable_swarm_control.xml.flat",
+      "path": "swarm-control/android/app/build/intermediates/merged_res/debug/mergeDebugResources/drawable_swarm_control.xml.flat"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/dex_archive_input_jar_hashes/debug/dexBuilderDebug/out",
+      "path": "swarm-control/android/app/build/intermediates/dex_archive_input_jar_hashes/debug/dexBuilderDebug/out"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/dex_number_of_buckets_file/debug/dexBuilderDebug/out",
+      "path": "swarm-control/android/app/build/intermediates/dex_number_of_buckets_file/debug/dexBuilderDebug/out"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/linked_resources_binary_format/debug/processDebugResources/output-metadata.json",
+      "path": "swarm-control/android/app/build/intermediates/linked_resources_binary_format/debug/processDebugResources/output-metadata.json"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/linked_resources_binary_format/debug/processDebugResources/linked-resources-binary-format-debug.ap_",
+      "path": "swarm-control/android/app/build/intermediates/linked_resources_binary_format/debug/processDebugResources/linked-resources-binary-format-debug.ap_"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/incremental/mergeDebugAssets/merger.xml",
+      "path": "swarm-control/android/app/build/intermediates/incremental/mergeDebugAssets/merger.xml"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/incremental/mergeDebugJniLibFolders/merger.xml",
+      "path": "swarm-control/android/app/build/intermediates/incremental/mergeDebugJniLibFolders/merger.xml"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/incremental/debug-mergeJavaRes/merge-state",
+      "path": "swarm-control/android/app/build/intermediates/incremental/debug-mergeJavaRes/merge-state"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/incremental/mergeDebugShaders/merger.xml",
+      "path": "swarm-control/android/app/build/intermediates/incremental/mergeDebugShaders/merger.xml"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/incremental/debug/packageDebugResources/merger.xml",
+      "path": "swarm-control/android/app/build/intermediates/incremental/debug/packageDebugResources/merger.xml"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/incremental/debug/packageDebugResources/compile-file-map.properties",
+      "path": "swarm-control/android/app/build/intermediates/incremental/debug/packageDebugResources/compile-file-map.properties"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/incremental/debug/mergeDebugResources/merger.xml",
+      "path": "swarm-control/android/app/build/intermediates/incremental/debug/mergeDebugResources/merger.xml"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/incremental/debug/mergeDebugResources/compile-file-map.properties",
+      "path": "swarm-control/android/app/build/intermediates/incremental/debug/mergeDebugResources/compile-file-map.properties"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/incremental/packageDebug/tmp/debug/dex-renamer-state.txt",
+      "path": "swarm-control/android/app/build/intermediates/incremental/packageDebug/tmp/debug/dex-renamer-state.txt"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/incremental/packageDebug/tmp/debug/zip-cache/androidResources",
+      "path": "swarm-control/android/app/build/intermediates/incremental/packageDebug/tmp/debug/zip-cache/androidResources"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/incremental/packageDebug/tmp/debug/zip-cache/javaResources0",
+      "path": "swarm-control/android/app/build/intermediates/incremental/packageDebug/tmp/debug/zip-cache/javaResources0"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/packaged_res/debug/packageDebugResources/drawable/swarm_control.xml",
+      "path": "swarm-control/android/app/build/intermediates/packaged_res/debug/packageDebugResources/drawable/swarm_control.xml"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/dex/debug/mergeProjectDexDebug/15/classes.dex",
+      "path": "swarm-control/android/app/build/intermediates/dex/debug/mergeProjectDexDebug/15/classes.dex"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/dex/debug/mergeProjectDexDebug/0/classes.dex",
+      "path": "swarm-control/android/app/build/intermediates/dex/debug/mergeProjectDexDebug/0/classes.dex"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/packaged_manifests/debug/processDebugManifestForPackage/AndroidManifest.xml",
+      "path": "swarm-control/android/app/build/intermediates/packaged_manifests/debug/processDebugManifestForPackage/AndroidManifest.xml"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/packaged_manifests/debug/processDebugManifestForPackage/output-metadata.json",
+      "path": "swarm-control/android/app/build/intermediates/packaged_manifests/debug/processDebugManifestForPackage/output-metadata.json"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/compatible_screen_manifest/debug/createDebugCompatibleScreenManifests/output-metadata.json",
+      "path": "swarm-control/android/app/build/intermediates/compatible_screen_manifest/debug/createDebugCompatibleScreenManifests/output-metadata.json"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/runtime_symbol_list/debug/processDebugResources/R.txt",
+      "path": "swarm-control/android/app/build/intermediates/runtime_symbol_list/debug/processDebugResources/R.txt"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/jar_e64bc9a6303554e727fb466489d2a677a6be20056c32a0bd23a392c80a0cc545_bucket_4/graph.bin",
+      "path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/jar_e64bc9a6303554e727fb466489d2a677a6be20056c32a0bd23a392c80a0cc545_bucket_4/graph.bin"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/dirs_bucket_5/graph.bin",
+      "path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/dirs_bucket_5/graph.bin"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/jar_e64bc9a6303554e727fb466489d2a677a6be20056c32a0bd23a392c80a0cc545_bucket_7/graph.bin",
+      "path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/jar_e64bc9a6303554e727fb466489d2a677a6be20056c32a0bd23a392c80a0cc545_bucket_7/graph.bin"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/dirs_bucket_4/graph.bin",
+      "path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/dirs_bucket_4/graph.bin"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/jar_e64bc9a6303554e727fb466489d2a677a6be20056c32a0bd23a392c80a0cc545_bucket_2/graph.bin",
+      "path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/jar_e64bc9a6303554e727fb466489d2a677a6be20056c32a0bd23a392c80a0cc545_bucket_2/graph.bin"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/dirs_bucket_7/graph.bin",
+      "path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/dirs_bucket_7/graph.bin"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/dirs_bucket_2/graph.bin",
+      "path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/dirs_bucket_2/graph.bin"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/jar_e64bc9a6303554e727fb466489d2a677a6be20056c32a0bd23a392c80a0cc545_bucket_1/graph.bin",
+      "path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/jar_e64bc9a6303554e727fb466489d2a677a6be20056c32a0bd23a392c80a0cc545_bucket_1/graph.bin"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/jar_e64bc9a6303554e727fb466489d2a677a6be20056c32a0bd23a392c80a0cc545_bucket_0/graph.bin",
+      "path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/jar_e64bc9a6303554e727fb466489d2a677a6be20056c32a0bd23a392c80a0cc545_bucket_0/graph.bin"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/dirs_bucket_1/graph.bin",
+      "path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/dirs_bucket_1/graph.bin"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/dirs_bucket_6/graph.bin",
+      "path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/dirs_bucket_6/graph.bin"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/dirs_bucket_3/graph.bin",
+      "path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/dirs_bucket_3/graph.bin"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/jar_e64bc9a6303554e727fb466489d2a677a6be20056c32a0bd23a392c80a0cc545_bucket_5/graph.bin",
+      "path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/jar_e64bc9a6303554e727fb466489d2a677a6be20056c32a0bd23a392c80a0cc545_bucket_5/graph.bin"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/dirs_bucket_0/graph.bin",
+      "path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/dirs_bucket_0/graph.bin"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/jar_e64bc9a6303554e727fb466489d2a677a6be20056c32a0bd23a392c80a0cc545_bucket_3/graph.bin",
+      "path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/jar_e64bc9a6303554e727fb466489d2a677a6be20056c32a0bd23a392c80a0cc545_bucket_3/graph.bin"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/jar_e64bc9a6303554e727fb466489d2a677a6be20056c32a0bd23a392c80a0cc545_bucket_6/graph.bin",
+      "path": "swarm-control/android/app/build/intermediates/desugar_graph/debug/dexBuilderDebug/out/currentProject/jar_e64bc9a6303554e727fb466489d2a677a6be20056c32a0bd23a392c80a0cc545_bucket_6/graph.bin"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/source_set_path_map/debug/mapDebugSourceSetPaths/file-map.txt",
+      "path": "swarm-control/android/app/build/intermediates/source_set_path_map/debug/mapDebugSourceSetPaths/file-map.txt"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/merged_manifest/debug/processDebugMainManifest/AndroidManifest.xml",
+      "path": "swarm-control/android/app/build/intermediates/merged_manifest/debug/processDebugMainManifest/AndroidManifest.xml"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/navigation_json/debug/extractDeepLinksDebug/navigation.json",
+      "path": "swarm-control/android/app/build/intermediates/navigation_json/debug/extractDeepLinksDebug/navigation.json"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/nested_resources_validation_report/debug/generateDebugResources/nestedResourcesValidationReport.txt",
+      "path": "swarm-control/android/app/build/intermediates/nested_resources_validation_report/debug/generateDebugResources/nestedResourcesValidationReport.txt"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/app/swarmcontrol/test/MainActivity.class",
+      "path": "swarm-control/android/app/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/app/swarmcontrol/test/MainActivity.class"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/app/swarmcontrol/test/P2pActivity.class",
+      "path": "swarm-control/android/app/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/app/swarmcontrol/test/P2pActivity.class"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/stable_resource_ids_file/debug/processDebugResources/stableIds.txt",
+      "path": "swarm-control/android/app/build/intermediates/stable_resource_ids_file/debug/processDebugResources/stableIds.txt"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/signing_config_versions/debug/writeDebugSigningConfigVersions/signing-config-versions.json",
+      "path": "swarm-control/android/app/build/intermediates/signing_config_versions/debug/writeDebugSigningConfigVersions/signing-config-versions.json"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/local_only_symbol_list/debug/parseDebugLocalResources/R-def.txt",
+      "path": "swarm-control/android/app/build/intermediates/local_only_symbol_list/debug/parseDebugLocalResources/R-def.txt"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/merged_manifests/debug/processDebugManifest/AndroidManifest.xml",
+      "path": "swarm-control/android/app/build/intermediates/merged_manifests/debug/processDebugManifest/AndroidManifest.xml"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/merged_manifests/debug/processDebugManifest/output-metadata.json",
+      "path": "swarm-control/android/app/build/intermediates/merged_manifests/debug/processDebugManifest/output-metadata.json"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/project_dex_archive/debug/dexBuilderDebug/out/ad1edb2b56c4bf316fc604218001b6f9c01679d0e89f9dde35a6cf92693295f9_6.jar",
+      "path": "swarm-control/android/app/build/intermediates/project_dex_archive/debug/dexBuilderDebug/out/ad1edb2b56c4bf316fc604218001b6f9c01679d0e89f9dde35a6cf92693295f9_6.jar"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/project_dex_archive/debug/dexBuilderDebug/out/app/swarmcontrol/test/P2pActivity.dex",
+      "path": "swarm-control/android/app/build/intermediates/project_dex_archive/debug/dexBuilderDebug/out/app/swarmcontrol/test/P2pActivity.dex"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/project_dex_archive/debug/dexBuilderDebug/out/app/swarmcontrol/test/MainActivity.dex",
+      "path": "swarm-control/android/app/build/intermediates/project_dex_archive/debug/dexBuilderDebug/out/app/swarmcontrol/test/MainActivity.dex"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/app_metadata/debug/writeDebugAppMetadata/app-metadata.properties",
+      "path": "swarm-control/android/app/build/intermediates/app_metadata/debug/writeDebugAppMetadata/app-metadata.properties"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/manifest_merge_blame_file/debug/processDebugMainManifest/manifest-merger-blame-debug-report.txt",
+      "path": "swarm-control/android/app/build/intermediates/manifest_merge_blame_file/debug/processDebugMainManifest/manifest-merger-blame-debug-report.txt"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/compile_and_runtime_not_namespaced_r_class_jar/debug/processDebugResources/R.jar",
+      "path": "swarm-control/android/app/build/intermediates/compile_and_runtime_not_namespaced_r_class_jar/debug/processDebugResources/R.jar"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/merged_java_res/debug/mergeDebugJavaResource/base.jar",
+      "path": "swarm-control/android/app/build/intermediates/merged_java_res/debug/mergeDebugJavaResource/base.jar"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/annotation_processor_list/debug/javaPreCompileDebug/annotationProcessors.json",
+      "path": "swarm-control/android/app/build/intermediates/annotation_processor_list/debug/javaPreCompileDebug/annotationProcessors.json"
+    },
+    {
+      "previous_path": "swarm-control/android/app/build/intermediates/merged_res_blame_folder/debug/mergeDebugResources/out/single/mergeDebugResources.json",
+      "path": "swarm-control/android/app/build/intermediates/merged_res_blame_folder/debug/mergeDebugResources/out/single/mergeDebugResources.json"
+    },
+    {
+      "previous_path": "swarm-control/android/app/src/main/AndroidManifest.xml",
+      "path": "swarm-control/android/app/src/main/AndroidManifest.xml"
+    },
+    {
+      "previous_path": "swarm-control/android/app/src/main/java/app/swarmcontrol/test/MainActivity.java",
+      "path": "swarm-control/android/app/src/main/java/app/swarmcontrol/test/MainActivity.java"
+    },
+    {
+      "previous_path": "swarm-control/android/app/src/main/java/app/swarmcontrol/test/P2pActivity.java",
+      "path": "swarm-control/android/app/src/main/java/app/swarmcontrol/test/P2pActivity.java"
+    },
+    {
+      "previous_path": "swarm-control/android/app/src/main/res/drawable/swarm_control.xml",
+      "path": "swarm-control/android/app/src/main/res/drawable/swarm_control.xml"
+    },
+    {
+      "previous_path": "swarm-control/android/gradle/wrapper/gradle-wrapper.jar",
+      "path": "swarm-control/android/gradle/wrapper/gradle-wrapper.jar"
+    },
+    {
+      "previous_path": "swarm-control/android/gradle/wrapper/gradle-wrapper.properties",
+      "path": "swarm-control/android/gradle/wrapper/gradle-wrapper.properties"
+    },
+    {
+      "previous_path": "swarm-control/android/build/reports/problems/problems-report.html",
+      "path": "swarm-control/android/build/reports/problems/problems-report.html"
+    },
+    {
+      "previous_path": "swarm-control/android/.gradle/vcs-1/gc.properties",
+      "path": "swarm-control/android/.gradle/vcs-1/gc.properties"
+    },
+    {
+      "previous_path": "swarm-control/android/.gradle/8.14.3/gc.properties",
+      "path": "swarm-control/android/.gradle/8.14.3/gc.properties"
+    },
+    {
+      "previous_path": "swarm-control/android/.gradle/buildOutputCleanup/buildOutputCleanup.lock",
+      "path": "swarm-control/android/.gradle/buildOutputCleanup/buildOutputCleanup.lock"
+    },
+    {
+      "previous_path": "swarm-control/android/.gradle/buildOutputCleanup/outputFiles.bin",
+      "path": "swarm-control/android/.gradle/buildOutputCleanup/outputFiles.bin"
+    },
+    {
+      "previous_path": "swarm-control/android/.gradle/buildOutputCleanup/cache.properties",
+      "path": "swarm-control/android/.gradle/buildOutputCleanup/cache.properties"
+    },
+    {
+      "previous_path": "swarm-control/android/.gradle/8.14.3/fileChanges/last-build.bin",
+      "path": "swarm-control/android/.gradle/8.14.3/fileChanges/last-build.bin"
+    },
+    {
+      "previous_path": "swarm-control/android/.gradle/8.14.3/fileHashes/resourceHashesCache.bin",
+      "path": "swarm-control/android/.gradle/8.14.3/fileHashes/resourceHashesCache.bin"
+    },
+    {
+      "previous_path": "swarm-control/android/.gradle/8.14.3/fileHashes/fileHashes.bin",
+      "path": "swarm-control/android/.gradle/8.14.3/fileHashes/fileHashes.bin"
+    },
+    {
+      "previous_path": "swarm-control/android/.gradle/8.14.3/fileHashes/fileHashes.lock",
+      "path": "swarm-control/android/.gradle/8.14.3/fileHashes/fileHashes.lock"
+    },
+    {
+      "previous_path": "swarm-control/android/.gradle/8.14.3/executionHistory/executionHistory.bin",
+      "path": "swarm-control/android/.gradle/8.14.3/executionHistory/executionHistory.bin"
+    },
+    {
+      "previous_path": "swarm-control/android/.gradle/8.14.3/executionHistory/executionHistory.lock",
+      "path": "swarm-control/android/.gradle/8.14.3/executionHistory/executionHistory.lock"
+    },
+    {
+      "previous_path": "swarm-control/android/.gradle/8.14.3/checksums/checksums.lock",
+      "path": "swarm-control/android/.gradle/8.14.3/checksums/checksums.lock"
+    },
+    {
+      "previous_path": "swarm-control/server/scripts/deploy-task-resources.py",
+      "path": "swarm-control/server/scripts/deploy-task-resources.py"
+    },
+    {
+      "previous_path": "swarm-control/server/scripts/review-task-manager-layout.mjs",
+      "path": "swarm-control/server/scripts/review-task-manager-layout.mjs"
+    },
+    {
+      "previous_path": "swarm-control/server/scripts/review-voice-ui.mjs",
+      "path": "swarm-control/server/scripts/review-voice-ui.mjs"
+    },
+    {
+      "previous_path": "swarm-control/server/scripts/deploy-compute-chart.py",
+      "path": "swarm-control/server/scripts/deploy-compute-chart.py"
+    },
+    {
+      "previous_path": "swarm-control/server/scripts/test-worker-controls.cjs",
+      "path": "swarm-control/server/scripts/test-worker-controls.cjs"
+    },
+    {
+      "previous_path": "swarm-control/server/scripts/review-genome-ui.mjs",
+      "path": "swarm-control/server/scripts/review-genome-ui.mjs"
+    },
+    {
+      "previous_path": "swarm-control/server/scripts/network-human-model.json",
+      "path": "swarm-control/server/scripts/network-human-model.json"
+    },
+    {
+      "previous_path": "swarm-control/server/scripts/review-resource-network.mjs",
+      "path": "swarm-control/server/scripts/review-resource-network.mjs"
+    },
+    {
+      "previous_path": "swarm-control/server/scripts/review-history-ui.mjs",
+      "path": "swarm-control/server/scripts/review-history-ui.mjs"
+    },
+    {
+      "previous_path": "swarm-control/server/scripts/review-codex-ui.mjs",
+      "path": "swarm-control/server/scripts/review-codex-ui.mjs"
+    },
+    {
+      "previous_path": "swarm-control/server/scripts/run-recorded-tests.py",
+      "path": "swarm-control/server/scripts/run-recorded-tests.py"
+    },
+    {
+      "previous_path": "swarm-control/server/scripts/deploy-resource-monitor.py",
+      "path": "swarm-control/server/scripts/deploy-resource-monitor.py"
+    },
+    {
+      "previous_path": "swarm-control/server/scripts/review-machine-connections.mjs",
+      "path": "swarm-control/server/scripts/review-machine-connections.mjs"
+    },
+    {
+      "previous_path": "swarm-control/server/view/tests.js",
+      "path": "swarm-control/server/view/tests.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/style.css",
+      "path": "swarm-control/server/view/style.css"
+    },
+    {
+      "previous_path": "swarm-control/server/view/congestion-model.js",
+      "path": "swarm-control/server/view/congestion-model.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/website-model.js",
+      "path": "swarm-control/server/view/website-model.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/app.js",
+      "path": "swarm-control/server/view/app.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/swarm-status.css",
+      "path": "swarm-control/server/view/swarm-status.css"
+    },
+    {
+      "previous_path": "swarm-control/server/view/cpu-colors.js",
+      "path": "swarm-control/server/view/cpu-colors.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/monitor-model.js",
+      "path": "swarm-control/server/view/monitor-model.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/genome-explorer.js",
+      "path": "swarm-control/server/view/genome-explorer.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/codex-voice.js",
+      "path": "swarm-control/server/view/codex-voice.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/pipeline-colors.js",
+      "path": "swarm-control/server/view/pipeline-colors.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/task-manager.js",
+      "path": "swarm-control/server/view/task-manager.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/marked-vendor.js",
+      "path": "swarm-control/server/view/marked-vendor.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/workers.css",
+      "path": "swarm-control/server/view/workers.css"
+    },
+    {
+      "previous_path": "swarm-control/server/view/pipeline.html",
+      "path": "swarm-control/server/view/pipeline.html"
+    },
+    {
+      "previous_path": "swarm-control/server/view/run-activity.js",
+      "path": "swarm-control/server/view/run-activity.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/pipeline.js",
+      "path": "swarm-control/server/view/pipeline.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/container-websites.js",
+      "path": "swarm-control/server/view/container-websites.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/benchmark.js",
+      "path": "swarm-control/server/view/benchmark.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/research.css",
+      "path": "swarm-control/server/view/research.css"
+    },
+    {
+      "previous_path": "swarm-control/server/view/history.html",
+      "path": "swarm-control/server/view/history.html"
+    },
+    {
+      "previous_path": "swarm-control/server/view/genome-explorer.html",
+      "path": "swarm-control/server/view/genome-explorer.html"
+    },
+    {
+      "previous_path": "swarm-control/server/view/pipeline.css",
+      "path": "swarm-control/server/view/pipeline.css"
+    },
+    {
+      "previous_path": "swarm-control/server/view/test-deployment.css",
+      "path": "swarm-control/server/view/test-deployment.css"
+    },
+    {
+      "previous_path": "swarm-control/server/view/genome-data.js",
+      "path": "swarm-control/server/view/genome-data.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/websites.html",
+      "path": "swarm-control/server/view/websites.html"
+    },
+    {
+      "previous_path": "swarm-control/server/view/history-contributions.js",
+      "path": "swarm-control/server/view/history-contributions.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/pipeline-model.js",
+      "path": "swarm-control/server/view/pipeline-model.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/run-work.js",
+      "path": "swarm-control/server/view/run-work.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/cpu.js",
+      "path": "swarm-control/server/view/cpu.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/mobile-devices.js",
+      "path": "swarm-control/server/view/mobile-devices.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/docker-downloads.js",
+      "path": "swarm-control/server/view/docker-downloads.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/swarm-status.html",
+      "path": "swarm-control/server/view/swarm-status.html"
+    },
+    {
+      "previous_path": "swarm-control/server/view/tests.html",
+      "path": "swarm-control/server/view/tests.html"
+    },
+    {
+      "previous_path": "swarm-control/server/view/codex.js",
+      "path": "swarm-control/server/view/codex.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/message-markdown.js",
+      "path": "swarm-control/server/view/message-markdown.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/marked-LICENSE.txt",
+      "path": "swarm-control/server/view/marked-LICENSE.txt"
+    },
+    {
+      "previous_path": "swarm-control/server/view/wgs-map.css",
+      "path": "swarm-control/server/view/wgs-map.css"
+    },
+    {
+      "previous_path": "swarm-control/server/view/failure-display.js",
+      "path": "swarm-control/server/view/failure-display.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/throughput.js",
+      "path": "swarm-control/server/view/throughput.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/edge-artefacts.js",
+      "path": "swarm-control/server/view/edge-artefacts.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/run-progress.js",
+      "path": "swarm-control/server/view/run-progress.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/host-terminal.js",
+      "path": "swarm-control/server/view/host-terminal.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/task-manager.html",
+      "path": "swarm-control/server/view/task-manager.html"
+    },
+    {
+      "previous_path": "swarm-control/server/view/breadcrumbs.js",
+      "path": "swarm-control/server/view/breadcrumbs.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/throughput-model.js",
+      "path": "swarm-control/server/view/throughput-model.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/edge-throughput.js",
+      "path": "swarm-control/server/view/edge-throughput.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/test-deployment.js",
+      "path": "swarm-control/server/view/test-deployment.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/codex.css",
+      "path": "swarm-control/server/view/codex.css"
+    },
+    {
+      "previous_path": "swarm-control/server/view/monitor.html",
+      "path": "swarm-control/server/view/monitor.html"
+    },
+    {
+      "previous_path": "swarm-control/server/view/codex-queue.js",
+      "path": "swarm-control/server/view/codex-queue.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/tasks.css",
+      "path": "swarm-control/server/view/tasks.css"
+    },
+    {
+      "previous_path": "swarm-control/server/view/dashboard-sections.js",
+      "path": "swarm-control/server/view/dashboard-sections.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/task-machines.js",
+      "path": "swarm-control/server/view/task-machines.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/codex.html",
+      "path": "swarm-control/server/view/codex.html"
+    },
+    {
+      "previous_path": "swarm-control/server/view/machine-heat.js",
+      "path": "swarm-control/server/view/machine-heat.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/hardware.js",
+      "path": "swarm-control/server/view/hardware.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/swarm-machines.js",
+      "path": "swarm-control/server/view/swarm-machines.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/settings.js",
+      "path": "swarm-control/server/view/settings.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/task-manager.css",
+      "path": "swarm-control/server/view/task-manager.css"
+    },
+    {
+      "previous_path": "swarm-control/server/view/export-data.js",
+      "path": "swarm-control/server/view/export-data.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/visible-poll.js",
+      "path": "swarm-control/server/view/visible-poll.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/workers.html",
+      "path": "swarm-control/server/view/workers.html"
+    },
+    {
+      "previous_path": "swarm-control/server/view/tasks.js",
+      "path": "swarm-control/server/view/tasks.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/failure-summary.js",
+      "path": "swarm-control/server/view/failure-summary.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/levels-model.js",
+      "path": "swarm-control/server/view/levels-model.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/history.js",
+      "path": "swarm-control/server/view/history.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/model.js",
+      "path": "swarm-control/server/view/model.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/swarm-control.svg",
+      "path": "swarm-control/server/view/swarm-control.svg"
+    },
+    {
+      "previous_path": "swarm-control/server/view/monitor.css",
+      "path": "swarm-control/server/view/monitor.css"
+    },
+    {
+      "previous_path": "swarm-control/server/view/levels.js",
+      "path": "swarm-control/server/view/levels.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/resource-context.js",
+      "path": "swarm-control/server/view/resource-context.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/genome-explorer.css",
+      "path": "swarm-control/server/view/genome-explorer.css"
+    },
+    {
+      "previous_path": "swarm-control/server/view/tests.css",
+      "path": "swarm-control/server/view/tests.css"
+    },
+    {
+      "previous_path": "swarm-control/server/view/workers.js",
+      "path": "swarm-control/server/view/workers.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/visual-artifacts.js",
+      "path": "swarm-control/server/view/visual-artifacts.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/providers.js",
+      "path": "swarm-control/server/view/providers.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/geography.js",
+      "path": "swarm-control/server/view/geography.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/edge-hover.js",
+      "path": "swarm-control/server/view/edge-hover.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/websites.css",
+      "path": "swarm-control/server/view/websites.css"
+    },
+    {
+      "previous_path": "swarm-control/server/view/snapshot-fetch.js",
+      "path": "swarm-control/server/view/snapshot-fetch.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/swarm-status.js",
+      "path": "swarm-control/server/view/swarm-status.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/congestion.js",
+      "path": "swarm-control/server/view/congestion.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/wgs-progress.js",
+      "path": "swarm-control/server/view/wgs-progress.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/edge-lines.js",
+      "path": "swarm-control/server/view/edge-lines.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/cpu-report.js",
+      "path": "swarm-control/server/view/cpu-report.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/monitor.js",
+      "path": "swarm-control/server/view/monitor.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/mobile-devices.css",
+      "path": "swarm-control/server/view/mobile-devices.css"
+    },
+    {
+      "previous_path": "swarm-control/server/view/index.html",
+      "path": "swarm-control/server/view/index.html"
+    },
+    {
+      "previous_path": "swarm-control/server/view/tasks-export.js",
+      "path": "swarm-control/server/view/tasks-export.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/land.geojson",
+      "path": "swarm-control/server/view/land.geojson"
+    },
+    {
+      "previous_path": "swarm-control/server/view/codex-screenshots.js",
+      "path": "swarm-control/server/view/codex-screenshots.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/resource-history.js",
+      "path": "swarm-control/server/view/resource-history.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/research.js",
+      "path": "swarm-control/server/view/research.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/history.css",
+      "path": "swarm-control/server/view/history.css"
+    },
+    {
+      "previous_path": "swarm-control/server/view/tasks.html",
+      "path": "swarm-control/server/view/tasks.html"
+    },
+    {
+      "previous_path": "swarm-control/server/view/machine-connections.js",
+      "path": "swarm-control/server/view/machine-connections.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/task-display.js",
+      "path": "swarm-control/server/view/task-display.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/swarm-control.html",
+      "path": "swarm-control/server/view/swarm-control.html"
+    },
+    {
+      "previous_path": "swarm-control/server/view/research.html",
+      "path": "swarm-control/server/view/research.html"
+    },
+    {
+      "previous_path": "swarm-control/server/view/authorized-action.js",
+      "path": "swarm-control/server/view/authorized-action.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/genome-comparison.js",
+      "path": "swarm-control/server/view/genome-comparison.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/websites.js",
+      "path": "swarm-control/server/view/websites.js"
+    },
+    {
+      "previous_path": "swarm-control/server/view/overall-progress.js",
+      "path": "swarm-control/server/view/overall-progress.js"
+    },
+    {
+      "previous_path": "swarm-control/server/systemd/swarm-control-api.service",
+      "path": "swarm-control/server/systemd/swarm-control-api.service"
+    },
+    {
+      "previous_path": "swarm-control/server/systemd/swarm-control.service",
+      "path": "swarm-control/server/systemd/swarm-control.service"
+    },
+    {
+      "previous_path": "swarm-control/server/systemd/swarm-tasks.service",
+      "path": "swarm-control/server/systemd/swarm-tasks.service"
+    },
+    {
+      "previous_path": "swarm-control/server/systemd/swarm-control.target",
+      "path": "swarm-control/server/systemd/swarm-control.target"
+    },
+    {
+      "previous_path": "swarm-control/server/systemd/swarm-control-resources.service",
+      "path": "swarm-control/server/systemd/swarm-control-resources.service"
+    },
+    {
+      "previous_path": "swarm-control/server/systemd/swarm-control-collectors.service",
+      "path": "swarm-control/server/systemd/swarm-control-collectors.service"
+    },
+    {
+      "previous_path": "swarm-control/server/systemd/swarm-control-tunnel.service",
+      "path": "swarm-control/server/systemd/swarm-control-tunnel.service"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/throughput.test.js",
+      "path": "swarm-control/server/tests/throughput.test.js"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_socket_owners.py",
+      "path": "swarm-control/server/tests/test_socket_owners.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_security_boundaries.py",
+      "path": "swarm-control/server/tests/test_security_boundaries.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_worker_preparation.py",
+      "path": "swarm-control/server/tests/test_worker_preparation.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_file_queue_protocol.py",
+      "path": "swarm-control/server/tests/test_file_queue_protocol.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_api.py",
+      "path": "swarm-control/server/tests/test_api.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_granular_worker.py",
+      "path": "swarm-control/server/tests/test_granular_worker.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_router.py",
+      "path": "swarm-control/server/tests/test_router.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_agent_sessions.py",
+      "path": "swarm-control/server/tests/test_agent_sessions.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_codex_screenshots.py",
+      "path": "swarm-control/server/tests/test_codex_screenshots.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/hardware.test.js",
+      "path": "swarm-control/server/tests/hardware.test.js"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_work_history.py",
+      "path": "swarm-control/server/tests/test_work_history.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_gpu_metrics.py",
+      "path": "swarm-control/server/tests/test_gpu_metrics.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_status.py",
+      "path": "swarm-control/server/tests/test_status.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/perspective.test.js",
+      "path": "swarm-control/server/tests/perspective.test.js"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_distributed.py",
+      "path": "swarm-control/server/tests/test_distributed.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/history-contributions.test.js",
+      "path": "swarm-control/server/tests/history-contributions.test.js"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_codex_titles.py",
+      "path": "swarm-control/server/tests/test_codex_titles.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/genome-comparison.test.js",
+      "path": "swarm-control/server/tests/genome-comparison.test.js"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/export-data.test.js",
+      "path": "swarm-control/server/tests/export-data.test.js"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_interface_metrics.py",
+      "path": "swarm-control/server/tests/test_interface_metrics.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_task_pipeline.py",
+      "path": "swarm-control/server/tests/test_task_pipeline.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/resource-history.test.js",
+      "path": "swarm-control/server/tests/resource-history.test.js"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_live_coordination.py",
+      "path": "swarm-control/server/tests/test_live_coordination.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_dependency_archives.py",
+      "path": "swarm-control/server/tests/test_dependency_archives.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_performance_resources.py",
+      "path": "swarm-control/server/tests/test_performance_resources.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_container_user.py",
+      "path": "swarm-control/server/tests/test_container_user.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_identity.py",
+      "path": "swarm-control/server/tests/test_identity.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_voice.py",
+      "path": "swarm-control/server/tests/test_voice.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/cpu-report.test.js",
+      "path": "swarm-control/server/tests/cpu-report.test.js"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_recovery_deployment.py",
+      "path": "swarm-control/server/tests/test_recovery_deployment.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_test_requests.py",
+      "path": "swarm-control/server/tests/test_test_requests.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/monitor-model.test.js",
+      "path": "swarm-control/server/tests/monitor-model.test.js"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_lifetech_suite.py",
+      "path": "swarm-control/server/tests/test_lifetech_suite.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_resource_history.py",
+      "path": "swarm-control/server/tests/test_resource_history.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_fleet_backups.py",
+      "path": "swarm-control/server/tests/test_fleet_backups.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_process_resources.py",
+      "path": "swarm-control/server/tests/test_process_resources.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_wgs_evidence.py",
+      "path": "swarm-control/server/tests/test_wgs_evidence.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/task-eta.test.js",
+      "path": "swarm-control/server/tests/task-eta.test.js"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_agent_updates.py",
+      "path": "swarm-control/server/tests/test_agent_updates.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_master_api.py",
+      "path": "swarm-control/server/tests/test_master_api.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_github_sources.py",
+      "path": "swarm-control/server/tests/test_github_sources.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_message_queue.py",
+      "path": "swarm-control/server/tests/test_message_queue.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_gpu_hardware.py",
+      "path": "swarm-control/server/tests/test_gpu_hardware.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_disk_metrics.py",
+      "path": "swarm-control/server/tests/test_disk_metrics.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_suite_cache.py",
+      "path": "swarm-control/server/tests/test_suite_cache.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_shared_resources.py",
+      "path": "swarm-control/server/tests/test_shared_resources.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/pipeline-model.test.js",
+      "path": "swarm-control/server/tests/pipeline-model.test.js"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_task_recovery.py",
+      "path": "swarm-control/server/tests/test_task_recovery.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_cpu.py",
+      "path": "swarm-control/server/tests/test_cpu.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_research.py",
+      "path": "swarm-control/server/tests/test_research.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_devices.py",
+      "path": "swarm-control/server/tests/test_devices.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_swarm_deployment.py",
+      "path": "swarm-control/server/tests/test_swarm_deployment.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_conversation_connection.py",
+      "path": "swarm-control/server/tests/test_conversation_connection.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/tasks-export.test.js",
+      "path": "swarm-control/server/tests/tasks-export.test.js"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_benchmark.py",
+      "path": "swarm-control/server/tests/test_benchmark.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_p2p_network.py",
+      "path": "swarm-control/server/tests/test_p2p_network.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_distributed_images.py",
+      "path": "swarm-control/server/tests/test_distributed_images.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_device_names.py",
+      "path": "swarm-control/server/tests/test_device_names.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_visual_artifacts.py",
+      "path": "swarm-control/server/tests/test_visual_artifacts.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_input_runtime_release.py",
+      "path": "swarm-control/server/tests/test_input_runtime_release.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_wgs_progress.py",
+      "path": "swarm-control/server/tests/test_wgs_progress.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/machine-connections.test.js",
+      "path": "swarm-control/server/tests/machine-connections.test.js"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_granular_dispatch.py",
+      "path": "swarm-control/server/tests/test_granular_dispatch.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_task_live.py",
+      "path": "swarm-control/server/tests/test_task_live.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_wgs_eta.py",
+      "path": "swarm-control/server/tests/test_wgs_eta.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_worker_controls.py",
+      "path": "swarm-control/server/tests/test_worker_controls.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_connections.py",
+      "path": "swarm-control/server/tests/test_connections.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/levels.test.js",
+      "path": "swarm-control/server/tests/levels.test.js"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/congestion.test.js",
+      "path": "swarm-control/server/tests/congestion.test.js"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_history.py",
+      "path": "swarm-control/server/tests/test_history.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_runtime_stats.py",
+      "path": "swarm-control/server/tests/test_runtime_stats.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_work_queue.py",
+      "path": "swarm-control/server/tests/test_work_queue.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_task_events.py",
+      "path": "swarm-control/server/tests/test_task_events.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_image_deduplication.py",
+      "path": "swarm-control/server/tests/test_image_deduplication.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/visible-poll.test.js",
+      "path": "swarm-control/server/tests/visible-poll.test.js"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_capture_config.py",
+      "path": "swarm-control/server/tests/test_capture_config.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/run-progress.test.js",
+      "path": "swarm-control/server/tests/run-progress.test.js"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_retry_jobs.py",
+      "path": "swarm-control/server/tests/test_retry_jobs.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_task_progress.py",
+      "path": "swarm-control/server/tests/test_task_progress.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_packet_monitor.py",
+      "path": "swarm-control/server/tests/test_packet_monitor.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_early_p2p.py",
+      "path": "swarm-control/server/tests/test_early_p2p.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_telemetry_transport.py",
+      "path": "swarm-control/server/tests/test_telemetry_transport.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/snapshot-fetch.test.js",
+      "path": "swarm-control/server/tests/snapshot-fetch.test.js"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_websites.py",
+      "path": "swarm-control/server/tests/test_websites.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_codex_permissions.py",
+      "path": "swarm-control/server/tests/test_codex_permissions.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_remote_ips.py",
+      "path": "swarm-control/server/tests/test_remote_ips.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/swarm-machines.test.js",
+      "path": "swarm-control/server/tests/swarm-machines.test.js"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_mobile_worker.py",
+      "path": "swarm-control/server/tests/test_mobile_worker.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/test_geography.py",
+      "path": "swarm-control/server/tests/test_geography.py"
+    },
+    {
+      "previous_path": "swarm-control/server/tests/task-machines.test.js",
+      "path": "swarm-control/server/tests/task-machines.test.js"
+    },
+    {
+      "previous_path": "ramtop/.gitignore",
+      "path": "ramtop/.gitignore"
+    },
+    {
+      "previous_path": "ramtop/pyproject.toml",
+      "path": "ramtop/pyproject.toml"
+    },
+    {
+      "previous_path": "ramtop/preview.svg",
+      "path": "ramtop/preview.svg"
+    },
+    {
+      "previous_path": "ramtop/README.md",
+      "path": "ramtop/README.md"
+    },
+    {
+      "previous_path": "ramtop/ramtop/gpu.py",
+      "path": "ramtop/ramtop/gpu.py"
+    },
+    {
+      "previous_path": "ramtop/ramtop/telemetry.py",
+      "path": "ramtop/ramtop/telemetry.py"
+    },
+    {
+      "previous_path": "ramtop/ramtop/metric_table.py",
+      "path": "ramtop/ramtop/metric_table.py"
+    },
+    {
+      "previous_path": "ramtop/ramtop/io_views.py",
+      "path": "ramtop/ramtop/io_views.py"
+    },
+    {
+      "previous_path": "ramtop/ramtop/cpu.py",
+      "path": "ramtop/ramtop/cpu.py"
+    },
+    {
+      "previous_path": "ramtop/ramtop/app.py",
+      "path": "ramtop/ramtop/app.py"
+    },
+    {
+      "previous_path": "ramtop/ramtop/lan.py",
+      "path": "ramtop/ramtop/lan.py"
+    },
+    {
+      "previous_path": "ramtop/ramtop/io_metrics.py",
+      "path": "ramtop/ramtop/io_metrics.py"
+    },
+    {
+      "previous_path": "ramtop/ramtop/memory.py",
+      "path": "ramtop/ramtop/memory.py"
+    },
+    {
+      "previous_path": "ramtop/ramtop/lan_view.py",
+      "path": "ramtop/ramtop/lan_view.py"
+    },
+    {
+      "previous_path": "ramtop/ramtop/gpu_view.py",
+      "path": "ramtop/ramtop/gpu_view.py"
+    },
+    {
+      "previous_path": "ramtop/ramtop/connections.py",
+      "path": "ramtop/ramtop/connections.py"
+    },
+    {
+      "previous_path": "ramtop/ramtop/__init__.py",
+      "path": "ramtop/ramtop/__init__.py"
+    },
+    {
+      "previous_path": "ramtop/ramtop/hotspots.py",
+      "path": "ramtop/ramtop/hotspots.py"
+    },
+    {
+      "previous_path": "ramtop/ramtop/bundle.py",
+      "path": "ramtop/ramtop/bundle.py"
+    },
+    {
+      "previous_path": "ramtop/ramtop/hardware.py",
+      "path": "ramtop/ramtop/hardware.py"
+    },
+    {
+      "previous_path": "ramtop/ramtop/swarm.py",
+      "path": "ramtop/ramtop/swarm.py"
+    },
+    {
+      "previous_path": "ramtop/ramtop/sampling.py",
+      "path": "ramtop/ramtop/sampling.py"
+    },
+    {
+      "previous_path": "ramtop/ramtop/__main__.py",
+      "path": "ramtop/ramtop/__main__.py"
+    },
+    {
+      "previous_path": "ramtop/ramtop.egg-info/top_level.txt",
+      "path": "ramtop/ramtop.egg-info/top_level.txt"
+    },
+    {
+      "previous_path": "ramtop/ramtop.egg-info/PKG-INFO",
+      "path": "ramtop/ramtop.egg-info/PKG-INFO"
+    },
+    {
+      "previous_path": "ramtop/ramtop.egg-info/dependency_links.txt",
+      "path": "ramtop/ramtop.egg-info/dependency_links.txt"
+    },
+    {
+      "previous_path": "ramtop/ramtop.egg-info/entry_points.txt",
+      "path": "ramtop/ramtop.egg-info/entry_points.txt"
+    },
+    {
+      "previous_path": "ramtop/ramtop.egg-info/SOURCES.txt",
+      "path": "ramtop/ramtop.egg-info/SOURCES.txt"
+    },
+    {
+      "previous_path": "ramtop/ramtop.egg-info/requires.txt",
+      "path": "ramtop/ramtop.egg-info/requires.txt"
+    },
+    {
+      "previous_path": "ramtop/tests/test_ramtop.py",
+      "path": "ramtop/tests/test_ramtop.py"
+    },
+    {
+      "previous_path": "peer-worker/package.json",
+      "path": "peer-worker/package.json"
+    },
+    {
+      "previous_path": "peer-worker/tsconfig.json",
+      "path": "peer-worker/tsconfig.json"
+    },
+    {
+      "previous_path": "peer-worker/package-lock.json",
+      "path": "peer-worker/package-lock.json"
+    },
+    {
+      "previous_path": "peer-worker/worker-configuration.d.ts",
+      "path": "peer-worker/worker-configuration.d.ts"
+    },
+    {
+      "previous_path": "peer-worker/wrangler.jsonc",
+      "path": "peer-worker/wrangler.jsonc"
+    },
+    {
+      "previous_path": "peer-worker/.dev.vars",
+      "path": "peer-worker/.dev.vars"
+    },
+    {
+      "previous_path": "peer-worker/src/worker.ts",
+      "path": "peer-worker/src/worker.ts"
+    },
+    {
+      "previous_path": "peer-worker/src/auth.ts",
+      "path": "peer-worker/src/auth.ts"
+    },
+    {
+      "previous_path": "peer-worker/test/auth.test.ts",
+      "path": "peer-worker/test/auth.test.ts"
+    },
+    {
+      "previous_path": "peer-worker/test/browser.py",
+      "path": "peer-worker/test/browser.py"
+    },
+    {
+      "previous_path": "peer-worker/test/signaling.py",
+      "path": "peer-worker/test/signaling.py"
+    },
+    {
+      "previous_path": "peer-worker/test/launcher-auth.test.ts",
+      "path": "peer-worker/test/launcher-auth.test.ts"
+    },
+    {
+      "previous_path": "peer-worker/test/public-browser.py",
+      "path": "peer-worker/test/public-browser.py"
+    },
+    {
+      "previous_path": "peer-worker/test/backup.py",
+      "path": "peer-worker/test/backup.py"
+    },
+    {
+      "previous_path": "peer-worker/public/style.css",
+      "path": "peer-worker/public/style.css"
+    },
+    {
+      "previous_path": "peer-worker/public/app.js",
+      "path": "peer-worker/public/app.js"
+    },
+    {
+      "previous_path": "peer-worker/public/peer.js",
+      "path": "peer-worker/public/peer.js"
+    },
+    {
+      "previous_path": "peer-worker/public/register.html",
+      "path": "peer-worker/public/register.html"
+    },
+    {
+      "previous_path": "peer-worker/public/register.js",
+      "path": "peer-worker/public/register.js"
+    },
+    {
+      "previous_path": "peer-worker/public/index.html",
+      "path": "peer-worker/public/index.html"
+    },
+    {
+      "previous_path": "Dockerfile.launcher",
+      "path": "Dockerfile.launcher"
+    },
+    {
+      "previous_path": "Dockerfile.swarm-node",
+      "path": "Dockerfile.swarm-node"
+    },
+    {
+      "previous_path": "swarm-node",
+      "path": "swarm-node"
+    },
+    {
+      "previous_path": "pyproject.toml",
+      "path": "pyproject.toml"
+    },
+    {
+      "previous_path": "run.py",
+      "path": "run.py"
+    },
+    {
+      "previous_path": "tests/test_task_runtime_stats.py",
+      "path": "tests/test_task_runtime_stats.py"
+    },
+    {
+      "previous_path": "tests/test_agent_container.py",
+      "path": "tests/test_agent_container.py"
+    },
+    {
+      "previous_path": "tests/test_docker_worker_restart.py",
+      "path": "tests/test_docker_worker_restart.py"
+    },
+    {
+      "previous_path": "tests/test_run_inputs.py",
+      "path": "tests/test_run_inputs.py"
+    },
+    {
+      "previous_path": "tests/test_worker_maintenance.py",
+      "path": "tests/test_worker_maintenance.py"
+    },
+    {
+      "previous_path": "tests/test_launcher_commands.py",
+      "path": "tests/test_launcher_commands.py"
+    },
+    {
+      "previous_path": "tests/test_swarm_runtime.py",
+      "path": "tests/test_swarm_runtime.py"
+    },
+    {
+      "previous_path": "tests/test_swarm_node.py",
+      "path": "tests/test_swarm_node.py"
+    },
+    {
+      "previous_path": "tests/test_reclaim_download_chunks.py",
+      "path": "tests/test_reclaim_download_chunks.py"
+    },
+    {
+      "previous_path": "tests/test_job_sinks.py",
+      "path": "tests/test_job_sinks.py"
+    },
+    {
+      "previous_path": "tests/test_worker_event_journal.py",
+      "path": "tests/test_worker_event_journal.py"
+    },
+    {
+      "previous_path": "tests/test_swarm_stream_work.py",
+      "path": "tests/test_swarm_stream_work.py"
+    },
+    {
+      "previous_path": "tests/test_swarm_pressure_guard.py",
+      "path": "tests/test_swarm_pressure_guard.py"
+    },
+    {
+      "previous_path": "tests/test_ssh_multipath.py",
+      "path": "tests/test_ssh_multipath.py"
+    },
+    {
+      "previous_path": "tests/test_image_default_fingerprint.py",
+      "path": "tests/test_image_default_fingerprint.py"
+    },
+    {
+      "previous_path": "tests/test_task_bottlenecks.py",
+      "path": "tests/test_task_bottlenecks.py"
+    },
+    {
+      "previous_path": "tests/test_overnight_admission.py",
+      "path": "tests/test_overnight_admission.py"
+    },
+    {
+      "previous_path": "tests/test_launcher_streams.py",
+      "path": "tests/test_launcher_streams.py"
+    },
+    {
+      "previous_path": "tests/test_rolling_deployment.py",
+      "path": "tests/test_rolling_deployment.py"
+    },
+    {
+      "previous_path": "tests/test_swarm_tls_transfer.py",
+      "path": "tests/test_swarm_tls_transfer.py"
+    },
+    {
+      "previous_path": "tests/test_resource_renewal.py",
+      "path": "tests/test_resource_renewal.py"
+    },
+    {
+      "previous_path": "tests/test_launcher_retention.py",
+      "path": "tests/test_launcher_retention.py"
+    },
+    {
+      "previous_path": "tests/test_run_input_cache.py",
+      "path": "tests/test_run_input_cache.py"
+    },
+    {
+      "previous_path": "tests/test_docker_utils.py",
+      "path": "tests/test_docker_utils.py"
+    },
+    {
+      "previous_path": "tests/test_portal_startup.py",
+      "path": "tests/test_portal_startup.py"
+    },
+    {
+      "previous_path": "tests/test_run_cache_peers.py",
+      "path": "tests/test_run_cache_peers.py"
+    },
+    {
+      "previous_path": "tests/test_launcher_wan.py",
+      "path": "tests/test_launcher_wan.py"
+    },
+    {
+      "previous_path": "tests/test_swarm_jobs.py",
+      "path": "tests/test_swarm_jobs.py"
+    },
+    {
+      "previous_path": "tests/test_launcher_suite_sources.py",
+      "path": "tests/test_launcher_suite_sources.py"
+    },
+    {
+      "previous_path": "tests/test_launcher_routing_cleanup.py",
+      "path": "tests/test_launcher_routing_cleanup.py"
+    },
+    {
+      "previous_path": "tests/test_swarm_bulk.py",
+      "path": "tests/test_swarm_bulk.py"
+    },
+    {
+      "previous_path": "tests/test_browser_transport.py",
+      "path": "tests/test_browser_transport.py"
+    },
+    {
+      "previous_path": "tests/test_swarm_stream_verify.py",
+      "path": "tests/test_swarm_stream_verify.py"
+    },
+    {
+      "previous_path": "tests/test_launcher_peer_supervisor.py",
+      "path": "tests/test_launcher_peer_supervisor.py"
+    },
+    {
+      "previous_path": "tests/test_submission_queue.py",
+      "path": "tests/test_submission_queue.py"
+    },
+    {
+      "previous_path": "tests/test_lan_job_acceptance.py",
+      "path": "tests/test_lan_job_acceptance.py"
+    },
+    {
+      "previous_path": "tests/LAN_JOB_ACCEPTANCE.md",
+      "path": "tests/LAN_JOB_ACCEPTANCE.md"
+    },
+    {
+      "previous_path": "scripts/tests/test_onboard_node.py",
+      "path": "scripts/tests/test_onboard_node.py"
+    },
+    {
+      "previous_path": "scripts/tests/test_swarm_performance.py",
+      "path": "scripts/tests/test_swarm_performance.py"
+    },
+    {
+      "previous_path": "scripts/tests/test_worker_environment.py",
+      "path": "scripts/tests/test_worker_environment.py"
+    },
+    {
+      "previous_path": "scripts/tests/test_launcher_telemetry.py",
+      "path": "scripts/tests/test_launcher_telemetry.py"
+    },
+    {
+      "previous_path": "scripts/tests/test_launcher_routing.py",
+      "path": "scripts/tests/test_launcher_routing.py"
+    },
+    {
+      "previous_path": "scripts/tests/test_launcher_polling.py",
+      "path": "scripts/tests/test_launcher_polling.py"
+    },
+    {
+      "previous_path": "scripts/tests/test_setup_lan_ssh.py",
+      "path": "scripts/tests/test_setup_lan_ssh.py"
+    },
+    {
+      "previous_path": "scripts/tests/test_launcher_checkout.py",
+      "path": "scripts/tests/test_launcher_checkout.py"
+    },
+    {
+      "previous_path": "scripts/tests/test_launcher_event_journal.py",
+      "path": "scripts/tests/test_launcher_event_journal.py"
+    },
+    {
+      "previous_path": "scripts/swarm_shared_cache.py",
+      "path": "scripts/swarm_shared_cache.py"
+    },
+    {
+      "previous_path": "tests/test_swarm_shared_cache.py",
+      "path": "tests/test_swarm_shared_cache.py"
+    },
+    {
+      "previous_path": "scripts/swarm_paged_cache.py",
+      "path": "scripts/swarm_paged_cache.py"
+    },
+    {
+      "previous_path": "tests/test_swarm_paged_cache.py",
+      "path": "tests/test_swarm_paged_cache.py"
+    },
+    {
+      "previous_path": "swarm-control/server/deployment_components.py",
+      "path": "swarm-control/server/deployment_components.py"
+    }
+  ]
+}

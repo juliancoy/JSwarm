@@ -1,0 +1,1 @@
+../../GenomeHarbor/scripts/huref_compare_worker.py

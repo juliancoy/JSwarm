@@ -1,0 +1,1 @@
+../../scripts/laptop_power.py

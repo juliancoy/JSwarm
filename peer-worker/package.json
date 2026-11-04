@@ -1,0 +1,19 @@
+{
+  "name": "organization-archive-peers",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --port 8789",
+    "types": "wrangler types",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "latest",
+    "@types/node": "^24.10.2",
+    "tsx": "^4.22.4",
+    "typescript": "^5.8.3",
+    "wrangler": "^4.152.0"
+  }
+}

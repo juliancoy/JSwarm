@@ -1,0 +1,1 @@
+../../GenomeHarbor/scripts/mapper_memory.py

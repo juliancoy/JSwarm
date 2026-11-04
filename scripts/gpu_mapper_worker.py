@@ -1,0 +1,1 @@
+../../GenomeHarbor/scripts/gpu_mapper_worker.py

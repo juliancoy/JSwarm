@@ -1,0 +1,3 @@
+-r ../requirements.txt
+-r server/requirements-codex.txt
+-r server/requirements-p2p.txt

@@ -1,0 +1,1 @@
+../../GenomeHarbor/scripts/build_gpu_alignment.py

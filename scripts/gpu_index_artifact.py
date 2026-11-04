@@ -1,0 +1,1 @@
+../../GenomeHarbor/scripts/gpu_index_artifact.py

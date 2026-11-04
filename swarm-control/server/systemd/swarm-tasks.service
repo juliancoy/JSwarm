@@ -1,0 +1,15 @@
+[Unit]
+Description=Read-only swarm task progress
+After=network-online.target
+
+[Service]
+Environment=SWARM_WORKSPACE={{WORKSPACE}}
+Environment=SWARM_STATE_DIR={{STATE}}
+WorkingDirectory={{SOURCE}}/server
+ExecStart={{PYTHON}} {{SOURCE}}/server/task_dashboard.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

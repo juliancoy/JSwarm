@@ -1,0 +1,16 @@
+[Unit]
+Description=Swarm Control authenticated remote API
+After=network-online.target swarm-control.service
+PartOf=swarm-control.target
+[Service]
+Environment=SWARM_WORKSPACE={{WORKSPACE}}
+Environment=SWARM_STATE_DIR={{STATE}}
+WorkingDirectory={{SOURCE}}/server
+Environment=CODEX_PUBLIC_ORIGIN=https://compai.lifetech.fyi
+ExecStart={{PYTHON}} {{SOURCE}}/server/api.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+UMask=0077
+[Install]
+WantedBy=swarm-control.target

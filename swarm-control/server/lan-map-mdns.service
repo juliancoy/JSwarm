@@ -1,0 +1,11 @@
+[Unit]
+Description=Advertise map.local on shared Ethernet
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /home/julian/Documents/Organization/swarm-control/server/mdns.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

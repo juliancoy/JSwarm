@@ -1,0 +1,1 @@
+../../GenomeHarbor/scripts/alignment_scratch.py

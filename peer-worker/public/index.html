@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Organization · Data peers</title><link rel="stylesheet" href="/style.css"></head>
+<body><main><h1>Data peers</h1><p>Share public snapshots, verified test fixtures and encrypted recovery archives between your devices.</p>
+<form id="join"><label>Device invitation<input id="token" type="password" autocomplete="off" required></label><button>Connect device</button></form>
+<p id="status" role="status">Waiting for a device invitation.</p><p id="network"></p>
+<section><h2>Share a local package</h2><label>Prepared package directory<input id="package" type="file" webkitdirectory multiple disabled></label></section>
+<section><h2>Receive from peers</h2><p id="dataset">No dataset received.</p><button id="sync" disabled>Download or resume</button><progress id="progress" value="0" max="1"></progress><div id="files"></div></section>
+<section><h2>Connected peers</h2><ul id="peers"></ul></section><button id="forget" disabled>Delete this device’s stored copy</button>
+<p>Keep this page open to seed files. Public snapshots expire after one day; test fixtures after seven days. Recovery archives remain encrypted.</p></main><script type="module" src="/app.js"></script></body></html>

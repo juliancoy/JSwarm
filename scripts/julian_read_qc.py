@@ -1,0 +1,1 @@
+../../GenomeHarbor/scripts/julian_read_qc.py

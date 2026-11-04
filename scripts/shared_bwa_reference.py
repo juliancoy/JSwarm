@@ -1,0 +1,1 @@
+../../GenomeHarbor/scripts/shared_bwa_reference.py

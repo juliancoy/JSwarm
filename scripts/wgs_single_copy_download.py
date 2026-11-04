@@ -1,0 +1,1 @@
+../../GenomeHarbor/scripts/wgs_single_copy_download.py

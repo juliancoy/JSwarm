@@ -1,0 +1,1 @@
+../../../../../GenomeHarbor/web/genome-comparison.js

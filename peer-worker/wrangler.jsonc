@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "organization-archive-peers",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-10-23",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "assets": {"directory": "./public", "binding": "ASSETS", "run_worker_first": true},
+  "version_metadata": {"binding": "CF_VERSION_METADATA"},
+  "observability": {"enabled": true, "head_sampling_rate": 1},
+  "vars": {"PEER_ALLOWED_ORIGINS": "https://localhost:8443,http://localhost:8789,http://127.0.0.1:8789"},
+  "durable_objects": {"bindings": [{"name": "SIGNAL_ROOMS", "class_name": "SignalRoom"}]},
+  "migrations": [{"tag": "v1", "new_sqlite_classes": ["SignalRoom"]}]
+}

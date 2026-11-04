@@ -1,0 +1,15 @@
+[Unit]
+Description=Swarm Node — shared resource monitor
+After=network-online.target
+PartOf=swarm-control.target
+[Service]
+Environment=SWARM_WORKSPACE={{WORKSPACE}}
+Environment=SWARM_STATE_DIR={{STATE}}
+WorkingDirectory={{SOURCE}}/server
+ExecStart={{PYTHON}} {{SOURCE}}/server/resource_server.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+UMask=0077
+[Install]
+WantedBy=swarm-control.target

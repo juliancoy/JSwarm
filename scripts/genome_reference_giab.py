@@ -1,0 +1,1 @@
+../../GenomeHarbor/scripts/genome_reference_giab.py

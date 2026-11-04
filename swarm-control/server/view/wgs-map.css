@@ -1,0 +1,7 @@
+#wgs-estimator .wgs-progress{padding:0 0 18px;border-bottom:1px solid var(--line,#334155);margin-bottom:20px}
+#wgs-estimator h2{font-size:18px;margin:0 0 12px}
+#wgs-estimator .connection-grid{display:grid;gap:12px}
+#wgs-estimator .connection-card{display:grid;gap:9px;padding:12px;border:1px solid var(--line,#475569);border-radius:10px;min-width:0}
+#wgs-estimator progress{width:100%;height:14px;accent-color:#69d6bd}
+#wgs-estimator p,#wgs-estimator span,#wgs-estimator small{font-size:13px;line-height:1.55;overflow-wrap:anywhere}
+#wgs-estimator summary{cursor:pointer;padding:10px 0;font-size:13px}

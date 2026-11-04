@@ -1,0 +1,11 @@
+[Unit]
+Description=LAN discovery and device perspective collector
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /home/julian/Documents/Organization/swarm-control/server/server.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

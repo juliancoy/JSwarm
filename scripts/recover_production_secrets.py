@@ -1,0 +1,1 @@
+../../scripts/recover_production_secrets.py

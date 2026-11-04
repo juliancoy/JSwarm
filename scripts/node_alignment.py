@@ -1,0 +1,1 @@
+../../GenomeHarbor/scripts/node_alignment.py

@@ -1,0 +1,37 @@
+{
+  "version": 4,
+  "task": "Find a machine and interface, read send and receive rates, and toggle either chart series",
+  "purpose": "Executable human usability heuristics; does not substitute for human judgment",
+  "viewports": [
+    320,
+    390,
+    768,
+    900,
+    1000,
+    1100,
+    1280,
+    1440
+  ],
+  "minimumTargetPixels": 44,
+  "checks": [
+    "machine grouping",
+    "panel containment",
+    "visible text",
+    "pointer reachability",
+    "keyboard activation",
+    "toggle feedback",
+    "continuous history",
+    "highest throughput first",
+    "observed interfaces only",
+    "disconnected link feedback",
+    "negotiated link rate separate from throughput",
+    "disk read/write throughput and percentages separate",
+    "shared observed sustained capacity baseline",
+    "uncalibrated disk feedback"
+  ],
+  "humanReview": [
+    "visual hierarchy",
+    "information scent",
+    "readability"
+  ]
+}

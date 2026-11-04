@@ -1,0 +1,1 @@
+../../scripts/setup-lan-ssh.py

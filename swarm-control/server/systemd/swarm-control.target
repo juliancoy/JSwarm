@@ -1,0 +1,7 @@
+[Unit]
+Description=Swarm Control
+Wants=swarm-control.service swarm-control-api.service swarm-control-tunnel.service swarm-control-collectors.service
+After=network-online.target
+
+[Install]
+WantedBy=default.target

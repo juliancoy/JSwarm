@@ -1,0 +1,1 @@
+../../GenomeHarbor/scripts/public_genomes.py

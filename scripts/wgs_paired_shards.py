@@ -1,0 +1,1 @@
+../../GenomeHarbor/scripts/wgs_paired_shards.py

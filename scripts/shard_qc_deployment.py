@@ -1,0 +1,1 @@
+../../GenomeHarbor/scripts/shard_qc_deployment.py

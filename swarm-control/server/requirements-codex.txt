@@ -1,0 +1,3 @@
+# QR generation and PIdP ES256 signature verification.
+qrcode==8.2
+cryptography==50.0.2

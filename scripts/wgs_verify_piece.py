@@ -1,0 +1,1 @@
+../../GenomeHarbor/scripts/wgs_verify_piece.py

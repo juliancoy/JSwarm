@@ -1,0 +1,1 @@
+../../GenomeHarbor/scripts/wgs_shard_qc.py

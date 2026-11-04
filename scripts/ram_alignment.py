@@ -1,0 +1,1 @@
+../../GenomeHarbor/scripts/ram_alignment.py
