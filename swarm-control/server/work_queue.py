@@ -37,6 +37,11 @@ def catalog(root, specs, repositories=None, bases=None):
     tasks = []
     for base, (repo, prefix, patterns) in FILES.items():
         if bases is not None and base not in bases:continue
+        # Directory compatibility links have no descendants in the parent Git
+        # tree. Enumerate their immutable owner while retaining runtime paths.
+        if base in ('monitor','map') and ((repositories is not None and 'JSwarm' in repositories)
+                or (repositories is None and (Path(root)/'JSwarm/.git').exists())):
+            repo='JSwarm'
         if repo not in trees:
             revision = repositories[repo]['commit'] if repositories else 'HEAD'
             trees[repo] = subprocess.check_output(

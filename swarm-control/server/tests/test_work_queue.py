@@ -10,6 +10,16 @@ from work_queue import catalog, claim, pending
 
 
 class FileQueueTests(unittest.TestCase):
+    def test_split_monitor_catalog_uses_pinned_owner_tree(self):
+        specs=copy.deepcopy(SUITES)
+        repos={'.':{'commit':'parent'},'JSwarm':{'commit':'owner'}}
+        with patch('work_queue.subprocess.check_output',return_value=b'swarm-control/server/tests/test_monitor.py\0') as tree:
+            tasks=catalog('/checkout',specs,repos,bases={'monitor'})
+        self.assertEqual(tree.call_args.args[0][2],'/checkout/JSwarm')
+        self.assertEqual(tree.call_args.args[0][-1],'owner')
+        self.assertEqual(specs[tasks[0]]['file'],'tests/test_monitor.py')
+        self.assertEqual(specs[tasks[0]]['cwd'],specs['monitor']['cwd'])
+
     def test_catalog_uses_pinned_trees_and_covers_root_and_nested_files_once(self):
         trees = {
             '.': ['swarm-control/server/tests/test_monitor.py', 'swarm-control/server/tests/model.test.js', 'tests/test_tool.py'],
