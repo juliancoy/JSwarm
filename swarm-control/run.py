@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import fcntl
+import hashlib
 import shutil
 import tarfile
 import tempfile
@@ -25,6 +26,41 @@ UNITS = Path.home() / '.config/systemd/user'
 
 def run(*args, **kwargs):
     return subprocess.run([str(x) for x in args], check=True, **kwargs)
+
+
+def release_snapshot(root, revision, releases):
+    """Materialize every owner of the workspace's committed compatibility links."""
+    root,releases=Path(root),Path(releases)
+    def commit(repo, ref):
+        return subprocess.check_output(['git','-C',str(repo),'rev-parse',ref+'^{commit}'],text=True).strip()
+    refs={'.':commit(root,revision)}
+    layout=subprocess.check_output(['git','-C',str(root),'ls-tree',refs['.'],'swarm-control'],text=True)
+    split=layout.startswith('120000 ')
+    if split:
+        for name in ('JSwarm','GenomeHarbor'):refs[name]=commit(root/name,'HEAD')
+    identity=hashlib.sha256(json.dumps(refs,sort_keys=True).encode()).hexdigest() if split else refs['.']
+    release=releases/identity
+    if release.exists():
+        if split and json.loads((release/'repositories.json').read_text())!=refs:
+            raise RuntimeError('Immutable control snapshot references changed')
+        return release/'swarm-control'
+    releases.mkdir(parents=True,exist_ok=True)
+    staging=Path(tempfile.mkdtemp(prefix='.staging-',dir=releases))
+    try:
+        for name,sha in refs.items():
+            with tempfile.TemporaryFile() as archive:
+                command=['git','-C',str(root/name),'archive','--format=tar',sha]
+                if name!='.':command.append('--prefix='+name+'/')
+                if not split:command.append('swarm-control')
+                run(*command,stdout=archive);archive.seek(0)
+                with tarfile.open(fileobj=archive) as tree:tree.extractall(staging,filter='data')
+        if not (staging/'swarm-control/server/server.py').is_file():
+            raise RuntimeError('Control snapshot is missing its server entry point')
+        (staging/'repositories.json').write_text(json.dumps(refs,sort_keys=True)+'\n')
+        staging.rename(release)
+    except Exception:
+        shutil.rmtree(staging);raise
+    return release/'swarm-control'
 
 
 def main():
@@ -56,19 +92,7 @@ def main():
             drain.touch(mode=0o600);_DEPLOY_DRAIN=drain
         if args.action=='deploy':
             revision=subprocess.check_output(['git','-C',str(ROOT),'rev-parse',args.revision or 'HEAD'],text=True).strip()
-            release=Path.home()/'.local/share/swarm-control/releases'/revision
-            if not release.exists():
-                release.parent.mkdir(parents=True,exist_ok=True)
-                staging=Path(tempfile.mkdtemp(prefix='.staging-',dir=release.parent))
-                try:
-                    with tempfile.TemporaryFile() as archive:
-                        run('git','-C',ROOT,'archive','--format=tar',revision,'swarm-control',stdout=archive)
-                        archive.seek(0)
-                        with tarfile.open(fileobj=archive) as tree:tree.extractall(staging,filter='data')
-                    staging.rename(release)
-                except Exception:
-                    shutil.rmtree(staging);raise
-            source=release/'swarm-control'
+            source=release_snapshot(ROOT,revision,Path.home()/'.local/share/swarm-control/releases')
         if not (RUNTIME / 'bin/python').exists():
             venv.EnvBuilder(with_pip=True).create(RUNTIME)
         run(RUNTIME / 'bin/python', '-m', 'pip', 'install', '-r', APP / 'requirements.txt', cwd=ROOT)
@@ -114,7 +138,7 @@ def main():
                 shutil.move(str(previous),str(state))
         state.mkdir(parents=True,exist_ok=True,mode=0o700)
         for template in (source / 'server/systemd').iterdir():
-            text = template.read_text().replace('{{WORKSPACE}}', str(ROOT)).replace('{{SOURCE}}',str(source)).replace('{{STATE}}',str(state)).replace('{{PYTHON}}', str(RUNTIME / 'bin/python')).replace('{{HOME}}', str(Path.home()))
+            text = template.read_text().replace('{{WORKSPACE}}', str(Path(os.getenv('SWARM_WORKSPACE',str(ROOT))).resolve())).replace('{{SOURCE}}',str(source)).replace('{{STATE}}',str(state)).replace('{{PYTHON}}', str(RUNTIME / 'bin/python')).replace('{{HOME}}', str(Path.home()))
             (UNITS / template.name).write_text(text)
         run('systemctl', '--user', 'daemon-reload')
         run('systemctl', '--user', 'enable', 'swarm-control.target')

@@ -2,6 +2,8 @@
 
 Swarm discovery, scheduling, transport, Docker execution, launcher supervision and fleet control.
 
+For node and controller updates, follow the [no-drain replacement procedure](docs/REPLACEMENT.md).
+
 - `scripts/`: swarm node runtime, launcher, enrollment, Docker workers and deployment tools.
 - `docker_utils/`: Docker image resolution, streaming and container management (`lan-docker`).
 - `swarm-control/`: controller, dashboard and Android client.

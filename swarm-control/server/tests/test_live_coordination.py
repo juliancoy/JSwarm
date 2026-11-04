@@ -126,7 +126,7 @@ class LiveCoordinationTests(unittest.TestCase):
             return (('a'*40+'\n') if operation=='rev-parse' else 'https://github.com/example/repo.git\n' if operation=='remote' else '').encode()
         with patch('snapshot_staging.subprocess.check_output',side_effect=git):
             refs=snapshot('/checkout')
-        self.assertEqual(set(refs),{'.','OrgPortal','PIdP','CodeCollective'})
+        self.assertEqual(set(refs),{'.','JSwarm','GenomeHarbor','OrgPortal','PIdP','CodeCollective','BmoreMedTech'})
         self.assertTrue(all(c[3] in ('rev-parse','remote','ls-tree') for c in calls))
 
     def test_matching_prepared_checkout_is_consumed_without_touching_an_active_checkout(self):

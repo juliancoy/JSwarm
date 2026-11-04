@@ -4,10 +4,11 @@ import sqlite3
 from pathlib import Path
 
 
-def test_sampler_preserves_start_and_separates_attempts(tmp_path):
+def test_sampler_preserves_start_and_separates_attempts(tmp_path,monkeypatch):
     source=Path(__file__).parents[1]/'scripts/shard_runtime_sampler.py'
     spec=importlib.util.spec_from_file_location('shard_runtime_sampler',source)
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    monkeypatch.setattr('shard_cpu_accounting.collect',lambda reports:[])
     module.ROOT=tmp_path/'reports';module.DB=tmp_path/'stats.sqlite'
     folder=module.ROOT/'generation/full';folder.mkdir(parents=True)
     path=folder/'SRR-one.json'

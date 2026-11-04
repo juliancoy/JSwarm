@@ -2451,7 +2451,7 @@ print(json.dumps(result))"""
     def host_nvidia_allocations(self):
         # The agent need not hold compute-device access to collect driver metadata.
         try:
-            result=subprocess.run(['docker','run','--rm','--pull=never','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--memory','96m','--memory-swap','96m','--cpus','0.25','--pids-limit','16','--label','org.lifetech.service=gpu-inventory','--gpus','all','--env','NVIDIA_DRIVER_CAPABILITIES=utility','organization-launcher:webrtc-1','nvidia-smi','--query-gpu=uuid,pci.bus_id,name,memory.total,memory.free,utilization.gpu,temperature.gpu','--format=csv,noheader,nounits'],capture_output=True,text=True,check=True,timeout=10)
+            result=subprocess.run(['docker','run','--rm','--pull=never','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--memory','96m','--memory-swap','96m','--cpus','0.25','--pids-limit','128','--label','org.lifetech.service=gpu-inventory','--gpus','all','--env','NVIDIA_DRIVER_CAPABILITIES=utility','organization-launcher:webrtc-1','nvidia-smi','--query-gpu=uuid,pci.bus_id,name,memory.total,memory.free,utilization.gpu,temperature.gpu','--format=csv,noheader,nounits'],capture_output=True,text=True,check=True,timeout=10)
             return nvidia_allocation_rows(result.stdout)
         except (OSError,ValueError,subprocess.SubprocessError):return []
 

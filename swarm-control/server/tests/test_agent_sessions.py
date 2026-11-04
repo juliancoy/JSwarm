@@ -1,11 +1,22 @@
 import hashlib
 from pathlib import Path
 import unittest
+import tempfile
 from unittest.mock import Mock,patch
 from agent_client import AgentSessions
 
 
 class AgentReadinessTests(unittest.TestCase):
+    def setUp(self):
+        from agent_updates import LauncherUpdates
+        folder=tempfile.TemporaryDirectory();self.addCleanup(folder.cleanup)
+        root=Path(__file__).resolve().parents[3]
+        updater=LauncherUpdates(root,lambda:False,Mock())
+        artifact=updater.publish(folder.name)
+        publication=LauncherUpdates.published(artifact,lambda:False,Mock())
+        selected=patch('agent_updates.LauncherUpdates.desired',return_value=publication)
+        selected.start();self.addCleanup(selected.stop)
+
     def test_busy_compatible_agent_remains_eligible_but_missing_capabilities_do_not(self):
         root=Path(__file__).resolve().parents[3]
         required=['github-jobs','p2p-browser','cancel','events','layer-pull','registry-read','peer-layer-cache','mptcp-transport','file-queue','snapshot-stage','event-wait','shared-resources','controller-signature']
