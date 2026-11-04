@@ -527,6 +527,23 @@ def drm_memory_allocation(device):
     return result
 
 
+def nvidia_allocation_rows(output):
+    import csv
+    rows=[]
+    for fields in csv.reader(output.splitlines()):
+        values=[v.strip() for v in fields]
+        uuid=values.pop(0) if len(values)==7 else None
+        ident,name,total,free,util,temp=values
+        def number(value):
+            try:return float(value)
+            except ValueError:return None
+        rows.append({'uuid':uuid,'pci_id':ident,'vendor':'NVIDIA','name':name,'backend':'CUDA candidate',
+                     'memory_domain':'driver-reserved-vram','memory_source':'NVIDIA driver','gpu_allocation_added_to_host_ram':False,
+                     'memory_total_mib':number(total),'memory_free_mib':number(free),
+                     'utilization_percent':number(util),'temperature_c':number(temp)})
+    return rows
+
+
 def hardware_sample(root=Path('/sys/bus/pci/devices'), disk=Path.home()):
     """Read hardware without treating GPU detection as container validation."""
     usage=shutil.disk_usage(disk)
@@ -552,17 +569,7 @@ def hardware_sample(root=Path('/sys/bus/pci/devices'), disk=Path.home()):
         import csv
         try:
             output=subprocess.check_output(['nvidia-smi','--query-gpu=uuid,pci.bus_id,name,memory.total,memory.free,utilization.gpu,temperature.gpu','--format=csv,noheader,nounits'],text=True,stderr=subprocess.DEVNULL,timeout=2)
-            rows=[]
-            for fields in csv.reader(output.splitlines()):
-                values=[v.strip() for v in fields]
-                uuid=values.pop(0) if len(values)==7 else None
-                ident,name,total,free,util,temp=values
-                def number(value):
-                    try:return float(value)
-                    except ValueError:return None
-                rows.append({'uuid':uuid,'pci_id':ident,'vendor':'NVIDIA','name':name,'backend':'CUDA candidate','memory_domain':'driver-reserved-vram','memory_source':'NVIDIA driver','gpu_allocation_added_to_host_ram':False,
-                             'memory_total_mib':number(total),'memory_free_mib':number(free),
-                             'utilization_percent':number(util),'temperature_c':number(temp)})
+            rows=nvidia_allocation_rows(output)
             result['gpus']=[g for g in result['gpus'] if g['vendor']!='NVIDIA']+rows
         except (OSError,ValueError,subprocess.SubprocessError):pass
     return result
@@ -2419,13 +2426,34 @@ class Agent:
     def host_render_groups(self):
         if getattr(self,'gpu_render_groups',None) is not None and time.time()-self.gpu_render_groups_at<30:return self.gpu_render_groups
         # Only metadata: no character-device permission is granted to this helper.
-        code="import pathlib,json; print(json.dumps({p.name:p.stat().st_gid for p in pathlib.Path('/host-dri').glob('renderD*')}))"
+        code="""import pathlib,json,platform
+result={'groups':{p.name:p.stat().st_gid for p in pathlib.Path('/host-dri').glob('renderD*')},'icds':[]}
+for p in pathlib.Path('/host-share/vulkan/icd.d').glob('*.json'):
+ try:
+  library=json.loads(p.read_text()).get('ICD',{}).get('library_path')
+  if not isinstance(library,str):continue
+  if platform.machine()=='x86_64' and any(x in (str(p)+library).lower() for x in ('i386','i686')):continue
+  result['icds'].append({'path':'/usr/share/vulkan/icd.d/'+p.name,'library':library})
+ except (OSError,ValueError,TypeError):continue
+print(json.dumps(result))"""
         try:
-            result=subprocess.run(['docker','run','--rm','--pull=never','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--memory','64m','--memory-swap','64m','--cpus','0.1','--pids-limit','16','--label','org.lifetech.service=gpu-inventory','--mount','type=bind,src=/dev/dri,dst=/host-dri,readonly','organization-launcher:webrtc-1','python3','-c',code],capture_output=True,text=True,check=True,timeout=10)
-            groups=json.loads(result.stdout)
+            result=subprocess.run(['docker','run','--rm','--pull=never','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--memory','64m','--memory-swap','64m','--cpus','0.1','--pids-limit','16','--label','org.lifetech.service=gpu-inventory','--mount','type=bind,src=/dev/dri,dst=/host-dri,readonly','--mount','type=bind,src=/usr/share,dst=/host-share,readonly','organization-launcher:webrtc-1','python3','-c',code],capture_output=True,text=True,check=True,timeout=10)
+            metadata=json.loads(result.stdout)
+            groups=metadata.get('groups',metadata)
+            if 'icds' in metadata:
+                icds=metadata['icds']
+                if not isinstance(icds,list) or any(not isinstance(x,dict) or not isinstance(x.get('path'),str) or not isinstance(x.get('library'),str) for x in icds):raise ValueError('Invalid host Vulkan manifests')
+                self.gpu_host_icds=icds
             if not isinstance(groups,dict) or any(not re.fullmatch(r'renderD[0-9]+',k) or type(v) is not int or v<0 for k,v in groups.items()):raise ValueError('Invalid host device groups')
         except (OSError,ValueError,subprocess.SubprocessError):return {}
         self.gpu_render_groups=groups;self.gpu_render_groups_at=time.time();return groups
+
+    def host_nvidia_allocations(self):
+        # The agent need not hold compute-device access to collect driver metadata.
+        try:
+            result=subprocess.run(['docker','run','--rm','--pull=never','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--memory','96m','--memory-swap','96m','--cpus','0.25','--pids-limit','16','--label','org.lifetech.service=gpu-inventory','--gpus','all','--env','NVIDIA_DRIVER_CAPABILITIES=utility','organization-launcher:webrtc-1','nvidia-smi','--query-gpu=uuid,pci.bus_id,name,memory.total,memory.free,utilization.gpu,temperature.gpu','--format=csv,noheader,nounits'],capture_output=True,text=True,check=True,timeout=10)
+            return nvidia_allocation_rows(result.stdout)
+        except (OSError,ValueError,subprocess.SubprocessError):return []
 
     def gpu_resources(self):
         with self.__dict__.setdefault('gpu_inventory_lock',threading.RLock()):return self._gpu_resources()
@@ -2435,6 +2463,9 @@ class Agent:
         now=time.time()
         if getattr(self,'gpu_resource_cache',None) is not None and now-self.gpu_resource_sampled<1:return self.gpu_resource_cache
         inventory=hardware_sample(disk=self.root)
+        if any(row.get('vendor')=='NVIDIA' and (not row.get('uuid') or row.get('memory_free_mib') is None) for row in inventory['gpus']):
+            nvidia=self.host_nvidia_allocations()
+            if nvidia:inventory['gpus']=[r for r in inventory['gpus'] if r['vendor']!='NVIDIA']+nvidia
         machine=hashlib.sha256(Path('/etc/machine-id').read_bytes()).hexdigest()
         memory={line.split(':',1)[0]:int(line.split()[1]) for line in Path('/proc/meminfo').read_text().splitlines() if len(line.split())>=2 and line.split()[1].isdigit()}
         workers=gpu_worker_commitments()
@@ -2443,9 +2474,12 @@ class Agent:
             row=dict(raw)
             if row.get('render_device') and row['vendor']!='NVIDIA':
                 row['uuid']='DRM-'+hashlib.sha256((machine+row['pci_id']+row.get('vendor_id','')+row.get('device_id','')).encode()).hexdigest()[:32]
-                if row.get('render_gid') is None:
-                    if groups is None:groups=self.host_render_groups()
-                    row['render_gid']=groups.get(Path(row['render_device']).name)
+                if groups is None:groups=self.host_render_groups()
+                if row.get('render_gid') is None:row['render_gid']=groups.get(Path(row['render_device']).name)
+                if row['vendor']=='AMD':
+                    icds=getattr(self,'gpu_host_icds',None)
+                    row['vulkan_icds_known']=icds is not None
+                    row['icd_candidates']=[x['path'] for x in (icds or []) if 'radeon' in x['library'].lower()]
             row['allocation_known']=row.get('memory_total_mib') is not None and row.get('memory_free_mib') is not None
             row.update(workers['devices'].get(row.get('uuid'),{'active_workers':0,'private_commitment_mib':0,'exclusive_worker_present':False}))
             row['workers_known']=workers['known'];row['sampled_at']=now;rows.append(row)
@@ -2453,7 +2487,7 @@ class Agent:
             'host_memory':{'total_mib':memory.get('MemTotal',0)/1024,'available_mib':memory.get('MemAvailable',0)/1024,
                            'source':'kernel MemTotal/MemAvailable; GPU allocations are not added'},
             'selection_policy':'physical identity and measured allocation; workload qualification required separately'}
-        self.gpu_resource_sampled=now
+        self.gpu_resource_sampled=time.time()
         return self.gpu_resource_cache
 
     def hardware(self, info=None):

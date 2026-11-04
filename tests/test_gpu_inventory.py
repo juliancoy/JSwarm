@@ -34,6 +34,7 @@ def test_gpu_node_identity_changes_when_physical_model_changes(tmp_path,monkeypa
     row={'pci_id':'0000:04:00.0','vendor_id':'0x1002','device_id':'0x1636','vendor':'AMD','render_device':'/dev/dri/renderD128','render_gid':992,'memory_total_mib':8192,'memory_free_mib':8000}
     monkeypatch.setattr(agent,'hardware_sample',lambda **kw:{'gpus':[row]})
     monkeypatch.setattr(agent,'gpu_worker_commitments',lambda:{'known':True,'devices':{}})
+    a.host_render_groups=lambda:{}
     first=a.gpu_resources();assert first['gpus'][0]['allocation_known']
     assert 'host_memory' in first and first['host_memory']['total_mib']>0
     row['device_id']='0x9999';a.gpu_resource_cache=None
@@ -69,3 +70,10 @@ def test_node_worker_inventory_recognizes_legacy_exclusive_jobs(monkeypatch):
     rows=agent.gpu_worker_commitments()['devices']
     assert rows['GPU-one']['exclusive_worker_present']
     assert not rows['GPU-two']['exclusive_worker_present'] and rows['GPU-two']['private_commitment_mib']==512
+
+
+
+def test_nvidia_inventory_parses_driver_uuid_and_allocated_vram():
+    row=agent.nvidia_allocation_rows('GPU-11111111-1111-1111-1111-111111111111, 00000000:04:00.0, RTX, 12288, 8192, 10, 50')[0]
+    assert row['uuid'].startswith('GPU-') and row['memory_total_mib']==12288
+    assert row['memory_free_mib']==8192 and row['gpu_allocation_added_to_host_ram'] is False

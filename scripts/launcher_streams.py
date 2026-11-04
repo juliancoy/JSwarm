@@ -142,6 +142,12 @@ def resolve_gpu_allocation(gpu,inventory,machine):
     if gpu.get('render_device'):
         if row.get('pci_id')!=gpu['pci_id'] or row.get('vendor')!='AMD' or row.get('memory_domain')!='driver-reserved-vram':raise RuntimeError('Qualified AMD device or memory domain changed')
         if row.get('render_device') is None or type(row.get('render_gid')) is not int:raise RuntimeError('Node cannot attest the render device permissions')
+        if row.get('vulkan_icds_known') is False:raise RuntimeError('Node cannot attest Vulkan driver manifests')
+        icds=row.get('icd_candidates')
+        if icds is not None:
+            if gpu.get('icd') in icds:result['icd']=gpu['icd']
+            elif len(icds)==1:result['icd']=icds[0]
+            else:raise RuntimeError('Physical AMD Vulkan driver is absent or ambiguous')
         result.update(render_device=row['render_device'],render_gid=row['render_gid'])
     return result
 
