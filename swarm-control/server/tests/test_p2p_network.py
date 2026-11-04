@@ -8,6 +8,14 @@ from distributed_images import required_images
 
 
 class NetworkEvidenceTests(unittest.TestCase):
+    def test_sources_use_published_owner_commit_in_split_workspace(self):
+        from unittest.mock import patch
+        network=NetworkP2P([], 'run',source_commit='a'*40,source_repositories={'JSwarm':{'commit':'b'*40}})
+        with patch('p2p_network.subprocess.check_output',return_value=b'reviewed') as read:
+            self.assertEqual(network.source('peer-worker/public/peer.js'),b'reviewed')
+        self.assertTrue(read.call_args.args[0][2].endswith('/JSwarm'))
+        self.assertEqual(read.call_args.args[0][-1],'b'*40+':peer-worker/public/peer.js')
+
     def test_cleanup_removes_owned_containers_concurrently_even_if_one_fails(self):
         network=NetworkP2P([], 'run')
         barrier=threading.Barrier(2)

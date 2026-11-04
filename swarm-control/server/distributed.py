@@ -533,7 +533,8 @@ class DistributedTests:
                 if not parallel:host['status']='running'
             self.save()
         result=NetworkP2P(hosts,run['id'],emit=self.update,
-                          stopped=lambda:bool(run.get('stop_requested')),source_commit=run['repositories']['.']['commit'],images=images).run()
+                          stopped=lambda:bool(run.get('stop_requested')),source_commit=run['repositories']['.']['commit'],images=images,
+                          source_repositories=run['repositories']).run()
         with self.lock:
             run['p2p']=result
             for host in hosts:

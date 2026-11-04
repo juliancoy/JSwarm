@@ -117,17 +117,22 @@ class Browser:
 
 
 class NetworkP2P:
-    def __init__(self,hosts,ident,emit=lambda *args:None,stopped=lambda:False,source_commit=None,images=None):
+    def __init__(self,hosts,ident,emit=lambda *args:None,stopped=lambda:False,source_commit=None,images=None,source_repositories=None):
         self.hosts=hosts;self.ident=ident;self.emit=emit;self.stopped=stopped
         self.images=images
+        self.source_repositories=source_repositories or {}
         self.source_commit=source_commit;self.resources=[];self.report={'status':'running','coverage':{'direct':'pending','cross_nat':'not_measured','turn':'unavailable'},'checks':[],'participants':[]}
     def check_stop(self):
         if self.stopped():raise RuntimeError('P2P run stopped')
     def log(self,host,line):self.emit(host,{'kind':'log','suite':'p2p','phase':'network','line':line})
     def source(self,name):
         commit=self.source_commit
+        repo=ROOT
+        if 'JSwarm' in self.source_repositories and name.startswith(('peer-worker/','swarm-control/','scripts/')):
+            repo=ROOT/'JSwarm'
+            commit=self.source_repositories['JSwarm']['commit']
         if not commit or not re.fullmatch('[a-f0-9]{40}',commit):raise RuntimeError('P2P source requires a published Organization commit')
-        return subprocess.check_output(['git','-C',str(ROOT),'show',commit+':'+name],timeout=30)
+        return subprocess.check_output(['git','-C',str(repo),'show',commit+':'+name],timeout=30)
     def attest(self,host):
         from agent_client import AgentClient
         for attempt in range(3):
