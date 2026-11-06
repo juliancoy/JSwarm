@@ -88,13 +88,13 @@ def test_docker_mmap_checks_pages_readonly_and_rejects_bad_checksum(tmp_path):
 
 
 def test_public_source_is_verified_through_host_bind_not_owner_namespace(tmp_path):
-    import hashlib,subprocess
+    import hashlib,os,subprocess
     result=subprocess.run(['docker','image','inspect','python:3.12-bookworm','--format','{{.Id}}'],capture_output=True,text=True,timeout=20)
     if result.returncode:pytest.skip('Local Python fixture image unavailable')
-    root=tmp_path/'export';root.mkdir(mode=0o755);blob=root/'index'
+    root=tmp_path/'export';root.mkdir(mode=0o755);root.chmod(0o755);blob=root/'index'
     payload=b'public reference fixture\n'*512;blob.write_bytes(payload);blob.chmod(0o444)
     files={'index':{'path':'/host-only/not-mounted/index','bytes':len(payload),'sha256':hashlib.sha256(payload).hexdigest()}}
-    argv=['docker','run','--rm','--network','none','--read-only','--cap-drop','ALL',
+    argv=['docker','run','--rm','--network','none','--read-only','--cap-drop','ALL','--user',str(os.getuid())+':'+str(os.getgid()),
           '--memory','128m','--memory-swap','128m','--mount','type=bind,src='+str(root)+',dst=/export,readonly',
           result.stdout.strip(),'python3','-c',pager.PUBLIC_FILES,json.dumps(files)]
     proof=subprocess.run([*argv,'verify','{}'],capture_output=True,text=True,timeout=30)
