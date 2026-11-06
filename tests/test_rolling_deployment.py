@@ -174,3 +174,21 @@ def test_normal_deployment_provisions_pager_from_published_snapshot(monkeypatch,
     provision.assert_called_once_with({'sha256':'published'},['first','second'])
     report=json.loads((tmp_path/'.local/state/swarm-control/input-deployment.json').read_text())
     assert all(r['paged_cache']['ready'] for r in report['nodes'])
+
+
+def test_stream_deploy_can_skip_offline_preflight_before_replacement(monkeypatch,tmp_path):
+    from scripts import deploy_stream_work as stream
+    from types import SimpleNamespace
+    updater,clients=setup_deployment(monkeypatch,tmp_path)
+    monkeypatch.setattr(stream,'CONFIG',deploy.CONFIG)
+    monkeypatch.setattr(stream,'LauncherUpdates',SimpleNamespace(desired=lambda *a:updater))
+    def client(host):
+        value=Mock()
+        if host['host']=='first':value.call.side_effect=OSError('Offline')
+        else:value.call.side_effect=[{'node':'second','machine':'machine','ready':True,'source_revision':'old','worker_policy':{'accepting_jobs':True}}, {'version':'launcher-stream-work.v1'}]
+        clients.append(value);return value
+    monkeypatch.setattr(stream,'AgentClient',client)
+    updater.ensure.return_value={'source_revision':'new','ready':True,'worker_policy':{'accepting_jobs':True}}
+    rows=stream.deploy([{'host':'first','machine':'machine'},{'host':'second','machine':'machine'}],progress=lambda _:None)
+    assert [row['status'] for row in rows]==['failed','updated']
+    assert updater.ensure.call_count==1 and updater.ensure.call_args.args[0]['host']=='second'

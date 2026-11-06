@@ -1,6 +1,6 @@
 """Deploy streaming work through the standard atomic launcher update scheme.
 
-Drain and verify one node at a time using the existing launcher deployer.
+Replace and verify one node at a time using the existing launcher deployer.
 Existing Docker workers are preserved.
 """
 import argparse
@@ -26,11 +26,12 @@ def _deploy(hosts,progress):
         if host['host'] not in config['peers']:continue
         host={**host,'lan_address':config['peers'][host['host']]}
         host['agent_endpoint']='http://'+host['lan_address']+':8790'
-        client=AgentClient(host)
+        client=AgentClient(host);replacement_started=False
         try:
             status=client.call('status',timeout=8)
             if status['machine']!=host['machine']:raise RuntimeError('Enrolled machine identity changed')
             policy=status['worker_policy']
+            replacement_started=True
             value=updater.ensure(host,client,status,drain=True,wait_timeout=3600)
             if value.get('source_revision')!=updater.revision or not value.get('ready'):raise RuntimeError('Desired release is not ready')
             if policy.get('mode')!='draining' and not policy['accepting_jobs'] and value['worker_policy']['accepting_jobs']:raise RuntimeError('Previously paused worker unexpectedly accepting jobs')
@@ -40,7 +41,9 @@ def _deploy(hosts,progress):
         except Exception as error:row={'host':host['host'],'status':'failed','error':str(error)}
         finally:client.close()
         results.append(row);progress(json.dumps(row))
-        # One offline node must not block the remaining enrolled fleet.
+        # An offline preflight can be skipped. Once replacement starts, verify
+        # it before touching another node; an uncertain update is not offline.
+        if row['status']=='failed' and replacement_started:break
     return results
 
 
