@@ -219,7 +219,8 @@ class LauncherUpdates:
     @classmethod
     def published(cls,path,stopped,progress):
         """Load a complete immutable release, never reread mutable workspace files."""
-        value=json.loads(Path(path).read_text())
+        path=Path(path).resolve(strict=True)
+        value=json.loads(path.read_text())
         if value.get('schema')!='jswarm-agent-release.v1':raise ValueError('Unsupported published release schema')
         files=value['files'];expected=set(FILES)|{'launcher_update.py'}
         if set(files)!=expected:raise ValueError('Incomplete published agent release')
@@ -230,6 +231,8 @@ class LauncherUpdates:
         for name,source in {**files,'launcher_peer_supervisor.py':supervisor}.items():compile(source,name,'exec')
         instance=cls.__new__(cls);instance.stopped=stopped;instance.progress=progress
         instance.files=files;instance.revision=revision;instance.supervisor_source=supervisor;instance.capabilities=set()
+        instance.publication_folder=path.parent
+        instance.publication_artifact=path.name
         from deployment_components import validate
         instance.generation=value.get('generation',0)
         if type(instance.generation) is not int or instance.generation<0:raise ValueError('Invalid deployment generation')
@@ -279,6 +282,7 @@ class LauncherUpdates:
                 self.generation=prior.generation
                 self.source_versions=versions
                 self.artifact_versions=artifacts
+                self.publication_folder=folder;self.publication_artifact=current.name
                 return current
             if not rollback and self.revision in versions and versions[self.revision]<versions[prior.revision]:
                 raise RuntimeError('Older source version requires explicit rollback')
@@ -311,6 +315,7 @@ class LauncherUpdates:
         self.generation=generation
         self.source_versions=versions
         self.artifact_versions=artifacts
+        self.publication_folder=folder;self.publication_artifact=path.name
         return path
 
     @classmethod
@@ -346,7 +351,22 @@ class LauncherUpdates:
         if host.get('machine') and host['machine']!=status['machine']:raise ValueError('Update machine identity changed')
         return status
 
+    @contextmanager
+    def _deployment_guard(self):
+        folder=getattr(self,'publication_folder',None)
+        if folder is None:
+            # Source builders are used by isolated checks. Operational callers
+            # load their immutable publication through desired()/published().
+            yield
+            return
+        with deployment_lock(folder=folder.parent,operation='node rollout'):
+            check_publication(folder,self.publication_artifact)
+            yield
+
     def stage(self,host,status):
+        with self._deployment_guard():return self._stage(host,status)
+
+    def _stage(self,host,status):
         if self.stopped():raise InterruptedError('Launcher update stopped')
         from agent_client import CONFIG
         public_key=json.loads(CONFIG.read_text())['controller_public_key']
@@ -396,6 +416,10 @@ pending=base/'cancel.tmp';pending.unlink(missing_ok=True);pending.symlink_to(pre
         if result.returncode:raise RuntimeError('Cannot safely cancel staged node update')
 
     def ensure(self,host,client,status,allow_compatible=False,drain=False,wait_timeout=240):
+        with self._deployment_guard():
+            return self._ensure(host,client,status,allow_compatible=allow_compatible,drain=drain,wait_timeout=wait_timeout)
+
+    def _ensure(self,host,client,status,allow_compatible=False,drain=False,wait_timeout=240):
         if status.get('source_revision')==self.revision and status.get('ready'):return status
         removed=set(status.get('capabilities',[]))-self.capabilities
         if removed:

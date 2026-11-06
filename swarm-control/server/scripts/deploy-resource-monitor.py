@@ -65,7 +65,7 @@ def nodes():
     archive=runpy.run_path(str(package/'bundle.py'))['encoded_runtime'](package)
     digest=hashlib.sha256(base64.b64decode(archive)).hexdigest()
     config=json.loads(CONFIG.read_text())
-    updater=LauncherUpdates(ROOT,lambda:False,lambda *args:None)
+    updater=LauncherUpdates.desired(lambda:False,lambda *args:None)
     results=[]
     for name,address in config['peers'].items():
         host={'host':name,'local':name==config['name'],'lan_address':address,'agent_endpoint':'http://'+address+':8790'}

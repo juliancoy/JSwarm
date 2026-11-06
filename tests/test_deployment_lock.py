@@ -120,3 +120,34 @@ def test_interrupted_publication_does_not_prevent_retry_or_reuse_a_generation(tm
     assert (tmp_path/'desired').resolve()==first
     recovered=source.publish(tmp_path)
     assert json.loads(recovered.read_text())['generation']==3
+
+
+def test_stale_pinned_node_updater_cannot_start_a_downgrade(tmp_path,source):
+    first=source.publish(tmp_path)
+    pinned=updates.LauncherUpdates.published(first,lambda:False,Mock())
+    source.supervisor_source+='\n# advance while another client retains the old updater\n'
+    source.publish(tmp_path)
+    pinned._stage=Mock()
+    with pytest.raises(RuntimeError,match='advanced during preparation'):
+        pinned.stage({}, {})
+    with pytest.raises(RuntimeError,match='advanced during preparation'):
+        pinned.ensure({},Mock(),{})
+    pinned._stage.assert_not_called()
+
+
+def test_loading_resolves_the_publication_once_even_if_desired_advances(tmp_path,source,monkeypatch):
+    first=source.publish(tmp_path)
+    source.supervisor_source+='\n# newer desired envelope\n'
+    second=source.publish(tmp_path)
+    desired=tmp_path/'desired';desired.unlink();desired.symlink_to(first.name)
+    read=Path.read_text
+    def advancing_read(path,*args,**kwargs):
+        value=read(path,*args,**kwargs)
+        if path in (first,desired):
+            pending=tmp_path/'switch.tmp';pending.symlink_to(second.name);pending.replace(desired)
+        return value
+    with monkeypatch.context() as patch:
+        patch.setattr(Path,'read_text',advancing_read)
+        pinned=updates.LauncherUpdates.published(desired,lambda:False,Mock())
+    assert pinned.publication_artifact==first.name
+    with pytest.raises(RuntimeError,match='advanced during preparation'):pinned.stage({}, {})
