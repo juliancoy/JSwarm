@@ -4,6 +4,13 @@ Swarm discovery, scheduling, transport, Docker execution, launcher supervision a
 
 For node and controller updates, follow the [no-drain replacement procedure](docs/REPLACEMENT.md).
 
+The task and pipeline APIs share background observation refreshes across clients.
+Responses reuse compact JSON and gzip encodings; request threads do not wait for
+queue scans or node polling. `sampled_at` and `X-Observation-Age` describe the
+retained observation, including during refresh. An initial cold snapshot returns
+503 with `Retry-After: 1`; a failed refresh retains the previous snapshot with a
+Warning header. Machine controls continue to use the current node API directly.
+
 ## Worker storage policy
 
 RAM-only operation is a node container setting. Set

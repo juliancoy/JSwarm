@@ -1,26 +1,25 @@
 """Task observations and fixed selected-node controls; no scheduler restart required."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
-import hashlib
-import threading
 import time
 from urllib.parse import urlsplit, parse_qs
 from task_events import EventStore
 from task_progress import snapshot
+from observation_feed import ObservationFeed, SnapshotWarming
 
-class TaskFeed:
+class TaskFeed(ObservationFeed):
     def __init__(self):
-        self.lock=threading.Lock();self.sample=None;self.updated=0;self.revision=0;self.digest=None
-    def get(self):
-        with self.lock:
-            if time.monotonic()-self.updated>=2 or self.sample is None:
-                sample=snapshot()
-                digest=hashlib.sha256(json.dumps({k:v for k,v in sample.items() if k!='sampled_at'},sort_keys=True).encode()).hexdigest()
-                if digest!=self.digest:self.revision+=1;self.digest=digest
-                self.sample=sample;self.updated=time.monotonic()
-            return self.revision,self.sample
+        super().__init__(lambda: snapshot(), stable_revision=True)
 
 feed=TaskFeed()
+
+
+def pipeline_snapshot():
+    from pipeline_nodes import snapshot
+    return snapshot()
+
+
+pipeline_feed=ObservationFeed(pipeline_snapshot)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -62,15 +61,25 @@ class Handler(BaseHTTPRequestHandler):
         if path.path not in ('/api/tasks', '/api/tasks/events', '/api/tasks/pipeline', '/api/tasks/machine'):
             self.send_error(404); return
         try:
+            if path.path in ('/api/tasks', '/api/tasks/pipeline'):
+                source = pipeline_feed if path.path.endswith('/pipeline') else feed
+                body, compressed, observed, failed = source.response(self.headers.get('Accept-Encoding', ''))
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Cache-Control', 'no-store')
+                self.send_header('Vary', 'Accept-Encoding')
+                if compressed:self.send_header('Content-Encoding', 'gzip')
+                if observed is not None:self.send_header('X-Observation-Age', str(max(0, round(time.time()-observed, 3))))
+                if failed:self.send_header('Warning', '199 - "Observation refresh failed; retained snapshot"')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers();self.wfile.write(body)
+                return
             if path.path == '/api/tasks/machine':
                 from task_machines import snapshot as machine_snapshot
                 query=parse_qs(path.query)
                 try:data=machine_snapshot(query.get('host',[''])[0])
                 except ValueError:
                     self.send_error(404,'Unknown enrolled machine');return
-            elif path.path == '/api/tasks/pipeline':
-                from pipeline_nodes import snapshot as pipeline_snapshot
-                data=pipeline_snapshot()
             elif path.path == '/api/tasks/events':
                 query=parse_qs(path.query)
                 data=EventStore().history(query.get('run',[None])[0],query.get('after',[0])[0],100)
@@ -79,18 +88,23 @@ class Handler(BaseHTTPRequestHandler):
                     value=event.pop('payload',{})
                     event['status']=value.get('status') if isinstance(value.get('status'),str) else None
                     event['step']=value.get('suite') if isinstance(value.get('suite'),str) else None
-            else:
-                _,data=feed.get()
             body = json.dumps(data).encode()
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Cache-Control', 'no-store')
             self.send_header('Content-Length', str(len(body)))
             self.end_headers(); self.wfile.write(body)
+        except SnapshotWarming:
+            self.send_response(503);self.send_header('Retry-After', '1');self.end_headers()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
         except Exception:
             self.send_error(503, 'Task measurements unavailable')
 
     def stream(self):
+        try:feed.get()
+        except SnapshotWarming:
+            self.send_response(503);self.send_header('Retry-After','1');self.end_headers();return
         self.send_response(200)
         self.send_header('Content-Type','text/event-stream')
         self.send_header('Cache-Control','no-cache, no-transform')
@@ -108,6 +122,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == '__main__':
+    feed.refresh();pipeline_feed.refresh()
     import threading
     from task_event_collector import run
     threading.Thread(target=run,daemon=True).start()
