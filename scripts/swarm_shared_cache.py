@@ -102,7 +102,7 @@ def remove_unused(host,cache):
     return True
 
 
-def evict_unused(host,keep=None):
+def evict_unused(host,keep=None,*,keys=None):
     """Reclaim only named RAM caches with no attached consumer containers."""
     keep={keep} if isinstance(keep,str) else set(keep or ())
     ids=command(host,['docker','ps','-aq','--filter','label='+OWNER]).split()
@@ -110,6 +110,7 @@ def evict_unused(host,keep=None):
     rows=json.loads(command(host,['docker','inspect',*ids]));removed=0
     for row in rows:
         key=(row['Config'].get('Labels') or {}).get(OWNER,'')
+        if keys is not None and key not in keys:continue
         if not re.fullmatch(r'[0-9a-f]{64}',key) or key in keep:continue
         cache={'key':key,'container':'swarm-job-'+key[:32],'volume':'swarm-cache-'+key[:32]}
         if row.get('Name','').lstrip('/')!=cache['container']:continue

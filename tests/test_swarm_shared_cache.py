@@ -33,17 +33,20 @@ def admitted(monkeypatch,tmp_path):
         def close(self):pass
     monkeypatch.setattr(cache,'AgentClient',Client)
     monkeypatch.setattr(cache.Path,'home',lambda:tmp_path)
-    original_command=cache.command
+    original_command=cache.command;test_label='org.lifetech.test-run='+uuid.uuid4().hex
     def isolated_command(host,args,**kwargs):
         # Real Docker checks must never enumerate production cache owners.
         if args[:3]==['docker','ps','-aq']:
-            args=[*args,'--filter','ancestor='+IMAGE]
+            args=[*args,'--filter','label='+test_label]
+        if args[:2]==['docker','run']:
+            args=[*args[:2],'--label',test_label,*args[2:]]
         return original_command(host,args,**kwargs)
     monkeypatch.setattr(cache,'command',isolated_command)
     return calls
 
 
 def docker(*args,**kwargs):
+    kwargs.setdefault('timeout',60)
     return subprocess.run(['docker',*args],capture_output=True,**kwargs)
 
 
