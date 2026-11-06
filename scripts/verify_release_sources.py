@@ -37,7 +37,8 @@ def check(workspace,tests=False):
 import hashlib,json
 from pathlib import Path
 from agent_updates import LauncherUpdates
-from scripts import genomics_followup_controller,genomics_followup_gpu_routing,genomics_region_staging,wgs_preparation_queue,wgs_bounded_finalize,wgs_finalize,shard_runtime_sampler
+from scripts import genomics_followup_controller,genomics_followup_gpu_routing,genomics_region_staging,wgs_preparation_queue,wgs_bounded_finalize,wgs_finalize
+import runpy;runpy.run_path('JSwarm/scripts/shard_runtime_sampler.py')
 u=LauncherUpdates(Path('JSwarm'),lambda:False,lambda *args:None)
 print(json.dumps({'agent_revision':u.revision,'component_hashes':{k:v['sha256'] for k,v in u.components.items()}}))
 """

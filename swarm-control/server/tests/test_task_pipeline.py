@@ -378,4 +378,3 @@ def test_completed_regional_preparation_uses_its_retained_extraction_attempt(tmp
     assert item['execution']['memory_peak_bytes']==456
     with sqlite3.connect(tmp_path/'q') as db:db.execute('UPDATE submissions SET request=?',(json.dumps({'directory':'/different-attempt','source_image':'tools'}),))
     assert snapshot(tmp_path/'q',tmp_path,tmp_path/'runtime')['items'][0]['runtime']['started'] is None
-

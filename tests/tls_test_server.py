@@ -21,4 +21,3 @@ def tls_server(tmp_path_factory):
     peer={'address':'127.0.0.1','certificate_sha256':hashlib.sha256(ssl.PEM_cert_to_DER_cert((root/'server.crt').read_text())).hexdigest(),'machine':'source'}
     yield root,server,peer
     server.shutdown();server.server_close();thread.join()
-

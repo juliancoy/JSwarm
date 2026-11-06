@@ -151,4 +151,3 @@ def test_regional_extraction_telemetry_is_sampled_and_retained_after_completion(
     with sqlite3.connect(module.DB) as db:value=json.loads(db.execute('SELECT report FROM observations').fetchone()[0])
     assert value['elapsed_seconds']==60 and value['cpu_core_seconds']==9 and value['memory_peak_bytes']==456
     assert 'command' not in value
-

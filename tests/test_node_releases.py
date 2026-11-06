@@ -75,20 +75,25 @@ def test_pager_component_sources_are_pinned_and_tampering_is_rejected(tmp_path):
     with pytest.raises(ValueError,match='component checksum'):LauncherUpdates.published(corrupt,lambda:False,Mock())
 
 
-def test_source_snapshot_freezes_modules_without_copying_ignored_runtime_data(tmp_path):
+def test_source_snapshot_uses_commits_without_dirty_or_untracked_runtime_data(tmp_path):
     import subprocess
     from scripts.deploy_swarm_inputs import freeze_source
-    root=tmp_path/'source';project=root/'JSwarm';(project/'scripts').mkdir(parents=True)
-    subprocess.run(['git','init','-q',str(project)],check=True)
-    (project/'.gitignore').write_text('runtime-data/\n')
-    (project/'scripts/module.py').write_text('VALUE=1\n')
-    (project/'runtime-data').mkdir();(project/'runtime-data/private').write_text('excluded')
-    (root/'scripts').mkdir();(root/'scripts/module.py').symlink_to('../JSwarm/scripts/module.py')
-    (root/'swarm-control').symlink_to('JSwarm/swarm-control')
+    root=tmp_path/'Organization';project=root/'JSwarm'
+    for repo in (root,project,root/'GenomeHarbor'):
+        repo.mkdir(parents=True,exist_ok=True)
+        subprocess.run(['git','init','-q',str(repo)],check=True)
+        subprocess.run(['git','-C',str(repo),'config','user.name','Test'],check=True)
+        subprocess.run(['git','-C',str(repo),'config','user.email','test@localhost'],check=True)
+        (repo/'README').write_text('committed source')
+        subprocess.run(['git','-C',str(repo),'add','README'],check=True)
+        subprocess.run(['git','-C',str(repo),'commit','-qm','source'],check=True)
+    (project/'README').write_text('dirty edit')
+    (project/'runtime-private').write_text('excluded')
+    (root/'runtime-private').write_text('excluded')
     target=tmp_path/'snapshot';freeze_source(root,target)
-    (project/'scripts/module.py').write_text('VALUE=2\n')
-    assert (target/'scripts/module.py').read_text()=='VALUE=1\n'
-    assert not (target/'JSwarm/runtime-data').exists()
+    assert (target/'JSwarm/README').read_text()=='committed source'
+    assert not (target/'JSwarm/runtime-private').exists()
+    assert not (target/'runtime-private').exists()
 
 
 def test_local_update_bundles_stream_runtime_in_installed_agent(tmp_path,monkeypatch):

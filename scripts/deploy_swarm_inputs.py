@@ -63,27 +63,21 @@ def sweep(nodes=None,wait_timeout=3600,published=None):
 
 
 def freeze_source(root,target):
-    """Copy versioned source and new source files, excluding ignored runtime data."""
-    import shutil,subprocess
-    root=Path(root);target=Path(target);target.mkdir(parents=True,exist_ok=True)
-    if root.name=='JSwarm' and (root.parent/'GenomeHarbor').is_dir():root=root.parent
-    def copy(source,destination):
-        if not source.exists() and not source.is_symlink():return
-        destination.parent.mkdir(parents=True,exist_ok=True)
-        if source.is_symlink():destination.symlink_to(os.readlink(source))
-        elif source.is_file():shutil.copy2(source,destination)
-    projects=[name for name in ('JSwarm','GenomeHarbor') if (root/name).is_dir()]
-    for name in projects:
-        project=root/name
-        paths=subprocess.check_output(['git','-C',str(project),'ls-files','--cached','--others','--exclude-standard','-z']).decode().split('\0')
-        for path in dict.fromkeys(paths):
-            if path:copy(project/path,target/name/path)
-    if not projects:raise RuntimeError('Expected the enrolled workspace source layout')
-    for name in ('run.py','swarm-control','ramtop','docker_utils','pytest.ini','pyproject.toml'):
-        copy(root/name,target/name)
-    (target/'scripts').mkdir(exist_ok=True)
-    for path in (root/'scripts').iterdir():
-        if path.is_symlink() or path.is_file():copy(path,target/'scripts'/path.name)
+    """Export committed adjacent repositories; exclude dirty and untracked data."""
+    import subprocess,tarfile,tempfile
+    root=Path(root).resolve();target=Path(target);target.mkdir(parents=True,exist_ok=True)
+    if root.name=='JSwarm':root=root.parent
+    if not all((root/name).is_dir() for name in ('JSwarm','GenomeHarbor')):
+        raise RuntimeError('Expected the enrolled workspace source layout')
+    with tempfile.TemporaryDirectory(prefix='swarm-git-archives-') as temporary:
+        for name in ('Organization','JSwarm','GenomeHarbor'):
+            project=root if name=='Organization' else root/name
+            destination=target if name=='Organization' else target/name
+            destination.mkdir(exist_ok=True)
+            archive=Path(temporary)/(name+'.tar')
+            subprocess.run(['git','-C',str(project),'archive','--format=tar','--output='+str(archive),'HEAD'],check=True)
+            # Trusted local git archives preserve the versioned sibling aliases.
+            with tarfile.open(archive) as bundle:bundle.extractall(destination,filter='fully_trusted')
 
 
 def main():
