@@ -265,13 +265,20 @@ def ensure_image(host,image):
     return actual
 
 
+SYSTEM_DOCKER_PROBE=r'''import json,subprocess
+info={}
+try:
+ r=subprocess.run(['docker','--host','unix:///var/run/docker.sock','info','--format','{{json .}}'],capture_output=True,text=True,timeout=20)
+ if r.returncode==0:info=json.loads(r.stdout or '{}') or {}
+except subprocess.TimeoutExpired:pass
+print(json.dumps({'available':bool(info.get('ID') and info.get('ServerVersion')),
+ 'rootless':any('rootless' in s for s in (info.get('SecurityOptions') or []))}))
+'''
+
+
 def require_system_docker(host):
     """Kernel mounts require rootful Docker, which rootless owners may not expose."""
-    code="""import json,subprocess
-r=subprocess.run(['docker','--host','unix:///var/run/docker.sock','info','--format','{{json .SecurityOptions}}'],capture_output=True,text=True,timeout=20)
-print(json.dumps({'available':r.returncode==0,'rootless':any('rootless' in s for s in json.loads(r.stdout or '[]')) if r.returncode==0 else False}))
-"""
-    result=subprocess.run(host_command(host,code),capture_output=True,text=True,timeout=30)
+    result=subprocess.run(host_command(host,SYSTEM_DOCKER_PROBE),capture_output=True,text=True,timeout=30)
     if result.returncode:raise RuntimeError('Cannot inspect the public pager Docker prerequisite through the node API')
     engine=json.loads(result.stdout)
     if not engine['available'] or engine['rootless']:

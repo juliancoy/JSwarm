@@ -67,6 +67,26 @@ def test_pager_checks_kernel_mount_prerequisite_before_image_transfer(monkeypatc
         pager.deploy_node({'host':'target'},plan())
 
 
+@pytest.mark.parametrize('info,expected',[
+    (None,{'available':False,'rootless':False}),
+    ({'SecurityOptions':None}, {'available':False,'rootless':False}),
+    ({'ID':'host','ServerVersion':'29','SecurityOptions':None}, {'available':True,'rootless':False}),
+    ({'ID':'host','ServerVersion':'29','SecurityOptions':['name=rootless']}, {'available':True,'rootless':True}),
+])
+def test_system_docker_probe_requires_server_identity_and_handles_null_security(monkeypatch,capsys,info,expected):
+    from types import SimpleNamespace
+    monkeypatch.setattr(pager.subprocess,'run',lambda *args,**kwargs:SimpleNamespace(returncode=0,stdout=json.dumps(info)))
+    exec(pager.SYSTEM_DOCKER_PROBE,{})
+    assert json.loads(capsys.readouterr().out)==expected
+
+
+def test_system_docker_probe_treats_timeout_as_unavailable(monkeypatch,capsys):
+    def timeout(*args,**kwargs):raise pager.subprocess.TimeoutExpired('docker info',20)
+    monkeypatch.setattr(pager.subprocess,'run',timeout)
+    exec(pager.SYSTEM_DOCKER_PROBE,{})
+    assert json.loads(capsys.readouterr().out)=={'available':False,'rootless':False}
+
+
 
 def test_source_guard_refuses_changed_source_before_starting_export(tmp_path,monkeypatch):
     import subprocess
