@@ -151,9 +151,9 @@ def reconcile_node_web_ports(address):
     if not ipaddress.ip_address(address).is_private or ipaddress.ip_address(address).is_loopback:
         raise ValueError('Expected an enrolled LAN address')
     definitions={
-        'ip':f'chain prerouting {{ type nat hook prerouting priority dstnat; policy accept; ip daddr {address} tcp dport 80 dnat to {address}:8790; }}\n'
-             f'chain output {{ type nat hook output priority dstnat; policy accept; ip daddr 127.0.0.1 tcp dport 80 redirect to :8791; ip daddr {address} tcp dport 80 dnat to {address}:8790; }}',
-        'ip6':'chain output { type nat hook output priority dstnat; policy accept; ip6 daddr ::1 tcp dport 80 redirect to :8791; }'}
+        'ip':f'chain prerouting {{ type nat hook prerouting priority -100; policy accept; ip daddr {address} tcp dport 80 dnat to {address}:8790; }}\n'
+             f'chain output {{ type nat hook output priority -100; policy accept; ip daddr 127.0.0.1 tcp dport 80 redirect to :8791; ip daddr {address} tcp dport 80 dnat to {address}:8790; }}',
+        'ip6':'chain output { type nat hook output priority -100; policy accept; ip6 daddr ::1 tcp dport 80 redirect to :8791; }'}
     marker='jswarm-node-ui:'+hashlib.sha256(json.dumps(definitions,sort_keys=True).encode()).hexdigest()
     def nft(*args,input=None):
         return subprocess.run(['/usr/sbin/nft',*args],input=input,text=True,capture_output=True,check=True,timeout=10).stdout

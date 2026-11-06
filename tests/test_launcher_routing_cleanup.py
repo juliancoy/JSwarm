@@ -36,6 +36,7 @@ def test_web_port_forwarding_is_atomic_scoped_and_idempotent():
             batch=kwargs['input']
             assert 'flush' not in batch and 'table ip nat' not in batch
             assert 'tcp dport 80' in batch and '127.0.0.1' in batch and '::1' in batch
+            assert 'priority -100;' in batch and 'priority dstnat' not in batch
             assert '10.42.0.49:8790' in batch and 'redirect to :8791' in batch
             marker=batch.split('comment "',1)[1].split('"',1)[0]
             tables.update(ip=marker,ip6=marker);result={}
