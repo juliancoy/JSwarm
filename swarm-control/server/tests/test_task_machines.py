@@ -53,6 +53,26 @@ def test_fresh_identity_does_not_renew_old_engine_measurements(monkeypatch):
     assert value['status']=='stale' and value['gpus'][0]['available_percent'] is None
 
 
+def test_blocked_diagnostics_do_not_block_or_overwrite_fresh_gpu_inventory(monkeypatch):
+    import threading
+    from unittest.mock import Mock
+    import task_machines
+    entered=threading.Event();release=threading.Event();host={'host':'node'}
+    task_machines.CACHE['node']={'value':{'status':'loading'},'busy':True}
+    client=Mock();client.call.side_effect=lambda op,**kw: {'node':'node'} if op=='status' else {'status':'live','sampled_at':time.time()} if op=='metrics' else {'gpus':[{'name':'RTX','sampled_at':time.time(),'utilization_percent':25}]}
+    monkeypatch.setattr(task_machines,'AgentClient',lambda _:client)
+    def slow(_):entered.set();assert release.wait(3);return {'started_at':'2026-01-01T00:00:00+00:00'}
+    monkeypatch.setattr(task_machines,'node_runtime',slow);monkeypatch.setattr(task_machines,'cpu_usage',lambda _:{});monkeypatch.setattr(task_machines,'probe',lambda *a:{'status':'local'})
+    thread=threading.Thread(target=task_machines.diagnose,args=(host,'node'));thread.start()
+    try:
+        assert entered.wait(1)
+        task_machines.collect(host,'node',{})
+        value=task_machines.CACHE['node']['value'];assert value['gpus'][0]['available_percent']==75
+        sampled=value['gpus'][0]['sampled_at'];assert not task_machines.CACHE['node']['busy']
+    finally:release.set();thread.join(2)
+    assert task_machines.CACHE['node']['value']['gpus'][0]['sampled_at']==sampled
+
+
 def test_unenrolled_host_cannot_trigger_diagnostics(monkeypatch,tmp_path):
     import task_machines
     config=tmp_path/'peers.json';config.write_text('{"peers":{"node":"10.0.0.2"}}')

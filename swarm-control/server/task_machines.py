@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from agent_client import AgentClient, CONFIG
 
 POOL=ThreadPoolExecutor(max_workers=3,thread_name_prefix='machine-inspector')
+DIAGNOSTICS=ThreadPoolExecutor(max_workers=2,thread_name_prefix='machine-diagnostics')
 LOCK=threading.Lock()
 CACHE={}
 PROBE_BYTES=4*1024**2
@@ -176,32 +177,45 @@ def collect(host,source,previous):
         metrics=client.call('metrics',timeout=4)
         try:gpu_inventory=client.call('resource.gpus',timeout=4)
         except Exception:gpu_inventory=None
+        with LOCK:previous=dict(CACHE[name]['value'])
         runtime=previous.get('_runtime') or {}
-        runtime_at=previous.get('_runtime_at',0)
-        if time.time()-runtime_at>=60:
-            try:runtime=node_runtime(client);runtime_at=time.time()
-            except Exception:pass
         if runtime.get('started_at'):
             try:runtime={**runtime,'uptime_seconds':max(0,time.time()-datetime.datetime.fromisoformat(runtime['started_at'].replace('Z','+00:00')).timestamp())}
             except (ValueError,TypeError):pass
         value=project(name,status,metrics,runtime,gpu_inventory)
-        value.update(_runtime=runtime,_runtime_at=runtime_at)
-        try:value['cpu']=cpu_usage(client)
-        except Exception:value['cpu']=None
-        speed=previous.get('speed') or {}
-        if speed.get('status') in ('tested','local') and time.time()-speed.get('sampled_at',time.time())<600:
-            value['speed']=speed
-        else:
-            # Publish resources immediately; the test must not delay the inspector.
-            value['speed']={'status':'testing','source':source,'target':name}
-            with LOCK:CACHE[name]['value']=value
-            try:value={**value,'speed':probe(client,source,name)}
-            except Exception:value={**value,'speed':{'status':'unavailable','note':'JSwarm transfer test unavailable; resource observations retained.'}}
     except Exception:
         value={**previous,'host':name,'status':'unavailable','error':'Cannot reach this machine’s JSwarm; retained measurements may be stale.'}
     finally:
         client.close()
-        with LOCK:CACHE[name].update(value=value,busy=False,updated=time.monotonic())
+        with LOCK:
+            latest=CACHE[name]['value']
+            for key in ('_runtime','_runtime_at','cpu','speed'):
+                if key in latest:value[key]=latest[key]
+            CACHE[name].update(value=value,busy=False,updated=time.monotonic())
+
+
+def diagnose(host,source):
+    """Slow command diagnostics never occupy the resource observation pool."""
+    client=AgentClient(host);name=host['host'];delta={}
+    try:
+        with LOCK:previous=dict(CACHE[name]['value'])
+        status=client.call('status',timeout=4)
+        if status.get('node')!=name:raise ValueError('JSwarm node identity differs')
+        if time.time()-previous.get('_runtime_at',0)>=60:
+            try:delta.update(_runtime=node_runtime(client),_runtime_at=time.time())
+            except Exception:pass
+        try:delta['cpu']=cpu_usage(client)
+        except Exception:pass
+        speed=previous.get('speed') or {}
+        if speed.get('status') not in ('tested','local') or time.time()-speed.get('sampled_at',0)>=600:
+            try:delta['speed']=probe(client,source,name)
+            except Exception:delta['speed']={'status':'unavailable','note':'JSwarm transfer test unavailable; resource observations retained.'}
+    except Exception:pass
+    finally:
+        client.close()
+        with LOCK:
+            CACHE[name]['value'].update(delta)
+            CACHE[name].update(diagnostics_busy=False,diagnostics_at=time.monotonic())
 
 
 def snapshot(name):
@@ -213,6 +227,9 @@ def snapshot(name):
         if not row['busy'] and time.monotonic()-row['updated']>=1:
             row['busy']=True
             POOL.submit(collect,host,config['name'],row['value'])
+        if not row.get('diagnostics_busy') and time.monotonic()-row.get('diagnostics_at',0)>=5:
+            row['diagnostics_busy']=True
+            DIAGNOSTICS.submit(diagnose,host,config['name'])
         value={**{key:value for key,value in row['value'].items() if not key.startswith('_')},'refreshing':row['busy']}
         now=time.time()
         if value.get('status')=='live' and now-value.get('sampled_at',0)>30:value['status']='stale'
