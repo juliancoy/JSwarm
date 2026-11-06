@@ -257,3 +257,125 @@ def test_enrollment_inventory_includes_idle_nodes_without_polling(tmp_path,monke
     assert module.enrolled_machines(config)==['compai.local','julian-minipc.local']
     monkeypatch.setattr(module,'enrolled_machines',lambda:['julian-minipc.local'])
     assert module.snapshot(tmp_path/'no-work')['machines']==['julian-minipc.local']
+
+
+def test_blocked_followup_explains_qualification_and_evidence_gates():
+    from task_pipeline import blocked_detail
+    assert 'qualification' in blocked_detail({},'waiting_implementation')
+    assert 'venter-final-publication' in blocked_detail({'kind':'adopted','required_gates':['venter-final-publication']},'waiting_dependency')
+    assert blocked_detail({},'running') is None
+
+
+def test_adopted_finalizer_reports_real_storage_blocker(tmp_path):
+    from task_pipeline import finalizer_blocker
+    import json
+    folder=tmp_path/'recall/venter/finalize';folder.mkdir(parents=True)
+    (folder/'state.json').write_text(json.dumps({'phase':'waiting_for_sufficient_ssd_scratch','storage_plan':{'conservative_peak_additional_bytes':{'latitude':404000000000},'candidates':{'latitude':228000000000}}}))
+    spec={'kind':'adopted','executor':{'unit':'lifetech-wgs-venter-finalize.service'}}
+    assert '404.0 GB additional, 228.0 GB available' in finalizer_blocker(spec,tmp_path)
+    assert finalizer_blocker({},tmp_path) is None
+
+
+def test_followup_timing_and_title_use_exact_worker_attempt(tmp_path):
+    from submission_queue import SubmissionQueue
+    ns='genomics-followup:revision';ident='call-julian-GRCh38-1-0-5000000'
+    queue=SubmissionQueue(ns,tmp_path/'queue')
+    queue.submit({'id':ident,'kind':'regional','sample':'julian','reference_space':'GRCh38','chromosome':'1',
+                  'region':{'start':0,'end':5000000},'resources':{'cpus':2,'memory_mb':1280}})
+    claim=queue.claim('worker')
+    queue.update(ident,claim['token'],state='accepted',request=json.dumps({'directory':'/attempt/current','image':'tools','binding':'recipe','admission_pending':False}))
+    report={'host':'worker','container':'worker-current','phase':'running','attempt_directory':'/attempt/current',
+            'started':'2026-11-04T12:00:00+00:00','cpus':2,'memory_mb':32000,'memory_reservation_mb':1280,
+            'sink':'cpu','image':'tools','profiling_context':{'recipe_sha256':'recipe'},'recorded_at':1793793600,'command':'PRIVATE COMMAND'}
+    with sqlite3.connect(tmp_path/'runtime') as db:
+        db.execute('CREATE TABLE observations(job,container,report)')
+        db.execute('INSERT INTO observations VALUES(?,?,?)',(ns+'#'+ident,report['container'],json.dumps(report)))
+    row=snapshot(tmp_path/'queue',tmp_path,runtime_path=tmp_path/'runtime')['items'][0]
+    assert row['status']=='running'
+    assert row['name']=='Variant calling · Julian · GRCh38 · chr1:0–5,000,000 (0-based)'
+    assert row['runtime']['started']==report['started'] and row['runtime']['elapsed_seconds']>0
+    assert 'queue waiting time excluded' in row['runtime']['timing_basis']
+    assert row['worker_resources']['memory_mb']==1280
+    assert 'PRIVATE COMMAND' not in json.dumps(row)
+    with sqlite3.connect(tmp_path/'queue') as db:
+        db.execute('UPDATE submissions SET request=?',(json.dumps({'directory':'/attempt/new'}),))
+    row=snapshot(tmp_path/'queue',tmp_path,runtime_path=tmp_path/'runtime')['items'][0]
+    assert row['status']=='preparing' and row['runtime']['started'] is None
+    with sqlite3.connect(tmp_path/'queue') as db:
+        db.execute("UPDATE submissions SET state='completed',request=?",(json.dumps({'directory':'/attempt/current','image':'tools','binding':'recipe'}),))
+    row=snapshot(tmp_path/'queue',tmp_path,runtime_path=tmp_path/'runtime')['items'][0]
+    assert row['status']=='completed' and row['runtime']['started'] is None
+    report.update(phase='complete',finished='2026-11-04T12:02:00+00:00',elapsed_seconds=120)
+    with sqlite3.connect(tmp_path/'runtime') as db:
+        db.execute('UPDATE observations SET report=?',(json.dumps(report),))
+    row=snapshot(tmp_path/'queue',tmp_path,runtime_path=tmp_path/'runtime')['items'][0]
+    assert row['status']=='completed' and row['runtime']['elapsed_seconds']==120
+
+
+def test_followup_completed_time_stays_fixed_and_old_running_sample_is_ignored(tmp_path):
+    from task_pipeline import runtime_observation
+    report={'started':'2026-11-04T12:00:00+00:00','finished':'2026-11-04T12:02:00+00:00'}
+    assert runtime_observation(report,{},'worker')['elapsed_seconds']==120
+    from task_pipeline import shard_title
+    assert shard_title({'kind':'qualification'},'qualify-calling','genomics-followup:x')=='Executor controls · Calling'
+    assert shard_title({},'legacy-job','legacy')=='legacy-job'
+
+
+def test_followup_work_has_its_own_run_type():
+    from task_pipeline import run_type
+    assert run_type({'kind':'regional'}, {},'genomics-followup:revision')=='genome-analysis'
+    assert run_type({'kind':'regional'}, {},'unrelated')=='other'
+
+
+def test_finalizer_workers_have_machine_timing_and_do_not_duplicate_forecast(tmp_path):
+    import time
+    from task_pipeline import project_finalizer,runtime_summary
+    gen='a'*12;run='SRR7097858-'+gen+'-000007'
+    folder=tmp_path/'recall/venter/finalize';folder.mkdir(parents=True)
+    (folder/'state.json').write_text(json.dumps({'generation':gen}))
+    runtime=tmp_path/'runtime'
+    with sqlite3.connect(runtime) as db:
+        db.execute('CREATE TABLE finalizer_observations(generation,id,report)')
+        for ident,row in [('__workflow__',{'host':'latitude','phase':'bounded_mate_preparation','prepared':0,'total':1,'sampled_at':time.time()}),
+                          (run,{'host':'latitude','container':'worker','phase':'running','status':'running','started':'2026-11-04T12:00:00+00:00','cpus':2,'memory_mb':32000,'memory_reservation_mb':1024,'sampled_at':time.time()})]:
+            db.execute('INSERT INTO finalizer_observations VALUES(?,?,?)',(gen,ident,json.dumps(row)))
+    items=[{'id':'parent/adopt-venter-finalizer','job_id':'adopt-venter-finalizer','parent':'parent','status':'running'}]
+    project_finalizer(items,tmp_path,runtime)
+    assert len(items)==2 and items[0]['worker']=='latitude' and items[0]['status']=='waiting_dependency'
+    child=items[1];assert child['status']=='running' and child['worker']=='latitude' and child['runtime']['started']
+    assert child['worker_resources']['memory_mb']==1024
+    assert runtime_summary(items)['remaining_jobs']==1
+    child.update(queue_state='accepted',parent='venter-finalization:'+gen)
+    project_finalizer(items,tmp_path,runtime)
+    assert len(items)==2 and child['parent']=='parent' and child['queue_state']=='accepted'
+    assert child['runtime']['started'] and child['worker']=='latitude'
+
+
+def test_terminal_queue_failure_cannot_be_hidden_as_retrying(tmp_path):
+    from submission_queue import SubmissionQueue
+    ns='genomics-followup:rev';ident='call-test';queue=SubmissionQueue(ns,tmp_path/'q')
+    queue.submit({'id':ident});claim=queue.claim('node')
+    queue.update(ident,claim['token'],state='failed',request=json.dumps({'directory':'attempt','image':'image','binding':'recipe'}))
+    report={'container':'worker','host':'node','phase':'failed','image':'image','attempt_directory':'attempt','finished':'2026-11-04T12:00:00+00:00','profiling_context':{'recipe_sha256':'recipe'}}
+    with sqlite3.connect(tmp_path/'runtime') as db:
+        db.execute('CREATE TABLE observations(job,container,report)');db.execute('INSERT INTO observations VALUES(?,?,?)',(ns+'#'+ident,'worker',json.dumps(report)))
+    assert snapshot(tmp_path/'q',tmp_path,tmp_path/'runtime')['items'][0]['status']=='failed'
+def test_completed_regional_preparation_uses_its_retained_extraction_attempt(tmp_path):
+    from submission_queue import SubmissionQueue
+    from task_pipeline import snapshot
+    ns='genomics-followup-inputs:rev';q=SubmissionQueue(ns,tmp_path/'q')
+    q.submit({'id':'region-one','resources':{'cpus':1,'memory_mb':1024}})
+    claim=q.claim('latitude')
+    q.update('region-one',claim['token'],state='completed',request=json.dumps({'directory':'/attempt','source_image':'tools'}),result='{}')
+    report={'host':'latitude','container':'extractor','image':'tools','phase':'complete','attempt_directory':'/attempt',
+            'started':'2026-11-05T12:00:00+00:00','finished':'2026-11-05T12:01:25+00:00','cpus':1,'memory_reservation_mb':1024,
+            'cpu_core_seconds':24,'memory_peak_bytes':456}
+    with sqlite3.connect(tmp_path/'runtime') as db:
+        db.execute('CREATE TABLE observations(job,container,report)')
+        db.execute('INSERT INTO observations VALUES(?,?,?)',(ns+'#region-one','extractor',json.dumps(report)))
+    item=snapshot(tmp_path/'q',tmp_path,tmp_path/'runtime')['items'][0]
+    assert item['runtime']['elapsed_seconds']==85 and item['runtime']['cpu_core_seconds']==24
+    assert item['execution']['memory_peak_bytes']==456
+    with sqlite3.connect(tmp_path/'q') as db:db.execute('UPDATE submissions SET request=?',(json.dumps({'directory':'/different-attempt','source_image':'tools'}),))
+    assert snapshot(tmp_path/'q',tmp_path,tmp_path/'runtime')['items'][0]['runtime']['started'] is None
+

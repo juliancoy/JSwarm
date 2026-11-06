@@ -17,6 +17,19 @@ def test_cpu_busy_without_io_pressure_does_not_drain():
     assert all(guard.observe(sample)!='drain' for _ in range(5))
 
 
+def test_network_wait_alone_does_not_drain_or_keep_node_paused():
+    guard=PressureWindow()
+    sample={'iowait_percent':80,'io_pressure':90,'memory_pressure':0,'local_disk_busy_percent':2}
+    assert [guard.observe(sample) for _ in range(3)]==['hold','hold','restore']
+
+
+def test_real_local_disk_stalls_still_drain():
+    guard=PressureWindow()
+    sample={'iowait_percent':80,'io_pressure':90,'memory_pressure':0,'local_disk_busy_percent':95}
+    assert guard.observe(sample)=='hold'
+    assert guard.observe(sample)=='drain'
+
+
 def test_guard_preserves_owner_maintenance_and_only_removes_its_own(tmp_path,monkeypatch):
     import hashlib,json,os,subprocess,sys
     from pathlib import Path

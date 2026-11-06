@@ -33,6 +33,13 @@ def admitted(monkeypatch,tmp_path):
         def close(self):pass
     monkeypatch.setattr(cache,'AgentClient',Client)
     monkeypatch.setattr(cache.Path,'home',lambda:tmp_path)
+    original_command=cache.command
+    def isolated_command(host,args,**kwargs):
+        # Real Docker checks must never enumerate production cache owners.
+        if args[:3]==['docker','ps','-aq']:
+            args=[*args,'--filter','ancestor='+IMAGE]
+        return original_command(host,args,**kwargs)
+    monkeypatch.setattr(cache,'command',isolated_command)
     return calls
 
 
@@ -77,6 +84,7 @@ def test_real_concurrent_bwa_shards_share_one_readonly_inode_and_load_once(tmp_p
             a,b=list(pool.map(lambda _:cache.ensure(host,tool_image,files,load),range(2)))
         binding=a
         assert a==b and len(loads)==1
+        assert cache.inspect(host,'container',binding['container'])['HostConfig']['NanoCpus']==100000000
         assert len([r for op,r in admitted if op=='resource.acquire'])==1
         program=r'''
 import errno,hashlib,json,os,pathlib,subprocess,time
@@ -125,3 +133,49 @@ def test_corrupt_cache_is_rejected_and_removed(admitted,tool_image):
     with pytest.raises(RuntimeError,match='checksum mismatch'):cache.ensure(host,tool_image,files,load)
     assert cache.inspect(host,'container','swarm-job-'+key[:32]) is None
     assert cache.inspect(host,'volume','swarm-cache-'+key[:32]) is None
+
+
+def test_stopped_ram_cache_is_reloaded_instead_of_restarted_empty(tmp_path,admitted,tool_image):
+    import os
+    host={'host':'fixture','local':True,'machine':uuid.uuid4().hex,'container_user':str(os.getuid())+':'+str(os.getgid())}
+    files={'index':{'bytes':3,'sha256':hashlib.sha256(b'abc').hexdigest()}}
+    loads=[];binding=None
+    def load(name):
+        loads.append(name)
+        r=docker('exec','-i',name,'python3','-c','import pathlib,sys;pathlib.Path("/dev/shm/index").write_bytes(sys.stdin.buffer.read())',input=b'abc',timeout=15)
+        assert r.returncode==0,r.stderr.decode()
+    try:
+        binding=cache.ensure(host,tool_image,files,load)
+        first=cache.inspect(host,'container',binding['container'])
+        assert first['HostConfig']['RestartPolicy']['Name']=='no'
+        assert docker('stop','--time','1',binding['container'],timeout=15).returncode==0
+        rebuilt=cache.ensure(host,tool_image,files,load)
+        second=cache.inspect(host,'container',rebuilt['container'])
+        assert second['Id']!=first['Id'] and len(loads)==2
+        assert cache.ready(host,rebuilt,second)
+    finally:
+        if binding:cache.remove_unused(host,binding)
+
+
+def test_derived_objects_build_once_and_mount_at_multiple_readonly_targets(tmp_path,admitted,tool_image):
+    host={'host':'fixture','local':True,'machine':uuid.uuid4().hex,'container_user':'1000:1000'}
+    builds=[];binding=None
+    def build(root):builds.append(1);(root/'reference.fa').write_bytes(b'abc')
+    def load(owner,root,files):
+        p=docker('exec','-i',owner,'python3','-c',"import pathlib,sys;pathlib.Path('/dev/shm/reference.fa').write_bytes(sys.stdin.buffer.read())",input=(root/'reference.fa').read_bytes())
+        assert p.returncode==0,p.stderr.decode()
+    try:
+        with ThreadPoolExecutor(2) as pool:
+            results=list(pool.map(lambda _:cache.ensure_derived(host,tool_image,{'source':'sha','contig':'1'},build,load),range(2)))
+        binding=results[0]['cache'];assert results[0]==results[1] and len(builds)==1
+        args=cache.mount_args(host,binding,target='/references/one',primary=False)
+        p=docker('run','--rm','--network','none',*args,tool_image,'python3','-c',"import pathlib;assert pathlib.Path('/references/one/reference.fa').read_bytes()==b'abc'")
+        assert p.returncode==0,p.stderr.decode()
+        assert 'dst=/references/one,readonly' in ' '.join(args)
+        with pytest.raises(ValueError):cache.mount_args(host,binding,target='/')
+        # A live bulk reader must keep its source cache from eviction.
+        subprocess.run(['docker','exec','-d',binding['container'],'python3','-c','import time;time.sleep(3)'],check=True)
+        assert cache.remove_unused(host,binding) is False
+        time.sleep(3.2)
+    finally:
+        if binding:cache.remove_unused(host,binding)

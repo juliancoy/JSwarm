@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 import time
 
-ROOT=(Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('GenomeHarbor', 'JSwarm') else Path(__file__).resolve().parents[1])
+ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT),str(ROOT/'swarm-control/server')]
 from agent_client import AgentClient,CONFIG
 from agent_updates import LauncherUpdates,deployment_lock
@@ -62,8 +62,33 @@ def sweep(nodes=None,wait_timeout=3600,published=None):
     return all(row['status']=='current' for row in rows)
 
 
+def freeze_source(root,target):
+    """Copy versioned source and new source files, excluding ignored runtime data."""
+    import shutil,subprocess
+    root=Path(root);target=Path(target);target.mkdir(parents=True,exist_ok=True)
+    if root.name=='JSwarm' and (root.parent/'GenomeHarbor').is_dir():root=root.parent
+    def copy(source,destination):
+        if not source.exists() and not source.is_symlink():return
+        destination.parent.mkdir(parents=True,exist_ok=True)
+        if source.is_symlink():destination.symlink_to(os.readlink(source))
+        elif source.is_file():shutil.copy2(source,destination)
+    projects=[name for name in ('JSwarm','GenomeHarbor') if (root/name).is_dir()]
+    for name in projects:
+        project=root/name
+        paths=subprocess.check_output(['git','-C',str(project),'ls-files','--cached','--others','--exclude-standard','-z']).decode().split('\0')
+        for path in dict.fromkeys(paths):
+            if path:copy(project/path,target/name/path)
+    if not projects:raise RuntimeError('Expected the enrolled workspace source layout')
+    for name in ('run.py','swarm-control','ramtop','docker_utils','pytest.ini','pyproject.toml'):
+        copy(root/name,target/name)
+    (target/'scripts').mkdir(exist_ok=True)
+    for path in (root/'scripts').iterdir():
+        if path.is_symlink() or path.is_file():copy(path,target/'scripts'/path.name)
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--frozen-source',action='store_true',help=argparse.SUPPRESS)
     parser.add_argument('--watch',action='store_true')
     parser.add_argument('--continuous',action='store_true',help='Keep following validated publications after fleet convergence')
     parser.add_argument('--published',action='store_true',help='Deploy only the immutable validated publication')
@@ -102,12 +127,22 @@ def main():
         print(json.dumps({'paged_cache':rows}),flush=True)
         if not all(r.get('ready') for r in rows.values()):raise SystemExit(1)
         return
+    if args.publish and not args.frozen_source:
+        import subprocess,tempfile
+        with tempfile.TemporaryDirectory(prefix='jswarm-source-release-') as temporary:
+            snapshot=Path(temporary)/'Organization'
+            workspace=ROOT.parent if ROOT.name=='JSwarm' else ROOT
+            freeze_source(workspace,snapshot)
+            project=snapshot/'JSwarm'
+            env={**os.environ,'PYTHONPATH':os.pathsep.join(map(str,(project/'swarm-control/server',project,snapshot,snapshot/'GenomeHarbor/tests')))}
+            subprocess.run([sys.executable,'-m','scripts.deploy_swarm_inputs','--publish','--frozen-source'],cwd=project,env=env,check=True)
+        return
     if args.publish:
         import subprocess
         updater=LauncherUpdates(ROOT,lambda:False,lambda *args:None)
-        suites=['tests/test_swarm_paged_cache.py','tests/test_agent_cpu_overhead.py','tests/test_node_releases.py','tests/test_worker_journal.py','tests/test_launcher_commands.py','tests/test_launcher_peer_supervisor.py','tests/test_resource_renewal.py','tests/test_swarm_runtime.py','tests/test_rolling_deployment.py','tests/test_docker_worker_restart.py','swarm-control/server/tests/test_agent_updates.py','swarm-control/server/tests/test_agent_sessions.py','swarm-control/server/tests/test_fleet_backups.py','tests/test_worker_maintenance.py']
+        suites=['tests/test_launcher_streams.py','tests/test_swarm_stream_work.py','scripts/tests/test_launcher_telemetry.py','tests/test_swarm_paged_cache.py','tests/test_swarm_shared_cache.py','tests/test_agent_cpu_overhead.py','tests/test_node_releases.py','tests/test_worker_journal.py','tests/test_ram_cache_inventory.py','tests/test_swarm_pressure_guard.py','tests/test_launcher_commands.py','tests/test_launcher_peer_supervisor.py','tests/test_resource_renewal.py','tests/test_swarm_runtime.py','tests/test_gpu_inventory.py','tests/test_node_execution.py','tests/test_swarm_gpu_runtime.py','tests/test_rolling_deployment.py','tests/test_docker_worker_restart.py','swarm-control/server/tests/test_agent_updates.py','swarm-control/server/tests/test_agent_sessions.py','swarm-control/server/tests/test_fleet_backups.py','tests/test_worker_maintenance.py']
         project=Path(__file__).resolve().parents[1]
-        env={**os.environ,'PYTHONPATH':str(project/'swarm-control/server')+os.pathsep+str(ROOT)}
+        env={**os.environ,'PYTHONPATH':os.pathsep.join(map(str,(project/'swarm-control/server',ROOT,project.parent/'GenomeHarbor/tests')))}
         subprocess.run([sys.executable,'-m','pytest','-q',*suites],cwd=project,env=env,check=True)
         checked=LauncherUpdates(ROOT,lambda:False,lambda *args:None)
         if updater.files!=checked.files or updater.supervisor_source!=checked.supervisor_source or updater.components!=checked.components:

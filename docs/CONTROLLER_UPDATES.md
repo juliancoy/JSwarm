@@ -87,24 +87,24 @@ expire because a permit or controller disappears. Physical resource arbitration
 also honors job priorities, including changes to pending node jobs.
 
 
-GPU recipes can opt into concurrent execution with `max_concurrency` (1–32) and
-`vram_mb` (private VRAM startup budget). Defaults retain exclusive execution.
-GPU workers share the device lock and take separate process-owned slot locks;
-VRAM headroom checks and slot assignment serialize under a short admission lock.
-Admission keeps the requested free-VRAM floor plus private commitments for all
-occupied slots. These are conservative admission budgets, not hardware-enforced
-per-process VRAM limits. Slot locks release on exit; stale unlocked records do not
-consume slots. Older exclusive jobs retain their lock and finish before new
-shared jobs enter. Device concurrency and private VRAM budgets are Docker labels.
+GPU execution uses measured resource admission, without a fixed job-count cap.
+Legacy `max_concurrency` fields remain readable for immutable recipe compatibility
+but do not limit execution. The previous exclusive device lock and the former
+32-slot ceiling are not admission gates. Controller GPU feeder capacity follows
+physical host CPU capacity rather than qualification-profile job counts; actual
+execution still passes current host-RAM, PID and GPU-memory checks.
 
-The CompAI BWA Vulkan lane supports four simultaneous jobs with a 512 MiB private
-VRAM budget each. GPU jobs mount the same verified read-only host-RAM reference
-volume as CPU jobs, avoiding one reference copy per GPU process. Each process
-still owns its Vulkan context and alignment buffers in VRAM. Concurrent GPU
-contexts do not imply a shared full-genome VRAM index. Four concurrent Docker
-jobs using that same reference were compared against CPU SAM semantics on 5,000
-paired reads, three repetitions each, with positive GPU-extension evidence.
+Concurrent GPU starts serialize a short admission transaction, recording private
+VRAM commitments in process-owned locks. Admission keeps the measured free-VRAM
+floor plus startup commitments; it refuses unknown or stale driver measurements.
+Locks release when GPU compute completes or the worker exits, and unlocked stale
+records consume no memory commitment. Existing legacy lock holders do not impose
+a count cap on new jobs. Job labels identify `gpu-admission=pressure`.
 
+Reference mappings remain shared and read-only. Vulkan contexts, private GPU
+buffers and scratch remain per process; concurrent contexts do not imply a shared
+full-genome VRAM index. Previous CompAI qualification compared four concurrent
+jobs with CPU SAM semantics; that evidence is not a four-job scheduling limit.
 
 AMD Vulkan alignment uses an owner-installed DRM binding rather than an NVIDIA
 UUID/runtime. It pins the render node, PCI identity, render group, Radeon ICD,
@@ -135,3 +135,113 @@ against this node inventory before admitting new work. Stale inventory, unknown
 VRAM, changed identity, unavailable permissions and occupied device slots are
 explicit admission failures. Existing workers reattach before any new admission
 check. Worker-side locks and fresh driver checks still serialize actual starts.
+
+Intel integrated GPUs use an explicit `shared-system-memory` binding. A bounded
+Vulkan metadata probe verifies the physical device is integrated and matches the
+PCI vendor/model. Intel discrete GPUs and unknown devices cannot use this path.
+The node reports fresh kernel host-RAM headroom; dedicated VRAM fields remain
+unknown. The GPU workspace is added to the worker's private host-RAM admission
+budget and Docker memory limits. It is never added to host memory capacity.
+Integrated GPU bindings require node inventory and retain the same runtime hashes,
+physical identity checks and atomic per-device memory commitments as other GPUs.
+Discovery alone does not enable an alignment profile: correctness and aggregate
+CPU-plus-GPU throughput must be qualified for the workload first.
+
+GPU job measurements remain separate from CPU job measurements. `resource.capacity`
+reports fresh measured host-memory usage and coverage per `job_sinks.cpu` and
+`job_sinks.gpu`; missing or stale observations are excluded from measured totals,
+with coverage counts showing incomplete sampling. These are host-RAM counters,
+including GPU feeder buffers, not VRAM. `resource.gpus` reports physical-device
+VRAM separately. Memory profiles never combine CPU and GPU samples or different
+GPU UUIDs; legacy samples without a GPU UUID stay separate from identified GPUs.
+The recorded execution class takes precedence over a queue lane when present.
+
+Memory admission correlates moderate memory/I/O PSI with low measured RAM
+headroom after startup, growth and system margins. I/O stalls alone do not zero
+an otherwise roomy RAM budget. Severe memory stalls still pause new admission;
+CPU timesharing and atomic startup commitments remain in force.
+
+Public reference cache warm-up is an owner-installed immutable maintenance recipe
+submitted by the standard pager deployment component. The node journal owns its
+low-priority execution, retry and receipt; the submitting controller may exit.
+It validates the complete artifact SHA-256 and reads into shared reclaimable
+kernel pages, without pinning a private copy. Small-RAM nodes retain demand
+paging. The request separates `memory_mb` (mapping ceiling) from
+`memory_reservation_mb` (private startup/admission commitment). Mounted maintenance
+recipes may omit input streams; clients cannot introduce arbitrary mounts.
+
+GPU runtime bundles are installed by `scripts.swarm_gpu_runtime` through the
+signed enrolled-node channel. The workload declares immutable source-image paths
+and qualified SHA-256 digests. Installation stages and verifies an atomic,
+content-addressed directory under the node owner's `gpu-runtimes` state; existing
+bundles are reverified rather than modified. Genomics deployment calls this via
+`run.py --vulkan-alignment prepare-nodes` and before controller deployment.
+`run.py --vulkan-alignment reconcile` retries retirement of stopped legacy
+controllers; a failed node's cleanup does not abort healthy nodes' reconciliation.
+
+The generic `swarm_runtime.run_job` API accepts an optional
+`gpu_compute_complete_file` beneath `/work`. An owner-installed command may
+publish this marker only after every GPU-using subprocess has exited and must
+never use the device afterward. The admission supervisor releases its device
+and slot locks while retaining the container, RAM outputs and host-resource
+lease for verified export. Missing markers retain admission until process exit;
+exit status is preserved. The legacy
+RAM alignment adapter publishes the marker after the successful BWA/sort
+pipeline. Node-owned recipes retain their existing `compute_complete` progress
+protocol and durable GPU-release receipt.
+
+Release publication freezes checkout sources before running host tests, then
+publishes that exact checked snapshot through the existing deployment lock and
+immutable release format. Ignored runtime data is excluded. Independent edits
+in the shared workspace cannot change the artifact halfway through validation.
+
+NVIDIA inventory probes use unique container names and always request cleanup,
+including on CLI timeout. A leftover probe cannot block subsequent allocation
+measurements through a fixed-name collision. Unknown measurements still decline
+new GPU admission.
+
+Owner command cleanup now cancels the remote exec process group before closing
+its Docker CLI pipe. A per-command random token and wrapper process start time
+bind cancellation to the original process; reused PIDs are not signalled.
+Completed wrappers remove their control records. The owner helper uses a new
+runtime identity and bounded 1 GiB/no-swap memory and 1,024 PID limits to support
+concurrent feeder commands and their supervisors. Existing older helper limits
+are upgraded on attachment. This prevents abandoned readers from exhausting the
+helper and starving otherwise admissible GPU work.
+
+A checksum-bound DRM runtime may select `runtime_mode: image-native` for the
+Vulkan follow-up library and shader. This retains the immutable container's
+Python, scientific tools and Mesa dependencies instead of mounting the host
+`/usr`. The node still resolves the physical render device/group and memory
+domain, verifies the private runtime bundle, and charges integrated GPU buffers
+to host RAM. Legacy BWA host-runtime bindings keep their existing behavior.
+
+### Verify a rebuild from committed sources
+
+Keep Organization, JSwarm and GenomeHarbor as adjacent checkouts in the documented
+workspace layout. After committing a change, run from Organization:
+
+```
+PYTHONPATH=JSwarm/swarm-control/server:JSwarm:. /home/julian/global/bin/python \
+  JSwarm/scripts/verify_release_sources.py --tests --output /tmp/swarm-source-verification.json
+```
+
+This exports each repository's HEAD into an isolated temporary workspace, imports
+the dispatch, recovery and dashboard code, rebuilds the sealed launcher input,
+and runs focused host/local Docker regression checks. Untracked files and working
+copy edits cannot satisfy a missing dependency. The output records all three
+commits and release source hashes; it contains no job payload or credentials.
+Scientific images, enrolled identities, route qualifications and verified results
+remain separate operator state; this check does not provision or change them.
+Use the existing `deploy_swarm_inputs --publish` and rolling updater for launcher
+releases and `genomics_followup_controller --deploy-orchestration` for a controller
+handoff. A controller service restart alone keeps its pinned release.
+
+Worker-owned execution receipts retain cgroup v2 CPU totals and lifetime RAM peaks
+before normal exit, including failed commands. The journal validates the attempt
+identity and retains these counters before Docker cleanup. RAM current is sampled
+after the command exits; the lifetime peak includes file cache and shared memory.
+Do not add file and shared-memory counters together. Receipt flush and teardown
+are outside the measurement. SIGKILL/OOM can prevent the receipt: last observed
+counters survive journal restart as `sampled-partial`, or coverage is `unavailable`
+when no sample exists. Historical counters cannot be reconstructed.

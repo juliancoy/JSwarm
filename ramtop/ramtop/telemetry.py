@@ -14,7 +14,7 @@ import subprocess
 import time
 from .hardware import Hardware, read
 from .memory import cache_rates, mbm_rates, pressure, memory_fields
-from .gpu import GpuMonitor
+from .gpu import GpuMonitor, device_activity, NvidiaQuery
 from .connections import parse_ss
 
 SCHEMA_VERSION = 1
@@ -51,6 +51,7 @@ class PerformanceSampler:
         self.hardware=Hardware()
         self.gpu=None
         self.gpu_attempted=False
+        self.gpu_query=NvidiaQuery()
         self.previous_processes={}
         self.previous_connections={}
         self.last=time.monotonic()
@@ -161,6 +162,7 @@ class PerformanceSampler:
                                  'metrics':r['metrics'],'engines':r['engines']} for r in value['clients'][:24]],
                      'denied':value['denied']}
             except (OSError,ValueError):gpu={'status':'unavailable'}
+        gpu['devices']=device_activity(gpu,query=self.gpu_query)
         notes=self.hardware.notes[:6]+([socket_error] if socket_error else [])
         value={'schema_version':SCHEMA_VERSION,'sampled_at':sampled,'status':'live',
                'scope':'Local visible kernel counters; process/owner coverage follows agent PID namespace and permissions. TCP rates are payload, not wire bytes. LAN cache is not proof of reachability.',

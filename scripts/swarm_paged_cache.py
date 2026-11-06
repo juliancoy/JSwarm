@@ -117,7 +117,7 @@ def inspect(name):
  return row
 root=pathlib.Path.home()/'.local/state/swarm-control/paged-cache'/plan['key'];root.mkdir(parents=True,exist_ok=True,mode=0o700)
 name='swarm-paged-'+('source-' if p['node']==plan['source'] else 'cache-')+plan['key'][:16]
-common=['--restart','unless-stopped','--read-only','--cpus','0.25','--memory','256m','--memory-swap','256m','--pids-limit','64','--network','host','--label','org.lifetech.service=paged-reference','--label','org.jswarm.paged-cache='+plan['key'],'--log-opt','max-size=2m','--log-opt','max-file=2']
+common=['--restart','unless-stopped','--read-only','--memory','256m','--memory-swap','256m','--pids-limit','64','--network','host','--label','org.lifetech.service=paged-reference','--label','org.jswarm.paged-cache='+plan['key'],'--log-opt','max-size=2m','--log-opt','max-file=2']
 if p['node']==plan['source']:
  proof=root/'source-verified.json';identities={}
  for n,record in plan['files'].items():
@@ -165,7 +165,36 @@ else:
  # Metadata queries must not read payload pages.
  for n,record in plan['files'].items():
   if pathlib.Path(paths[n]).stat().st_size!=record['bytes']:raise ValueError('Mounted object size differs')
-record={'schema':'jswarm-paged-node.v1','key':plan['key'],'node':p['node'],'machine':p['machine'],'source':plan['source'],'address':plan['address'],'port':plan['port'],'container':name,'image':image,'paths':paths,'mode':'local-mmap' if p['node']==plan['source'] else 'nfs-demand-paged','ready':True,'updated':time.time()}
+mode='local-mmap' if p['node']==plan['source'] else 'nfs-demand-paged'
+policy_path=pathlib.Path.home()/'.config/lifetech-launcher/public-cache-policy.json'
+policy=json.loads(policy_path.read_text()) if policy_path.exists() else {}
+if p['node']!=plan['source'] and policy.get('storage')=='verified-local-ssd':
+ import shutil
+ local=root/'verified-ssd';local.mkdir(exist_ok=True,mode=0o700)
+ device=subprocess.check_output(['findmnt','-n','-o','SOURCE','-T',str(local)],text=True).strip()
+ rotating=subprocess.check_output(['lsblk','-dn','-o','ROTA',device],text=True).strip()
+ if rotating!='0':raise ValueError('Public cache SSD policy requires verified nonrotating storage')
+ for n,expected in plan['files'].items():
+  target=local/n;proof=local/(n+'.verified.json')
+  prior=json.loads(proof.read_text()) if proof.exists() else {}
+  if target.exists():
+   st=target.stat();identity=[st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_ctime_ns]
+   if prior.get('identity')==identity and prior.get('sha256')==expected['sha256'] and st.st_size==expected['bytes']:
+    paths[n]=str(target);continue
+   raise ValueError('Existing immutable SSD cache identity differs; refusing replacement')
+  if shutil.disk_usage(local).free<expected['bytes']+64*1024**2:raise ValueError('Insufficient SSD headroom for public cache')
+  temporary=local/(n+'.partial');digest=hashlib.sha256();size=0
+  with open(paths[n],'rb') as source,temporary.open('wb') as output:
+   while block:=source.read(4*1024**2):output.write(block);digest.update(block);size+=len(block)
+   output.flush();os.fsync(output.fileno())
+  if size!=expected['bytes'] or digest.hexdigest()!=expected['sha256']:
+   temporary.unlink(missing_ok=True);raise ValueError('Public SSD cache checksum differs')
+  temporary.chmod(0o444);temporary.replace(target)
+  st=target.stat();pending=proof.with_suffix('.tmp')
+  pending.write_text(json.dumps({'sha256':expected['sha256'],'identity':[st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_ctime_ns]}));pending.replace(proof)
+  paths[n]=str(target)
+ mode='local-verified-ssd'
+record={'schema':'jswarm-paged-node.v1','key':plan['key'],'node':p['node'],'machine':p['machine'],'source':plan['source'],'address':plan['address'],'port':plan['port'],'container':name,'image':image,'paths':paths,'mode':mode,'ready':True,'updated':time.time()}
 path=pathlib.Path.home()/'.config/lifetech-launcher/paged-cache.json';pending=path.with_suffix('.tmp');pending.write_text(json.dumps(record));pending.chmod(0o600);pending.replace(path)
 print(json.dumps(record))
 '''
@@ -207,11 +236,15 @@ def deploy_node(host,plan=None):
     host={**host,'machine':status['machine']}
     execution_image=ensure_image(host,plan['image'])
     payload={'plan':plan,'execution_image':execution_image,'node':host['host'],'machine':host['machine'],'guard':GUARD,'client':CLIENT,'server_config':server_config(plan)}
-    result=subprocess.run(host_command(host,BOOTSTRAP),input=json.dumps(payload),capture_output=True,text=True,timeout=180)
+    result=subprocess.run(host_command(host,BOOTSTRAP),input=json.dumps(payload),capture_output=True,text=True,timeout=max(180,60+sum(r['bytes'] for r in plan['files'].values())//(4*1024**2)))
     if result.returncode:raise RuntimeError('Paged deployment failed on '+host['host']+': '+result.stderr[-500:])
     record=json.loads(result.stdout)
     record['page_checks']=verify_node(host,record,plan)
     record['verified_pages']=True
+    if host['host']!=plan['source']:
+        try:record['warm_job']=warm_node(host,record,plan,status)
+        except (OSError,ValueError,RuntimeError,subprocess.SubprocessError) as error:
+            record['warm_job']={'state':'pending','reason':str(error)[-300:]}
     folder=PLAN.parent/'nodes';folder.mkdir(parents=True,exist_ok=True,mode=0o700)
     atomic_json(folder/(host['host']+'.json'),record);return record
 
@@ -326,3 +359,61 @@ def verify_node(host,record,plan):
         if result.returncode:raise RuntimeError('Demand page check failed on '+host['host']+': '+result.stderr[-350:])
         checks.append({'engine':socket,**json.loads(result.stdout)})
     return checks
+
+
+WARM_CODE=r'''
+import hashlib,json,pathlib,sys,time
+from launcher_streams import finish
+job=json.load(open('/work/job.json'));expected=json.loads(sys.argv[1]);started=time.monotonic();total=0
+try:
+ for name,record in expected.items():
+  digest=hashlib.sha256();size=0
+  with (pathlib.Path('/reference')/name).open('rb') as source:
+   while block:=source.read(4*1024**2):digest.update(block);size+=len(block)
+  if size!=record['bytes'] or digest.hexdigest()!=record['sha256']:raise ValueError('Public cache content differs')
+  total+=size
+ finish(job,{'verified_bytes':total,'elapsed_seconds':time.monotonic()-started,'cache':'shared reclaimable kernel pages','pinned':False})
+except ValueError:raise SystemExit(78)
+'''
+
+
+def warm_definition(record,plan):
+    """Owner-installed generic recipe; no private input or arbitrary client path."""
+    from scripts.launcher_streams import digest
+    expected={n:{'bytes':r['bytes'],'sha256':r['sha256']} for n,r in plan['files'].items()}
+    mounts=[{'source':record['paths'][n],'target':'/reference/'+n,'readonly':True} for n in expected]
+    row={'image':record['image'],'argv':['python3','-c',WARM_CODE,json.dumps(expected,sort_keys=True)],'mounts':mounts}
+    return {**row,'version':digest(row)}
+
+
+def warm_node(host,record,plan,status=None):
+    """Submit once per immutable cache/recipe; the node owns completion/recovery."""
+    from scripts.swarm_stream_work import StreamClient
+    from scripts.swarm_runtime import shell_command
+    from scripts.launcher_streams import digest
+    client=AgentClient(host)
+    total=(sum(r['bytes'] for r in plan['files'].values())+1024**2-1)//1024**2
+    expected={n:{'bytes':r['bytes'],'sha256':r['sha256']} for n,r in plan['files'].items()}
+    try:
+        status=status or client.call('status',timeout=15)
+        if 'node-maintenance-recipes-v1' not in status.get('capabilities',[]):return {'state':'unsupported'}
+        if 'verified-ram-caches-v1' not in status.get('capabilities',[]):
+            return {'state':'pending','reason':'Node update required before optional reference prefetch'}
+        inventory=client.call('resource.caches',timeout=30)
+        for cache in inventory['caches']:
+            if all(cache['files'].get(name)==row for name,row in expected.items()):
+                return {'state':'skipped','reason':'Same immutable objects already verified in shared RAM','cache':cache['key']}
+        if inventory.get('pending_caches'):
+            return {'state':'skipped','reason':'Native RAM cache fill takes priority over optional prefetch'}
+        capacity=client.call('resource.capacity',timeout=15)
+        if capacity['available_mb']<total+1024:
+            return {'state':'skipped','reason':'Keep reference demand-paged; insufficient spare RAM for optional prefetch'}
+    finally:client.close()
+    definition=warm_definition(record,plan);recipe='cache.warm.'+plan['key'][:16]
+    install="import json,pathlib,os,sys;p=pathlib.Path.home()/'.config/lifetech-launcher/stream-recipes.json';old=json.loads(p.read_text()) if p.exists() else {};old.update(json.loads(sys.argv[1]));t=p.with_suffix('.cache-warm.tmp');t.write_text(json.dumps(old));t.chmod(0o600);os.replace(t,p)"
+    subprocess.run(shell_command(host,['python3','-c',install,json.dumps({recipe:definition})]),check=True,capture_output=True,text=True,timeout=30)
+    request={'id':'cache-warm-'+digest({'key':plan['key'],'version':definition['version']}),'recipe':recipe,
+        'image':record['image'],'inputs':{},'resources':{'cpus':1,'memory_mb':max(256,total+256),'memory_reservation_mb':128},
+        'priority':-100,'namespace':'node-cache-maintenance'}
+    with StreamClient(host) as streams:row=streams.submit(request)
+    return {'id':row['id'],'state':row['state'],'execution_owner':'jswarm-node','priority':-100}

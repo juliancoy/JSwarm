@@ -85,3 +85,83 @@ def test_docker_mmap_checks_pages_readonly_and_rejects_bad_checksum(tmp_path):
     probes[1][2]='0'*64
     bad=subprocess.run([*argv,json.dumps({'index':probes})],capture_output=True,text=True,timeout=180)
     assert bad.returncode!=0 and 'checksum mismatch' in bad.stderr
+
+
+def test_cache_warm_is_an_immutable_owner_installed_readonly_node_recipe():
+    from scripts.launcher_streams import validate
+    p=plan();record={'image':p['image'],'paths':{'index':'/mounted/reference/index'}}
+    definition=pager.warm_definition(record,p)
+    assert definition['mounts']==[{'source':'/mounted/reference/index','target':'/reference/index','readonly':True}]
+    assert len(definition['version'])==64
+    spec={'id':'cache-warm','recipe':'warm','image':p['image'],'inputs':{},'resources':{'cpus':1,'memory_mb':6000,'memory_reservation_mb':128}}
+    assert validate(spec,{'warm':definition})['inputs']=={}
+
+
+def test_optional_prefetch_reuses_node_verified_ram_without_gpu_probe(monkeypatch):
+    p=plan();calls=[]
+    class Client:
+        def __init__(self,host):pass
+        def call(self,op,**kwargs):
+            calls.append(op)
+            assert op=='resource.caches'
+            return {'caches':[{'key':'native-cache','files':{'index':{'bytes':10,'sha256':'b'*64}}}]}
+        def close(self):pass
+    monkeypatch.setattr(pager,'AgentClient',Client)
+    status={'capabilities':['node-maintenance-recipes-v1','verified-ram-caches-v1']}
+    result=pager.warm_node({'host':'target'},{},p,status)
+    assert result['state']=='skipped' and result['cache']=='native-cache'
+    assert calls==['resource.caches']
+
+
+def test_optional_prefetch_uses_spare_ram_instead_of_machine_total(monkeypatch):
+    p=plan()
+    class Client:
+        def __init__(self,host):pass
+        def call(self,op,**kwargs):
+            if op=='resource.caches':return {'caches':[]}
+            assert op=='resource.capacity'
+            return {'memory_mb':16000,'available_mb':100}
+        def close(self):pass
+    monkeypatch.setattr(pager,'AgentClient',Client)
+    status={'capabilities':['node-maintenance-recipes-v1','verified-ram-caches-v1']}
+    result=pager.warm_node({'host':'target'},{},p,status)
+    assert result['state']=='skipped' and 'spare RAM' in result['reason']
+
+
+def test_optional_prefetch_never_competes_with_native_cache_fill(monkeypatch):
+    class Client:
+        def __init__(self,host):pass
+        def call(self,op,**kwargs):
+            assert op=='resource.caches'
+            return {'caches':[],'pending_caches':['filling-cache']}
+        def close(self):pass
+    monkeypatch.setattr(pager,'AgentClient',Client)
+    status={'capabilities':['node-maintenance-recipes-v1','verified-ram-caches-v1']}
+    result=pager.warm_node({'host':'target'},{},plan(),status)
+    assert result['state']=='skipped' and 'fill takes priority' in result['reason']
+
+
+def test_opt_in_ssd_cache_verifies_bytes_and_reuses_same_inode(tmp_path,monkeypatch):
+    import hashlib,os,subprocess
+    home=tmp_path/'owner';(home/'.config/lifetech-launcher').mkdir(parents=True)
+    (home/'.config/lifetech-launcher/public-cache-policy.json').write_text(json.dumps({'storage':'verified-local-ssd'}))
+    monkeypatch.setattr(Path,'home',lambda:home)
+    monkeypatch.setattr(subprocess,'check_output',lambda argv,**kw:'/dev/nvme0n1p1\n' if argv[0]=='findmnt' else '0\n')
+    source=tmp_path/'source';source.write_bytes(b'verified public reference'*100)
+    root=home/'cache';root.mkdir()
+    p={'node':'node'};pl={'source':'other','files':{'index':{'bytes':source.stat().st_size,'sha256':hashlib.sha256(source.read_bytes()).hexdigest()}}}
+    code=pager.BOOTSTRAP.split("mode='local-mmap'",1)[1].split("record={'schema'",1)[0]
+    code="mode='local-mmap'"+code
+    def run():
+        values={'p':p,'plan':pl,'paths':{'index':str(source)},'root':root,'pathlib':__import__('pathlib'),'json':json,'subprocess':subprocess,'hashlib':hashlib,'os':os}
+        exec(code,values);return Path(values['paths']['index'])
+    target=run();inode=target.stat().st_ino
+    assert target.read_bytes()==source.read_bytes()
+    assert run().stat().st_ino==inode
+    target.chmod(0o600);target.write_bytes(b'changed')
+    with pytest.raises(ValueError,match='identity differs'):run()
+
+
+def test_pager_transport_does_not_have_fixed_cpu_quota():
+    common=pager.BOOTSTRAP.split('common=',1)[1].split('\n',1)[0]
+    assert "'--cpus'" not in common

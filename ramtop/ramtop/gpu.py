@@ -147,3 +147,88 @@ class GpuMonitor:
             for counter in self.counters:
                 counter.close()
             self.counters.clear()
+
+
+def device_activity(sample, drm=Path('/sys/class/drm'), query=None):
+    """Device counters for the node, collected in its native host namespace.
+
+    DRM client engine percentages already use counter deltas. Missing clients
+    or inaccessible PMUs stay unknown; they are never converted to idle zero.
+    """
+    import csv
+    import shutil
+    import subprocess
+    rows={};engines={}
+    for client in sample.get('clients',[]):
+        pci=client.get('device');totals=engines.setdefault(pci,{})
+        for name,value in client.get('engines',{}).items():
+            if type(value) in (int,float) and 0<=value<=100:
+                totals[name]=totals.get(name,0)+value
+    for card in drm.glob('card[0-9]*'):
+        if '-' in card.name:continue
+        device=(card/'device').resolve();pci=device.name
+        if not re.fullmatch(r'[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]',pci):continue
+        vendor=read(device/'vendor','').strip();row={}
+        busy=read(device/'gpu_busy_percent','').strip()
+        if busy.isdecimal() and 0<=int(busy)<=100:
+            row.update(utilization_percent=int(busy),utilization_basis='Driver GPU busy counter')
+        elif engines.get(pci):
+            row.update(utilization_percent=round(min(100,max(engines[pci].values())),1),utilization_basis='Busiest GPU engine across native visible DRM clients; other users may be excluded')
+        elif vendor=='0x8086':
+            row['utilization_unavailable_reason']='No readable Intel engine counter; host PMU or DRM client access is required'
+        if vendor=='0x10de' and 'utilization_percent' not in row:
+            row['utilization_unavailable_reason']='NVIDIA driver utilization counter unavailable'
+        rows[pci]=row
+    if query is None and shutil.which('nvidia-smi'):
+        def query():
+            return subprocess.check_output(['nvidia-smi','--query-gpu=pci.bus_id,uuid,name,utilization.gpu,memory.total,memory.free','--format=csv,noheader,nounits'],text=True,stderr=subprocess.DEVNULL,timeout=2)
+    if query:
+        try:
+            for fields in csv.reader(query().splitlines()):
+                if len(fields)!=6:continue
+                pci,uuid,name,busy,total,free=[v.strip() for v in fields];pci=pci[-12:].lower()
+                if not re.fullmatch(r'[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]',pci):continue
+                row=rows.setdefault(pci,{})
+                try:
+                    utilization=float(busy)
+                    if 0<=utilization<=100:
+                        row.update(utilization_percent=utilization,utilization_basis='NVIDIA driver utilization counter',uuid=uuid,name=name)
+                        row.pop('utilization_unavailable_reason',None)
+                except ValueError:pass
+                try:
+                    total,free=float(total),float(free)
+                    if 0<=free<=total and total>0:row.update(memory_total_mib=total,memory_free_mib=free)
+                except ValueError:pass
+        except subprocess.TimeoutExpired:
+            for row in rows.values():
+                if 'utilization_percent' not in row and row.get('utilization_unavailable_reason','').startswith('NVIDIA'):row['utilization_unavailable_reason']='NVIDIA driver query timed out'
+        except (OSError,ValueError,subprocess.SubprocessError):pass
+        for row in rows.values():
+            if 'utilization_percent' not in row and row.get('utilization_unavailable_reason','').startswith('NVIDIA'):
+                row['utilization_unavailable_reason']=getattr(query,'reason',row['utilization_unavailable_reason'])
+    return rows
+
+
+class NvidiaQuery:
+    """One asynchronous driver query; a wedged GPU cannot stop host telemetry."""
+    def __init__(self,query=None):
+        self.query=query;self.thread=None;self.output='';self.sampled=0;self.started=0;self.error=None
+
+    @property
+    def reason(self):
+        if self.thread and self.thread.is_alive() and time.monotonic()-self.started>3:return 'NVIDIA driver query is unresponsive'
+        return self.error or 'NVIDIA driver counter warming up'
+
+    def __call__(self):
+        import shutil,subprocess
+        if self.query is None and not shutil.which('nvidia-smi'):
+            self.error='Native NVIDIA utility unavailable; node GPU runtime is required';return ''
+        if (self.thread is None or not self.thread.is_alive()) and time.monotonic()-self.started>10:
+            self.started=time.monotonic()
+            def collect():
+                try:
+                    self.output=self.query() if self.query else subprocess.check_output(['nvidia-smi','--query-gpu=pci.bus_id,uuid,name,utilization.gpu,memory.total,memory.free','--format=csv,noheader,nounits'],text=True,stderr=subprocess.DEVNULL,timeout=2)
+                    self.sampled=time.monotonic();self.error=None
+                except (OSError,ValueError,subprocess.SubprocessError):self.error='NVIDIA driver query failed or timed out'
+            self.thread=threading.Thread(target=collect,daemon=True,name='native-gpu-counters');self.thread.start()
+        return self.output if time.monotonic()-self.sampled<15 else ''

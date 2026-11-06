@@ -8,6 +8,7 @@ import datetime
 import hashlib
 import http.client
 import json
+import os
 from pathlib import Path
 import re
 import shlex
@@ -18,7 +19,7 @@ import threading
 import time
 import uuid
 
-ROOT=(Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('GenomeHarbor', 'JSwarm') else Path(__file__).resolve().parents[1])
+ROOT=Path(os.environ['JSWARM_WORKSPACE']) if os.environ.get('JSWARM_WORKSPACE') else (Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('GenomeHarbor', 'JSwarm') else Path(__file__).resolve().parents[1])
 SERVER=ROOT/'swarm-control/server'
 if str(SERVER) not in sys.path:sys.path.insert(0,str(SERVER))
 from agent_client import AgentClient,CONFIG
@@ -33,8 +34,8 @@ class GpuUnavailable(CapacityWait):
 
 
 def validate_gpu(gpu):
-    from scripts.launcher_streams import GPU_DRM_KEYS,GPU_ID_PATTERN
-    if not isinstance(gpu,dict) or set(gpu)-{'max_concurrency','vram_mb'}-GPU_DRM_KEYS!={'uuid','minimum_free_mib'}:
+    from scripts.launcher_streams import GPU_DRM_KEYS,GPU_ID_PATTERN,GPU_OPTIONAL_KEYS
+    if not isinstance(gpu,dict) or set(gpu)-{'max_concurrency','vram_mb'}-GPU_DRM_KEYS-GPU_OPTIONAL_KEYS!={'uuid','minimum_free_mib'}:
         raise ValueError('Expected an explicit GPU identity and VRAM headroom')
     if not isinstance(gpu['uuid'],str) or not re.fullmatch(GPU_ID_PATTERN,gpu['uuid']) or type(gpu['minimum_free_mib']) is not int or gpu['minimum_free_mib']<1:
         raise ValueError('Invalid physical GPU request')
@@ -102,9 +103,8 @@ def stamp():return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
 def atomic_json(path,value):
-    path=Path(path)
-    temporary=path.with_suffix(path.suffix+'.tmp')
-    temporary.write_text(json.dumps(value,indent=2));temporary.chmod(0o600);temporary.replace(path)
+    from scripts.launcher_streams import atomic_json as durable_json
+    durable_json(path,value)
 
 
 def validate_job(cpus,memory_mb,group,tmpfs,labels,container_prefix):
@@ -158,6 +158,10 @@ def observe_worker(host,name,lease,*,reconnect_seconds=180,poll_seconds=2):
         time.sleep(poll_seconds)
 
 
+class MissingWorker(ValueError):
+    """The enrolled node confirms the named execution no longer exists."""
+
+
 def observe_recorded_worker(client,host,name,lease,*,on_observed=None,reconnect_seconds=960,poll_seconds=2):
     """Resume the existing attempt through a restartable node's durable journal."""
     deadline=time.monotonic()+reconnect_seconds
@@ -169,7 +173,7 @@ def observe_recorded_worker(client,host,name,lease,*,on_observed=None,reconnect_
             if not value.get('found'):
                 last=value.get('last_observation') or {}
                 if last.get('exit_code') is not None:return last
-                raise ValueError('Docker worker is missing; execution is not complete')
+                raise MissingWorker('Docker worker is missing; execution is not complete')
             if on_observed:on_observed(value)
             if value.get('exit_code') is not None:return value
             deadline=time.monotonic()+reconnect_seconds
@@ -179,20 +183,37 @@ def observe_recorded_worker(client,host,name,lease,*,on_observed=None,reconnect_
         time.sleep(poll_seconds)
 
 
-def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_for_capacity=False,on_admitted=None,tmpfs=None,labels=None,container_prefix=None,gpu=None,network='none',shared_cache=None,memory_reservation_mb=None,profiling_context=None):
+def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_for_capacity=False,on_admitted=None,tmpfs=None,labels=None,container_prefix=None,gpu=None,network='none',shared_cache=None,memory_reservation_mb=None,profiling_context=None,gpu_compute_complete_file=None,run_id=None,shared_caches=None):
     """Docker RAM, including bounded tmpfs scratch, fits the acquired lease."""
     validate_job(cpus,memory_mb,group,tmpfs,labels,container_prefix)
+    if run_id is not None and (not isinstance(run_id,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',run_id)):
+        raise ValueError('Run ID must be a bounded operational identifier')
     if profiling_context is not None and (not isinstance(profiling_context,dict) or len(json.dumps(profiling_context))>8192):
         raise ValueError('Profiling context must be a bounded JSON object')
+    if gpu_compute_complete_file is not None:
+        marker=Path(gpu_compute_complete_file)
+        if gpu is None or not marker.is_absolute() or '..' in marker.parts or not marker.is_relative_to('/work') or str(marker)=='/work':
+            raise ValueError('GPU completion marker must be a file beneath /work')
     reservation=memory_mb if memory_reservation_mb is None else memory_reservation_mb
     if type(reservation) is not int or not 1<=reservation<=memory_mb:
         raise ValueError('RAM reservation must be positive and no larger than the hard limit')
     if sum((tmpfs or {}).values())>reservation:
         raise ValueError('RAM reservation must cover private tmpfs')
     if network not in ('none','host'):raise ValueError('Expected isolated or explicit host network')
-    if gpu is not None:validate_gpu(gpu)
+    if gpu is not None:
+        validate_gpu(gpu)
+        from scripts.launcher_streams import gpu_host_memory_mb
+        extra=gpu_host_memory_mb(gpu);memory_mb+=extra;reservation+=extra
+    shared_caches=shared_caches or {}
+    targets=list(shared_caches)+(['/dev/shm'] if shared_cache else [])
+    if len(set(targets))!=len(targets):raise ValueError('Duplicate shared cache mount')
+    for target in targets:
+        path=Path(target)
+        if not path.is_absolute() or '..' in path.parts or str(path)!=target or not re.fullmatch(r'/[A-Za-z0-9_./-]+',target) or target in ('/','/work','/tmp'):raise ValueError('Invalid shared cache target')
+    if any(a!=b and Path(a) in Path(b).parents for a in targets for b in targets):raise ValueError('Overlapping shared cache mounts')
+    protected={c['key'] for c in shared_caches.values()}|({shared_cache['key']} if shared_cache else set())
     report=Path(report)
-    lease=uuid.uuid4().hex;name=None;admission_requested=False
+    lease=uuid.uuid4().hex;name=None;admission_requested=False;receipt_saved=False;queued_at=stamp()
     client=AgentClient(host);done=threading.Event();errors=[];process=None
     try:
         status=client.call('status')
@@ -204,9 +225,9 @@ def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_fo
         if not eligible(status):raise CapacityWait('Worker is declining new work')
         if 'renewable-resources' not in status.get('capabilities',[]):raise RuntimeError('Renewable leases unavailable')
         capacity=client.call('resource.capacity',{'group':group})
-        if capacity['available_mb']<reservation and any(w.get('group')=='shared-cache' for w in status.get('workers',[])):
+        if capacity['available_mb']<reservation and ('verified-ram-caches-v1' in status.get('capabilities',[]) or any(w.get('group')=='shared-cache' for w in status.get('workers',[]))):
             from scripts.swarm_shared_cache import evict_unused
-            if evict_unused(host,keep=shared_cache.get('key') if shared_cache else None):
+            if evict_unused(host,keep=protected):
                 capacity=client.call('resource.capacity',{'group':group})
         if not wait_for_capacity and (capacity['available_mb']<reservation or capacity.get('available_cpus',0)<cpus):raise CapacityWait('Insufficient current signed capacity')
         request={'id':lease,'group':group,'cpus':cpus,'memory_mb':reservation,'container':name}
@@ -216,11 +237,18 @@ def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_fo
         result=client.call('resource.acquire',request)
         if not wait_for_capacity and not result['acquired']:raise CapacityWait('Capacity changed before reservation')
         report.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+        last_cache_reclaim=time.monotonic()
         while not result['acquired']:
-            atomic_json(report,{'phase':'waiting_capacity','host':host['host'],'sink':sink,'cpus':cpus,'memory_mb':memory_mb,'updated':stamp()})
+            atomic_json(report,{'phase':'waiting_capacity','host':host['host'],'sink':sink,'cpus':cpus,'memory_mb':memory_mb,'updated':stamp(),'container':name,'lease_id':lease,'image':image,'inputs_ready':True})
             time.sleep(2)
             status=client.call('status')
             if not eligible(status) or status.get('machine')!=host['machine']:raise CapacityWait('Worker is updating or declining new work')
+            if 'verified-ram-caches-v1' in status.get('capabilities',[]) and time.monotonic()-last_cache_reclaim>=10:
+                capacity=client.call('resource.capacity',{'group':group})
+                if capacity['available_mb']<reservation:
+                    from scripts.swarm_shared_cache import evict_unused
+                    evict_unused(host,keep=protected)
+                last_cache_reclaim=time.monotonic()
             result=client.call('resource.acquire',request)
         # Transfers and admission waits can outlive an owner's policy change or
         # a launcher reconnect. Re-attest immediately before starting compute.
@@ -250,19 +278,25 @@ def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_fo
         argv=['docker','run','--pull=never','--name',name,'--label','org.lifetech.worker=true','--label','org.lifetech.job='+lease,'--label','org.lifetech.group='+group,'--network',network,'--read-only','--log-driver','local' if detached else 'none','--cpus',str(cpus),'--memory',str(memory_mb)+'m','--memory-swap',str(memory_mb)+'m','--pids-limit','32','--cap-drop','ALL','--security-opt','no-new-privileges','--ulimit','core=0:0','--ulimit','nofile=65536:65536','--user',host.get('container_user','1000:1000'),'-e','TMPDIR=/work/tmp','-w','/work']
         if reservation!=memory_mb:argv+=['--memory-reservation',str(reservation)+'m']
         if detached:argv+=['--detach','--log-opt','max-size=8m','--log-opt','max-file=2']
-        argv+=['--label','org.lifetech.sink='+sink,'--label','org.lifetech.run='+report.stem,
+        argv+=['--label','org.lifetech.sink='+sink,'--label','org.lifetech.run='+(run_id or report.stem),
+                '--label','org.lifetech.accounting-file=/work/.swarm-execution-'+lease+'.json',
                 '--label','org.lifetech.agent-revision='+str(status.get('source_revision','unknown')),
                 '--label','org.lifetech.report='+str(report)]
         if shared_cache:
             from scripts.swarm_shared_cache import mount_args
             if '/dev/shm' in (tmpfs or {}):raise ValueError('Private tmpfs cannot shadow the shared reference')
             argv+=mount_args(host,shared_cache)
+        for target,cache in shared_caches.items():
+            from scripts.swarm_shared_cache import mount_args
+            if target in (tmpfs or {}):raise ValueError('Private tmpfs shadows immutable cache')
+            argv+=mount_args(host,cache,target=target,primary=False)
         if gpu is not None:
             if 'gpu-resource-inventory-v1' in status.get('capabilities',[]):gpu=resolve_gpu_inventory(gpu,client.call('resource.gpus'),host['machine'])
             import csv,io
             try:
                 if 'gpu-resource-inventory-v1' in status.get('capabilities',[]):
                     free={gpu['uuid']:gpu['minimum_free_mib']+gpu.get('vram_mb',0)}
+                elif gpu.get('memory_domain')=='shared-system-memory':raise GpuUnavailable('Integrated GPU requires node memory inventory')
                 elif gpu.get('render_device'):
                     code="import pathlib; p=pathlib.Path('/sys/class/drm')/pathlib.Path(__import__('sys').argv[1]).name/'device'; print((int((p/'mem_info_vram_total').read_text())-int((p/'mem_info_vram_used').read_text()))//1024**2)"
                     probe=subprocess.run(shell_command(host,['python3','-c',code,gpu['render_device']]),capture_output=True,text=True,timeout=10)
@@ -278,23 +312,24 @@ def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_fo
             subprocess.run(shell_command(host,['python3','-c',prepare,locks]),check=True,timeout=15)
             from scripts.launcher_streams import gpu_container_args
             argv+=gpu_container_args(gpu)+['--mount','type=bind,src='+locks+',dst=/gpu-locks',
-                   '--label','org.lifetech.accelerator='+gpu['uuid'],'--label','org.lifetech.gpu-concurrency='+str(gpu.get('max_concurrency',1)),'--label','org.lifetech.gpu-private-mib='+str(gpu.get('vram_mb',gpu['minimum_free_mib']))]
-            if gpu.get('max_concurrency',1)>1 or gpu.get('render_device'):
-                import base64
-                from scripts.launcher_streams import GPU_ADMISSION_SOURCE
-                revision=hashlib.sha256(GPU_ADMISSION_SOURCE.encode()).hexdigest()
-                script='gpu-admission-'+revision+'.py'
-                install="import base64,hashlib,os,pathlib,sys,tempfile; p=pathlib.Path(sys.argv[1]); data=base64.b64decode(sys.argv[2]); assert hashlib.sha256(data).hexdigest()==sys.argv[3]; f=tempfile.NamedTemporaryFile(dir=p.parent,delete=False); f.write(data); f.close(); os.replace(f.name,p) if not p.exists() else os.unlink(f.name); assert p.read_bytes()==data"
-                subprocess.run(shell_command(host,['python3','-c',install,locks+'/'+script,base64.b64encode(GPU_ADMISSION_SOURCE.encode()).decode(),revision]),check=True,timeout=30)
-                command=shlex.join(['python3','/gpu-locks/'+script,json.dumps({**gpu,'lock_directory':'/gpu-locks'}),'bash','-o','pipefail','-c',command])
-            else:
-                command=shlex.join(['flock','-n','-E','75','/gpu-locks/'+gpu['uuid']+'.lock','bash','-o','pipefail','-c',command])
+                   '--label','org.lifetech.accelerator='+gpu['uuid'],'--label','org.lifetech.gpu-memory-domain='+gpu.get('memory_domain','driver-reserved-vram'),'--label','org.lifetech.gpu-admission=pressure','--label','org.lifetech.gpu-private-mib='+str(gpu.get('vram_mb',gpu['minimum_free_mib']))]
+            import base64
+            from scripts.launcher_streams import GPU_ADMISSION_SOURCE
+            revision=hashlib.sha256(GPU_ADMISSION_SOURCE.encode()).hexdigest()
+            script='gpu-admission-'+revision+'.py'
+            install="import base64,hashlib,os,pathlib,sys,tempfile; p=pathlib.Path(sys.argv[1]); data=base64.b64decode(sys.argv[2]); assert hashlib.sha256(data).hexdigest()==sys.argv[3]; f=tempfile.NamedTemporaryFile(dir=p.parent,delete=False); f.write(data); f.close(); os.replace(f.name,p) if not p.exists() else os.unlink(f.name); assert p.read_bytes()==data"
+            subprocess.run(shell_command(host,['python3','-c',install,locks+'/'+script,base64.b64encode(GPU_ADMISSION_SOURCE.encode()).decode(),revision]),check=True,timeout=30)
+            command=shlex.join(['python3','/gpu-locks/'+script,json.dumps({**gpu,'lock_directory':'/gpu-locks',**({'compute_complete_file':gpu_compute_complete_file} if gpu_compute_complete_file else {})}),'bash','-o','pipefail','-c',command])
         for key,value in (labels or {}).items():argv+=['--label',key+'='+value]
         for target,size_mb in (tmpfs or {}).items():
             argv+=['--tmpfs',target+':rw,nosuid,nodev,noexec,size='+str(size_mb)+'m,mode=1777']
         for source,target,readonly in mounts:
             argv+=['--mount','type=bind,src='+str(source)+',dst='+target+(',readonly' if readonly else '')]
-        argv +=[image,'bash','-o','pipefail','-c',command]
+        from scripts.launcher_streams import EXECUTION_ACCOUNTING_SOURCE
+        accounting_path='/work/.swarm-execution-'+lease+'.json'
+        wrapped=shlex.join(['python3','-c',EXECUTION_ACCOUNTING_SOURCE,accounting_path,lease,'bash','-o','pipefail','-c',command])
+        launch_command='if command -v python3 >/dev/null 2>&1; then exec '+wrapped+'; else exec '+shlex.join(['bash','-o','pipefail','-c',command])+'; fi'
+        argv +=[image,'bash','-o','pipefail','-c',launch_command]
         report.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
         execution_started=stamp();execution_clock=time.monotonic()
         atomic_json(report,{'phase':'running','host':host['host'],'sink':sink,'container':name,'lease_id':lease,'cpus':cpus,'memory_mb':memory_mb,'memory_reservation_mb':reservation,'started':execution_started,'command':command,'image':image,'profiling_context':profiling_context,'ram_scratch_mounts':tmpfs or {},'gpu':gpu,'network':network,**({'shared_cache':shared_cache} if shared_cache else {})})
@@ -332,6 +367,17 @@ def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_fo
             try:owner_paused=client.call('worker.policy').get('accepting_jobs') is False
             except (OSError,RuntimeError,ValueError):pass
         result={'phase':'interrupted' if owner_paused else 'complete' if code==0 and not errors else 'failed','host':host['host'],'sink':sink,'container':name,'exit_code':code,'started':execution_started,'elapsed_seconds':time.monotonic()-execution_clock,'finished':stamp(),'command':command,'image':image,'profiling_context':profiling_context,'cpus':cpus,'memory_mb':memory_mb,'memory_reservation_mb':reservation,'container_state':detail,'lease_errors':errors,'ram_scratch_mounts':tmpfs or {},'gpu':gpu,'network':network}
+        from scripts.launcher_streams import MEMORY_ACCOUNTING_FIELDS
+        accounting={k:observed[k] for k in ('started','finished','elapsed_seconds','cpu_core_seconds','cpu_sampled_at','cpu_throttled_seconds','cpu_measurement_basis','cpu_accounting_coverage',*MEMORY_ACCOUNTING_FIELDS) if observed and k in observed}
+        if not accounting and host.get('local'):
+            from scripts.launcher_streams import accounting_fields
+            try:accounting=accounting_fields(json.loads((Path(work)/Path(accounting_path).name).read_text()),lease)
+            except (OSError,ValueError,TypeError,KeyError):pass
+        result.update(accounting)
+        result.setdefault('cpu_accounting_coverage','unavailable')
+        result.setdefault('memory_accounting_coverage','unavailable')
+        result['admission_started']=queued_at
+        result['admission_wait_seconds']=max(0,(datetime.datetime.fromisoformat(result['started'])-datetime.datetime.fromisoformat(queued_at)).total_seconds())
         if observed:result.update(container_id=observed['container_id'],image=observed['image'],worker_observation=observed)
         attempt=report.parent/'attempts'/(report.stem+'-'+name)
         if shared_cache:result['shared_cache']=shared_cache
@@ -341,6 +387,7 @@ def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_fo
         for suffix in ('.stdout','.stderr'):
             shutil.copyfile(report.with_suffix(suffix),attempt.with_suffix(suffix))
         atomic_json(report,result)
+        receipt_saved=True
         if code or errors:
             # Owner stop/pause is a scheduling event, not a bad input or failed assay.
             if owner_paused:
@@ -354,7 +401,7 @@ def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_fo
         done.set()
         cleaned=process is None
         try:
-            if process is not None:cleaned=cleanup_container(host,name)
+            if process is not None and receipt_saved:cleaned=cleanup_container(host,name)
             if cleaned and admission_requested:client.call('resource.release',{'id':lease})
             elif cleaned:pass
             else:raise RuntimeError('Container cleanup unconfirmed; resource lease retained until authenticated expiry cleanup')
@@ -447,7 +494,10 @@ if progress is not None:
     if cached.returncode==0:
         return {**receipt,'host':destination['host'],'path':target,'original_host':source['host']}
     if cached.returncode!=42:
-        raise RuntimeError('LAN cache verification failed: '+cached.stderr.decode(errors='replace')[-300:])
+        diagnostic=cached.stderr.decode(errors='replace')[-1000:]
+        if 'BlockingIOError' in diagnostic or '[Errno 11]' in diagnostic:
+            raise CapacityWait('A verified transfer still owns this destination object; retry without duplicating its writer')
+        raise RuntimeError('LAN cache verification failed: '+diagnostic[-300:])
     # Cache hits stay local; bulk bytes use authenticated direct HTTPS by default.
     from scripts.swarm_bulk import try_copy
     transport=try_copy(source,destination,receipt,target,metadata,shell_command)
@@ -475,7 +525,10 @@ if progress is not None:
     finally:
         for process in (consumer,producer):
             if process is not None:
-                if process.poll() is None:process.kill();process.wait()
+                if process.poll() is None:
+                    process.terminate()
+                    try:process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:process.kill();process.wait()
                 if process.stderr:process.stderr.close()
     return {**receipt,'host':destination['host'],'path':target,'original_host':source['host']}
 
@@ -499,5 +552,8 @@ def stream_command(source,source_command,destination,destination_command):
     finally:
         for process in (consumer,producer):
             if process is not None:
-                if process.poll() is None:process.kill();process.wait()
+                if process.poll() is None:
+                    process.terminate()
+                    try:process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:process.kill();process.wait()
                 if process.stderr:process.stderr.close()

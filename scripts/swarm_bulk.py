@@ -15,7 +15,9 @@ class IntegrityError(RuntimeError):
 
 def preferred(receipt, config=None):
     config = config or {}
-    return receipt['bytes'] >= config.get('min_bytes', DEFAULT_MIN_BYTES)
+    # Workflow-owned batches can explicitly prefer direct transport below the
+    # general routing threshold; enrollment and checksum checks still apply.
+    return receipt.get('prefer_bulk') is True or receipt['bytes'] >= config.get('min_bytes', DEFAULT_MIN_BYTES)
 
 
 def try_copy(source, destination, receipt, target, metadata, execute):

@@ -77,3 +77,140 @@ def test_nvidia_inventory_parses_driver_uuid_and_allocated_vram():
     row=agent.nvidia_allocation_rows('GPU-11111111-1111-1111-1111-111111111111, 00000000:04:00.0, RTX, 12288, 8192, 10, 50')[0]
     assert row['uuid'].startswith('GPU-') and row['memory_total_mib']==12288
     assert row['memory_free_mib']==8192 and row['gpu_allocation_added_to_host_ram'] is False
+
+
+def test_node_hardware_reads_fresh_native_gpu_counters_and_uses_runtime_when_needed(tmp_path,monkeypatch):
+    a=agent.Agent.__new__(agent.Agent);a.root=tmp_path;a.config=tmp_path/'peers.json';a.hardware_cache=None;a.hardware_sampled=0;a.gpu_validation={}
+    monkeypatch.setattr(agent,'hardware_sample',lambda **kw:{'gpus':[{'pci_id':'0000:04:00.0','vendor':'NVIDIA'}]})
+    calls=[];a.host_nvidia_allocations=lambda:(calls.append(True) or [{'pci_id':'0000:04:00.0','vendor':'NVIDIA','utilization_percent':10}])
+    p=tmp_path/'performance-state.json';p.write_text(json.dumps({'status':'published','sampled_at':time.time(),'gpu_devices':{'0000:04:00.0':{'utilization_percent':74}}}))
+    assert a.hardware()['gpus'][0]['utilization_percent']==74
+    assert a.hardware()['gpus'][0]['utilization_percent']==74 and len(calls)==0
+    p.write_text(json.dumps({'status':'published','sampled_at':time.time()-30,'gpu_devices':{'0000:04:00.0':{'utilization_percent':99}}}))
+    a.hardware();a.hardware_gpu_probe.join(timeout=1)
+    assert a.hardware()['gpus'][0]['utilization_percent']==10
+    p.write_text(json.dumps({'status':'published','sampled_at':time.time(),'gpu_devices':{'0000:04:00.0':{'utilization_percent':74}}}))
+    assert a.hardware()['gpus'][0]['utilization_percent']==74
+
+
+def test_hung_gpu_runtime_does_not_block_node_hardware(tmp_path,monkeypatch):
+    import threading
+    a=agent.Agent.__new__(agent.Agent);a.root=tmp_path;a.config=tmp_path/'peers.json';a.hardware_cache=None;a.hardware_sampled=0;a.gpu_validation={}
+    monkeypatch.setattr(agent,'hardware_sample',lambda **kw:{'gpus':[{'pci_id':'pci','vendor':'NVIDIA'}]})
+    started=threading.Event();release=threading.Event()
+    def collect():started.set();release.wait(2);return []
+    a.host_nvidia_allocations=collect
+    try:
+        before=time.monotonic();a.hardware()
+        assert time.monotonic()-before<.5 and started.wait(1)
+        before=time.monotonic();a.hardware()
+        assert time.monotonic()-before<.5
+    finally:release.set();a.hardware_gpu_probe.join(timeout=1)
+
+
+def test_legacy_gpu_count_and_exclusivity_do_not_override_real_headroom():
+    gpu={'uuid':'GPU-'+'a'*36,'minimum_free_mib':512,'vram_mb':256,'max_concurrency':1}
+    row={'uuid':gpu['uuid'],'workers_known':True,'active_workers':40,'exclusive_worker_present':True,'allocation_known':True,'memory_free_mib':20000,'private_commitment_mib':10240}
+    data={'machine':'machine','sampled_at':time.time(),'gpus':[row]}
+    selected=streams.resolve_gpu_allocation(gpu,data,'machine')
+    assert 'max_concurrency' not in selected
+    with pytest.raises(RuntimeError,match='headroom'):
+        streams.resolve_gpu_allocation(gpu,{**data,'gpus':[{**row,'memory_free_mib':1000}]},'machine')
+
+
+def test_atomic_gpu_admission_has_no_count_cap_but_still_enforces_memory(tmp_path,monkeypatch):
+    import contextlib,fcntl
+    namespace={'__name__':'gpu_admission_test'};exec(streams.GPU_ADMISSION_SOURCE,namespace)
+    gpu={'uuid':'GPU-'+'b'*36,'minimum_free_mib':4,'vram_mb':4,'max_concurrency':1,'lock_directory':str(tmp_path)}
+    free=[8192]
+    monkeypatch.setattr(namespace['subprocess'],'check_output',lambda *a,**k:gpu['uuid']+', '+str(free[0]))
+    with contextlib.ExitStack() as held:
+        # A legacy exclusive lock and the former maximum of 32 cannot cap work.
+        legacy=held.enter_context((tmp_path/(gpu['uuid']+'.lock')).open('a'))
+        fcntl.flock(legacy,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        for _ in range(40):held.enter_context(namespace['acquire_gpu'](gpu))
+        free[0]=8
+        with pytest.raises(BlockingIOError,match='headroom'):namespace['acquire_gpu'](gpu)
+    free[0]=8192
+    namespace['acquire_gpu'](gpu).close()
+
+
+def test_nvidia_probe_timeout_cleans_up_its_unique_container(monkeypatch):
+    import subprocess
+    from types import SimpleNamespace
+    from scripts import launcher_agent as agent
+    calls=[]
+    def run(args,**kwargs):
+        calls.append(args)
+        if args[:2]==['docker','run']:raise subprocess.TimeoutExpired(args,10)
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(agent.subprocess,'run',run)
+    a=object.__new__(agent.Agent)
+    assert a.host_nvidia_allocations()==[]
+    assert a.host_nvidia_allocations()==[]
+    names=[args[args.index('--name')+1] for args in calls if args[:2]==['docker','run']]
+    assert len(set(names))==2
+    for name in names:assert ['docker','rm','-f',name] in calls
+
+
+def test_integrated_intel_uses_host_headroom_without_inventing_vram():
+    gpu={'uuid':'DRM-'+'c'*32,'minimum_free_mib':512,'vram_mb':256,'memory_domain':'shared-system-memory','render_device':'/dev/dri/renderD128','render_gid':110,'pci_id':'0000:00:02.0'}
+    row={'uuid':gpu['uuid'],'vendor':'Intel','device_type':'integrated','memory_domain':'shared-system-memory','pci_id':gpu['pci_id'],'render_device':gpu['render_device'],'render_gid':110,'allocation_known':False,'memory_free_mib':None,'private_commitment_mib':256}
+    data={'machine':'m','sampled_at':time.time(),'gpus':[row],'host_memory':{'available_mib':2048}}
+    assert streams.resolve_gpu_allocation(gpu,data,'m')['memory_domain']=='shared-system-memory'
+    assert streams.gpu_host_memory_mb(gpu)==256
+    assert streams.gpu_host_memory_mb({**gpu,'memory_domain':'driver-reserved-vram'})==0
+    for changed in ({'device_type':'discrete'},{'vendor':'AMD'},{'memory_domain':'unknown'}):
+        with pytest.raises(RuntimeError):streams.resolve_gpu_allocation(gpu,{**data,'gpus':[{**row,**changed}]},'m')
+    with pytest.raises(RuntimeError,match='headroom'):
+        streams.resolve_gpu_allocation(gpu,{**data,'host_memory':{'available_mib':1000}},'m')
+    with pytest.raises(RuntimeError):streams.resolve_gpu_allocation(gpu,{**data,'host_memory':{}},'m')
+
+
+def test_intel_inventory_requires_matching_physical_integrated_device(tmp_path,monkeypatch):
+    a=agent.Agent.__new__(agent.Agent);a.root=tmp_path
+    row={'vendor':'Intel','vendor_id':'0x8086','device_id':'0x5917','pci_id':'0000:00:02.0','render_device':'/dev/dri/renderD128','render_gid':110,'memory_free_mib':None,'memory_total_mib':None}
+    monkeypatch.setattr(agent,'hardware_sample',lambda **kw:{'gpus':[row]})
+    monkeypatch.setattr(agent,'gpu_worker_commitments',lambda:{'known':True,'devices':{}})
+    a.host_render_groups=lambda:{}
+    a.gpu_host_icds=[{'path':'/usr/share/vulkan/icd.d/intel_icd.x86_64.json','library':'/usr/lib/x86_64-linux-gnu/libvulkan_intel.so'},{'path':'/usr/share/vulkan/icd.d/intel_hasvk_icd.x86_64.json','library':'libvulkan_intel_hasvk.so'}]
+    physical={'vendor_id':'0x8086','device_id':'0x5917','integrated':True,'name':'Intel UHD 620'}
+    a.host_intel_devices=lambda *args:[physical]
+    selected=a.gpu_resources()['gpus'][0]
+    assert selected['memory_domain']=='shared-system-memory' and selected['device_type']=='integrated'
+    assert selected['memory_free_mib'] is None and selected['allocation_known'] is False
+    assert len(selected['icd_candidates'])==1 and selected['shared_memory_available_mib']>0
+    for change in ({'integrated':False},{'device_id':'0x9999'}):
+        physical.update(change);a.gpu_resource_cache=None
+        assert a.gpu_resources()['gpus'][0].get('device_type')!='integrated'
+
+
+def test_intel_physical_probe_is_bounded_cached_and_reaps_helper(monkeypatch):
+    a=agent.Agent.__new__(agent.Agent);calls=[]
+    def run(args,**kw):
+        calls.append(args)
+        return SimpleNamespace(stdout='[{"vendor_id":"0x8086","device_id":"0x5917","integrated":true,"name":"Intel"}]')
+    monkeypatch.setattr(agent.subprocess,'run',run)
+    for _ in range(2):assert a.host_intel_devices('/dev/dri/renderD128',110,'/usr/share/vulkan/icd.d/intel_icd.x86_64.json')[0]['integrated']
+    assert len(calls)==2 and calls[1][:3]==['docker','rm','-f']
+    assert '--read-only' in calls[0] and '--device' in calls[0] and '--memory' in calls[0]
+
+
+def test_intel_guard_reads_live_host_headroom_and_preserves_atomic_commitments(tmp_path,monkeypatch):
+    namespace={'__name__':'gpu_admission_test'};exec(streams.GPU_ADMISSION_SOURCE,namespace)
+    sysfs=tmp_path/'sysfs';render=sysfs/'renderD128';render.mkdir(parents=True)
+    device=tmp_path/'0000:00:02.0';device.mkdir();(device/'vendor').write_text('0x8086');(render/'device').symlink_to(device)
+    runtime=tmp_path/'runtime';runtime.mkdir();files={}
+    for name in ('bwa','exact-extension.spv'):
+        (runtime/name).write_bytes(name.encode());files[name]=hashlib.sha256(name.encode()).hexdigest()
+    memory=tmp_path/'meminfo';memory.write_text('MemAvailable: 1048576 kB\n')
+    locks=tmp_path/'locks';locks.mkdir()
+    namespace['pathlib']=SimpleNamespace(Path=lambda p:sysfs if p=='/sys/class/drm' else runtime if p=='/gpu-runtime' else memory if p=='/proc/meminfo' else Path(p))
+    gpu={'uuid':'DRM-'+'d'*32,'pci_id':device.name,'render_device':'/dev/dri/renderD128','memory_domain':'shared-system-memory','runtime_files':files,'lock_directory':str(locks),'minimum_free_mib':512,'vram_mb':256}
+    first=namespace['acquire_gpu'](gpu)
+    try:
+        second=namespace['acquire_gpu'](gpu);second.close()
+        memory.write_text('MemAvailable: 921600 kB\n')
+        with pytest.raises(BlockingIOError,match='Host-backed'):namespace['acquire_gpu'](gpu)
+    finally:first.close()
+    namespace['acquire_gpu'](gpu).close()

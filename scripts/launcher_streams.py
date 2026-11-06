@@ -5,6 +5,7 @@ supply valid partition boundaries and may install fixed, immutable-image recipes
 in the node-owned stream-recipes.json registry. Payloads stay in bounded buffers.
 """
 import contextlib
+import concurrent.futures
 import fcntl
 import gzip
 import hashlib
@@ -15,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import sqlite3
 import ssl
 import subprocess
@@ -22,10 +24,118 @@ import sys
 import threading
 import time
 
+# This supervisor runs inside each worker's own cgroup. Its compact receipt is
+# durable metadata, never a payload checkpoint. SIGKILL/OOM cannot run finally;
+# those attempts deliberately retain unknown/partial resource coverage.
+MEMORY_ACCOUNTING_FIELDS=('memory_current_bytes','memory_peak_bytes','memory_anon_bytes',
+    'memory_file_bytes','memory_shmem_bytes','memory_swap_bytes','memory_sampled_at',
+    'memory_measurement_basis','memory_accounting_coverage')
+EXECUTION_ACCOUNTING_SOURCE = r'''
+import datetime,json,os,pathlib,signal,subprocess,sys,time
+path=pathlib.Path(sys.argv[1]);key=sys.argv[2];started=time.time();clock=time.monotonic();child=None;pending=[]
+iso=lambda v:datetime.datetime.fromtimestamp(v,datetime.timezone.utc).isoformat()
+def forward(sig,frame):
+ if child is None:pending.append(sig)
+ else:
+  try:os.killpg(child.pid,sig)
+  except ProcessLookupError:pass
+signal.signal(signal.SIGTERM,forward);signal.signal(signal.SIGINT,forward)
+code=127
+try:
+ child=subprocess.Popen(sys.argv[3:],start_new_session=True)
+ for sig in pending:forward(sig,None)
+ code=child.wait();code=128-code if code<0 else code
+except OSError:
+ code=127
+finally:
+ finished=time.time();value={'schema':'swarm-execution-accounting.v1','attempt_key':key,'started':iso(started),'finished':iso(finished),'elapsed_seconds':time.monotonic()-clock,'exit_code':code,'cpu_sampled_at':finished,'cpu_accounting_coverage':'unavailable'}
+ try:
+  stat=dict(line.split() for line in pathlib.Path('/sys/fs/cgroup/cpu.stat').read_text().splitlines())
+  value.update(cpu_core_seconds=int(stat['usage_usec'])/1e6,cpu_throttled_seconds=int(stat.get('throttled_usec',0))/1e6,cpu_accounting_coverage='final-pre-exit',cpu_measurement_basis='Kernel cgroup v2 CPU time for the whole worker container, sampled after command exit; excludes supervisor receipt flush and teardown')
+ except (OSError,KeyError,ValueError):pass
+ value['memory_accounting_coverage']='unavailable'
+ try:
+  root=pathlib.Path('/sys/fs/cgroup')
+  for filename,field in [('memory.current','memory_current_bytes'),('memory.peak','memory_peak_bytes'),('memory.swap.current','memory_swap_bytes')]:
+   try:value[field]=int((root/filename).read_text())
+   except (OSError,ValueError):pass
+  memory=dict(line.split() for line in (root/'memory.stat').read_text().splitlines())
+  for field,name in [('memory_anon_bytes','anon'),('memory_file_bytes','file'),('memory_shmem_bytes','shmem')]:
+   if name in memory:value[field]=int(memory[name])
+  if 'memory_peak_bytes' in value:
+   value.update(memory_sampled_at=time.time(),memory_accounting_coverage='final-pre-exit',memory_measurement_basis='Kernel cgroup v2 lifetime peak and post-command current RAM for the whole worker container; includes file and shmem; supervisor receipt flush and teardown excluded')
+ except (OSError,KeyError,ValueError):pass
+ try:
+  path.parent.mkdir(parents=True,exist_ok=True);temporary=path.with_name(path.name+'.tmp')
+  with temporary.open('w') as f:json.dump(value,f);f.flush();os.fsync(f.fileno())
+  temporary.replace(path)
+  fd=os.open(path.parent,os.O_RDONLY);os.fsync(fd);os.close(fd)
+ except OSError:
+  print('SWARM_EXECUTION_ACCOUNTING '+json.dumps(value),file=sys.stderr,flush=True)
+sys.exit(code)
+'''
+
+
+def accounting_fields(value,key):
+    """Validate attempt-bound worker accounting before promoting it to a receipt."""
+    import math
+    import datetime
+    if not isinstance(value,dict) or value.get('schema')!='swarm-execution-accounting.v1' or value.get('attempt_key')!=key:
+        raise ValueError('Execution accounting attempt identity differs')
+    start=datetime.datetime.fromisoformat(value['started']).timestamp();end=datetime.datetime.fromisoformat(value['finished']).timestamp()
+    if not all(math.isfinite(v) for v in (start,end)) or end<start:raise ValueError('Invalid accounting clock interval')
+    fields={k:value[k] for k in ('started','finished','elapsed_seconds','cpu_core_seconds','cpu_throttled_seconds','cpu_sampled_at','cpu_measurement_basis','cpu_accounting_coverage','exit_code',*MEMORY_ACCOUNTING_FIELDS) if k in value}
+    for k in ('elapsed_seconds','cpu_core_seconds','cpu_throttled_seconds','cpu_sampled_at','memory_sampled_at'):
+        if k in fields and (type(fields[k]) not in (int,float) or not math.isfinite(fields[k]) or fields[k]<0):raise ValueError('Invalid execution counter')
+    for k in MEMORY_ACCOUNTING_FIELDS:
+        if k.endswith('_bytes') and k in fields and (type(fields[k]) is not int or not 0<=fields[k]<2**63):raise ValueError('Invalid memory counter')
+    for k in ('cpu_accounting_coverage','memory_accounting_coverage'):
+        if k in fields and fields[k] not in ('unavailable','sampled-partial','final-pre-exit'):raise ValueError('Invalid accounting coverage')
+    if type(value.get('exit_code')) is not int or not 0<=value['exit_code']<=255:raise ValueError('Invalid execution exit code')
+    fields['timing_basis']='worker supervisor monotonic command interval; queue waiting excluded'
+    return fields
+
+
+def merge_execution_accounting(saved,current):
+    """Late cleanup cannot erase stronger, attempt-bound resource receipts."""
+    value={**saved,**current}
+    families=(('cpu_core_seconds','cpu_accounting_coverage',
+        ('cpu_core_seconds','cpu_throttled_seconds','cpu_sampled_at','cpu_measurement_basis','cpu_accounting_coverage')),
+        ('memory_peak_bytes','memory_accounting_coverage',MEMORY_ACCOUNTING_FIELDS))
+    for counter,coverage,fields in families:
+        final=saved.get(coverage)=='final-pre-exit'
+        if (final and current.get(coverage)!='final-pre-exit') or (saved.get(counter) is not None and current.get(counter) is None):
+            for field in fields:
+                if field in saved:value[field]=saved[field]
+            if final:
+                for field in ('started','finished','elapsed_seconds','timing_basis'):
+                    if field in saved:value[field]=saved[field]
+    return value
+
+
+def accounting_tar(data,key):
+    import tarfile
+    if len(data)>65536:raise ValueError('Oversized accounting envelope')
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        members=tar.getmembers()
+        if len(members)!=1 or not members[0].isfile() or members[0].size>8192:raise ValueError('Invalid accounting envelope')
+        return accounting_fields(json.load(tar.extractfile(members[0])),key)
+
+
 VERSION='launcher-stream-work.v1'
 BUFFER=8*1024*1024
 BUILTINS=('gzip.sha256.v1','bytes.sha256.v1')
+UNINSPECTED=object()
 TERMINAL=('completed','failed_integrity','failed','cancelled')
+# Zero disables a deadline. Delivery is deliberately unlimited: verified RAM
+# outputs must survive a sink outage. Applications can declare a finite budget.
+LIFECYCLE={'queue_seconds':0,'execution_seconds':0,'stall_seconds':3600,
+           'delivery_seconds':0,'retry_seconds':86400,'max_retries':8}
+
+
+def lifecycle(spec):
+    return {**LIFECYCLE,**spec.get('lifecycle',{})}
+
 
 
 def canonical(value):return json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False)
@@ -65,22 +175,25 @@ GPU_ADMISSION_SOURCE=r'''import contextlib,fcntl,hashlib,json,pathlib,subprocess
 def acquire_gpu(gpu):
     stack=contextlib.ExitStack()
     try:
-        root=pathlib.Path(gpu['lock_directory']);uuid=gpu['uuid'];maximum=gpu.get('max_concurrency',1)
+        root=pathlib.Path(gpu['lock_directory']);uuid=gpu['uuid']
         if gpu.get('render_device'):
             device=pathlib.Path('/sys/class/drm')/pathlib.Path(gpu['render_device']).name/'device'
-            if device.resolve().name!=gpu['pci_id'] or (device/'vendor').read_text().strip()!='0x1002':raise ValueError('AMD physical device identity changed')
+            shared=gpu.get('memory_domain')=='shared-system-memory'
+            if device.resolve().name!=gpu['pci_id'] or (device/'vendor').read_text().strip()!=('0x8086' if shared else '0x1002'):raise ValueError('DRM physical device identity changed')
             for name,sha in gpu['runtime_files'].items():
                 if hashlib.sha256((pathlib.Path('/gpu-runtime')/name).read_bytes()).hexdigest()!=sha:raise ValueError('GPU runtime artifact integrity differs')
-            gpu_free=(int((device/'mem_info_vram_total').read_text())-int((device/'mem_info_vram_used').read_text()))//1024**2
-            if gpu_free<gpu['minimum_free_mib']+gpu.get('vram_mb',0):raise BlockingIOError('AMD VRAM headroom unavailable')
-        common=stack.enter_context((root/(uuid+'.lock')).open('a'))
-        fcntl.flock(common,(fcntl.LOCK_SH if maximum>1 else fcntl.LOCK_EX)|fcntl.LOCK_NB)
-        if maximum==1:return stack
+            if shared:
+                memory={line.split(':',1)[0]:int(line.split()[1]) for line in pathlib.Path('/proc/meminfo').read_text().splitlines() if len(line.split())>=2 and line.split()[1].isdigit()}
+                gpu_free=memory['MemAvailable']//1024
+            else:gpu_free=(int((device/'mem_info_vram_total').read_text())-int((device/'mem_info_vram_used').read_text()))//1024**2
+            if gpu_free<gpu['minimum_free_mib']+gpu.get('vram_mb',0):raise BlockingIOError('Host-backed GPU memory headroom unavailable' if shared else 'AMD VRAM headroom unavailable')
+        # Serialize only admission accounting, never the lifetime of GPU work.
+        # Legacy exclusive/count locks do not represent resource pressure.
         with (root/(uuid+'.admission.lock')).open('a') as admission:
             fcntl.flock(admission,fcntl.LOCK_EX)
-            paths={root/(uuid+'.slot-'+str(i)+'.lock') for i in range(maximum)}|set(root.glob(uuid+'.slot-*.lock'))
             chosen=None;occupied=[]
-            for path in sorted(paths):
+            paths=sorted(root.glob(uuid+'.slot-*.lock'))
+            for path in paths:
                 handle=path.open('a+')
                 try:fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
                 except BlockingIOError:
@@ -88,30 +201,47 @@ def acquire_gpu(gpu):
                         handle.seek(0);occupied.append(json.load(handle))
                     finally:handle.close()
                     continue
-                index=int(path.name.split('.slot-')[1].split('.')[0])
-                if chosen is None and index<maximum:chosen=stack.enter_context(handle)
+                if chosen is None:chosen=stack.enter_context(handle)
                 else:handle.close()
-            if chosen is None or len(occupied)>=min([maximum]+[r['max_concurrency'] for r in occupied]):raise BlockingIOError('GPU concurrency slots occupied')
+            if chosen is None:
+                index=0
+                while (root/(uuid+'.slot-'+str(index)+'.lock')).exists():index+=1
+                chosen=stack.enter_context((root/(uuid+'.slot-'+str(index)+'.lock')).open('a+'))
+                fcntl.flock(chosen,fcntl.LOCK_EX|fcntl.LOCK_NB)
             rows=[] if gpu.get('render_device') else subprocess.check_output(['nvidia-smi','--query-gpu=uuid,memory.free','--format=csv,noheader,nounits'],text=True,timeout=10).splitlines()
             free={uuid:gpu_free} if gpu.get('render_device') else {r.split(',')[0].strip():int(r.split(',')[1]) for r in rows}
-            required=gpu['minimum_free_mib']+gpu['vram_mb']+sum(r['vram_mb'] for r in occupied)
-            if free.get(uuid,0)<required:raise BlockingIOError('GPU VRAM headroom unavailable')
-            chosen.seek(0);chosen.truncate();json.dump({'vram_mb':gpu['vram_mb'],'max_concurrency':maximum},chosen);chosen.flush()
+            required=gpu['minimum_free_mib']+gpu.get('vram_mb',gpu['minimum_free_mib'])+sum(r['vram_mb'] for r in occupied)
+            if free.get(uuid,0)<required:raise BlockingIOError('Host-backed GPU memory headroom unavailable' if gpu.get('memory_domain')=='shared-system-memory' else 'GPU VRAM headroom unavailable')
+            chosen.seek(0);chosen.truncate();json.dump({'vram_mb':gpu.get('vram_mb',gpu['minimum_free_mib'])},chosen);chosen.flush()
         return stack
     except BaseException:stack.close();raise
 
 if __name__=='__main__':
     try:
-        with acquire_gpu(json.loads(sys.argv[1])):
-            raise SystemExit(subprocess.call(sys.argv[2:]))
+        gpu=json.loads(sys.argv[1]);complete=gpu.pop('compute_complete_file',None)
+        with acquire_gpu(gpu) as guard:
+            process=subprocess.Popen(sys.argv[2:])
+            while True:
+                try:
+                    code=process.wait(timeout=0.25)
+                    break
+                except subprocess.TimeoutExpired:
+                    # The owner-installed command promises never to use the GPU
+                    # again after publishing this marker. RAM outputs may live on.
+                    if complete and pathlib.Path(complete).is_file():
+                        guard.close();complete=None
+            raise SystemExit(code)
     except (BlockingIOError,subprocess.SubprocessError,OSError):raise SystemExit(75)
 '''
 
+GPU_OPTIONAL_KEYS={'memory_domain','runtime_mode'}
 GPU_DRM_KEYS={'render_device','render_gid','pci_id','icd','runtime_directory','runtime_files'}
 GPU_ID_PATTERN=r'(?:GPU-[a-fA-F0-9-]{36}|DRM-[a-f0-9]{32})'
 
 
 def validate_drm_gpu(gpu):
+    if 'memory_domain' in gpu and (not gpu.get('render_device') or gpu['memory_domain'] not in ('driver-reserved-vram','shared-system-memory')):raise ValueError('Invalid GPU memory domain')
+    if 'runtime_mode' in gpu and (gpu['runtime_mode']!='image-native' or not gpu.get('render_device')):raise ValueError('Invalid GPU runtime mode')
     present=GPU_DRM_KEYS & set(gpu)
     if not present:
         if str(gpu.get('uuid','')).startswith('DRM-'):raise ValueError('DRM identity requires device binding')
@@ -122,7 +252,9 @@ def validate_drm_gpu(gpu):
     if not re.fullmatch(r'/usr/share/vulkan/icd.d/[A-Za-z0-9_.-]+\.json',str(gpu['icd'])):raise ValueError('Invalid Vulkan ICD binding')
     if not re.fullmatch(r'/[A-Za-z0-9_./-]+',str(gpu['runtime_directory'])) or '..' in Path(gpu['runtime_directory']).parts:raise ValueError('Invalid GPU runtime path')
     files=gpu['runtime_files']
-    if not isinstance(files,dict) or not {'bwa','exact-extension.spv'}<=set(files) or set(files)-{'bwa','exact-extension.spv','cpu-bwa'} or any(not is_sha(v) for v in files.values()):raise ValueError('Invalid GPU runtime manifest')
+    required={'followup.so','followup.spv'} if gpu.get('runtime_mode')=='image-native' else {'bwa','exact-extension.spv'}
+    allowed=required if gpu.get('runtime_mode')=='image-native' else {'bwa','exact-extension.spv','cpu-bwa','samtools','libhts.so.3','libncurses.so.6','libtinfo.so.6','libdeflate.so.0','libhtscodecs.so.2','liblzma.so.5','libbz2.so.1.0'}
+    if not isinstance(files,dict) or not required<=set(files) or set(files)-allowed or any(not is_sha(v) for v in files.values()):raise ValueError('Invalid GPU runtime manifest')
 
 
 def resolve_gpu_allocation(gpu,inventory,machine):
@@ -134,43 +266,56 @@ def resolve_gpu_allocation(gpu,inventory,machine):
     if len(matches)!=1:raise RuntimeError('Qualified physical GPU is absent or ambiguous')
     row=matches[0]
     if row.get('workers_known') is False:raise RuntimeError('GPU worker ownership is unknown')
-    if row.get('exclusive_worker_present') or row.get('active_workers',0)>=gpu.get('max_concurrency',1):raise RuntimeError('Physical GPU concurrency slots are occupied')
-    free=row.get('memory_free_mib')
-    if not row.get('allocation_known') or not isinstance(free,(int,float)):raise RuntimeError('GPU allocation is unknown; host RAM is not a VRAM substitute')
+    shared=gpu.get('memory_domain')=='shared-system-memory'
+    if shared:
+        if row.get('vendor')!='Intel' or row.get('device_type')!='integrated' or row.get('memory_domain')!='shared-system-memory':raise RuntimeError('Qualified integrated GPU memory domain changed')
+        free=inventory.get('host_memory',{}).get('available_mib')
+    else:free=row.get('memory_free_mib')
+    if (not shared and not row.get('allocation_known')) or not isinstance(free,(int,float)):raise RuntimeError('GPU allocation is unknown; host RAM is not a VRAM substitute')
     if free<gpu['minimum_free_mib']+gpu.get('vram_mb',0)+row.get('private_commitment_mib',0):raise RuntimeError('Node reports insufficient GPU allocation headroom')
-    result=dict(gpu)
+    result=dict(gpu);result.pop('max_concurrency',None)
     if gpu.get('render_device'):
-        if row.get('pci_id')!=gpu['pci_id'] or row.get('vendor')!='AMD' or row.get('memory_domain')!='driver-reserved-vram':raise RuntimeError('Qualified AMD device or memory domain changed')
+        if row.get('pci_id')!=gpu['pci_id'] or row.get('vendor')!=('Intel' if shared else 'AMD') or row.get('memory_domain')!=('shared-system-memory' if shared else 'driver-reserved-vram'):raise RuntimeError('Qualified DRM device or memory domain changed')
         if row.get('render_device') is None or type(row.get('render_gid')) is not int:raise RuntimeError('Node cannot attest the render device permissions')
         if row.get('vulkan_icds_known') is False:raise RuntimeError('Node cannot attest Vulkan driver manifests')
         icds=row.get('icd_candidates')
         if icds is not None:
             if gpu.get('icd') in icds:result['icd']=gpu['icd']
             elif len(icds)==1:result['icd']=icds[0]
-            else:raise RuntimeError('Physical AMD Vulkan driver is absent or ambiguous')
+            else:raise RuntimeError('Physical Vulkan driver is absent or ambiguous')
         result.update(render_device=row['render_device'],render_gid=row['render_gid'])
     return result
+
+
+def gpu_host_memory_mb(gpu):
+    """Integrated GPU buffers consume the same physical RAM pool as CPU jobs."""
+    return gpu.get('vram_mb',gpu['minimum_free_mib']) if gpu and gpu.get('memory_domain')=='shared-system-memory' else 0
 
 
 def gpu_container_args(gpu):
     if not gpu.get('render_device'):return ['--gpus','device='+gpu['uuid'],'--env','NVIDIA_DRIVER_CAPABILITIES=graphics,compute,utility']
     validate_drm_gpu(gpu)
+    if gpu.get('runtime_mode')=='image-native':
+        return ['--device',gpu['render_device'],'--group-add',str(gpu['render_gid']),
+                '--mount','type=bind,src='+gpu['runtime_directory']+',dst=/gpu-runtime,readonly',
+                '--env','VK_ICD_FILENAMES='+gpu['icd']]
     return ['--device',gpu['render_device'],'--group-add',str(gpu['render_gid']),
             '--mount','type=bind,src=/usr,dst=/usr,readonly',
             '--mount','type=bind,src='+gpu['runtime_directory']+',dst=/gpu-runtime,readonly',
-            '--env','PATH=/gpu-runtime:/usr/local/bin:/usr/bin:/bin',
+            '--env','PATH=/gpu-runtime:/usr/local/bin:/usr/bin:/bin','--env','LD_LIBRARY_PATH=/gpu-runtime',
             '--env','BWA_VULKAN_SHADER=/gpu-runtime/exact-extension.spv','--env','VK_ICD_FILENAMES='+gpu['icd']]
 
 
 def validate_gpu_sharing(gpu):
     validate_drm_gpu(gpu)
-    if ('max_concurrency' in gpu)!=('vram_mb' in gpu):raise ValueError('GPU sharing needs concurrency and VRAM budgets')
-    if 'max_concurrency' in gpu and (type(gpu['max_concurrency']) is not int or not 1<=gpu['max_concurrency']<=32 or type(gpu['vram_mb']) is not int or gpu['vram_mb']<1):raise ValueError('Invalid GPU sharing budget')
+    # Legacy count fields are accepted for immutable recipe compatibility only.
+    if 'max_concurrency' in gpu and (type(gpu['max_concurrency']) is not int or gpu['max_concurrency']<1):raise ValueError('Invalid legacy GPU count')
+    if 'vram_mb' in gpu and (type(gpu['vram_mb']) is not int or gpu['vram_mb']<1):raise ValueError('Invalid GPU memory budget')
 
 def validate_execution(definition):
     gpu=definition.get('gpu')
     if gpu is not None:
-        if (not isinstance(gpu,dict) or set(gpu)-{'max_concurrency','vram_mb'}-GPU_DRM_KEYS!={'uuid','minimum_free_mib','lock_directory'}
+        if (not isinstance(gpu,dict) or set(gpu)-{'max_concurrency','vram_mb'}-GPU_DRM_KEYS-GPU_OPTIONAL_KEYS!={'uuid','minimum_free_mib','lock_directory'}
                 or not re.fullmatch(GPU_ID_PATTERN,str(gpu.get('uuid','')))
                 or type(gpu.get('minimum_free_mib')) is not int or gpu['minimum_free_mib']<1
                 or not re.fullmatch(r'/[A-Za-z0-9_./-]+',str(gpu.get('lock_directory','')))
@@ -190,8 +335,10 @@ def validate_execution(definition):
 
 def validate(request,registry=None):
     registry=registry or {}
-    if not isinstance(request,dict) or set(request)-{'id','recipe','image','inputs','parameters','resources','buffer_bytes','label','namespace','storage','output','priority'}:raise ValueError('Invalid streaming work declaration')
+    if not isinstance(request,dict) or set(request)-{'id','recipe','image','inputs','parameters','resources','buffer_bytes','label','namespace','storage','output','priority','lifecycle'}:raise ValueError('Invalid streaming work declaration')
     if not isinstance(request.get('id'),str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',request['id']):raise ValueError('Invalid stream work ID')
+    limits=request.get('lifecycle',{})
+    if not isinstance(limits,dict) or set(limits)-set(LIFECYCLE) or any(type(v) is not int or v<0 or v>31536000 for v in limits.values()):raise ValueError('Invalid lifecycle budgets')
     output=request.get('output')
     if output is not None and (not isinstance(output,dict) or set(output)!={'peer','machine','grant','job_key'} or not isinstance(output['peer'],str) or not all(is_sha(output[k]) for k in ('machine','grant','job_key'))):raise ValueError('Invalid enrolled output grant')
     recipe=request.get('recipe')
@@ -199,7 +346,7 @@ def validate(request,registry=None):
     if not isinstance(request.get('image'),str) or not re.fullmatch(r'sha256:[a-f0-9]{64}',request['image']):raise ValueError('Streaming work requires a pinned local image')
     if recipe in registry and request['image']!=registry[recipe]['image']:raise ValueError('Image differs from installed recipe')
     inputs=request.get('inputs')
-    if not isinstance(inputs,dict) or not inputs or not all(isinstance(k,str) and re.fullmatch(r'[A-Za-z0-9_-]{1,80}',k) for k in inputs):raise ValueError('Named immutable input descriptors required')
+    if not isinstance(inputs,dict) or (not inputs and not registry.get(recipe,{}).get('mounts')) or not all(isinstance(k,str) and re.fullmatch(r'[A-Za-z0-9_-]{1,80}',k) for k in inputs):raise ValueError('Named immutable input descriptors required')
     for row in inputs.values():
         if not isinstance(row,dict) or set(row)-{'peer','machine','object','sha256','bytes','start','length','mode'} or not isinstance(row.get('peer'),str) or not is_sha(row.get('machine')) or not is_sha(row.get('object')) or not is_sha(row.get('sha256')) or type(row.get('bytes')) is not int or row['bytes']<0:raise ValueError('Invalid enrolled immutable input')
         if row.get('mode','stream') not in ('stream','shared'):raise ValueError('Invalid input cache preference')
@@ -208,7 +355,7 @@ def validate(request,registry=None):
         if recipe=='gzip.sha256.v1' and (row['bytes']==0 or start!=0 or length!=row['bytes']):raise ValueError('Gzip work needs a complete member-aligned object; use an indexed application recipe for windows')
     if type(request.get('priority',0)) is not int or not -1000<=request.get('priority',0)<=1000:raise ValueError('Priority must be an integer from -1000 to 1000')
     resources=request.get('resources',{'cpus':1,'memory_mb':256})
-    if not isinstance(resources,dict) or set(resources)!={'cpus','memory_mb'} or any(type(resources[k]) is not int or resources[k]<1 for k in resources):raise ValueError('Explicit positive CPU/RAM budgets required')
+    if not isinstance(resources,dict) or set(resources)-{'memory_reservation_mb'}!={'cpus','memory_mb'} or any(type(resources[k]) is not int or resources[k]<1 for k in resources) or resources.get('memory_reservation_mb',resources['memory_mb'])>resources['memory_mb']:raise ValueError('Explicit positive CPU/RAM budgets required')
     storage=request.get('storage')
     if storage is not None:
         if (not isinstance(storage,dict) or set(storage)!={'mode','scratch_mb'} or storage['mode']!='ram-only'
@@ -473,6 +620,10 @@ class Journal:
             if 'created' not in columns:
                 db.execute('ALTER TABLE work ADD COLUMN created REAL NOT NULL DEFAULT 0')
                 db.execute('UPDATE work SET created=updated')
+            for name,definition in {'stop_target':'TEXT','progress_key':'TEXT','progress_at':'REAL NOT NULL DEFAULT 0','phase':'TEXT','phase_at':'REAL NOT NULL DEFAULT 0','started_at':'REAL NOT NULL DEFAULT 0','retries':'INTEGER NOT NULL DEFAULT 0','retry_since':'REAL NOT NULL DEFAULT 0','queue_since':'REAL NOT NULL DEFAULT 0'}.items():
+                if name not in columns:db.execute('ALTER TABLE work ADD COLUMN '+name+' '+definition)
+            db.execute('CREATE TABLE IF NOT EXISTS execution_receipts(id TEXT NOT NULL,attempt INTEGER NOT NULL,receipt TEXT NOT NULL,PRIMARY KEY(id,attempt))')
+            db.execute('CREATE TABLE IF NOT EXISTS tombstones(id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, row TEXT NOT NULL)')
         self.path.chmod(0o600)
     @contextlib.contextmanager
     def connect(self):
@@ -482,14 +633,17 @@ class Journal:
         finally:db.close()
     def get(self,ident):
         with self.connect() as db:row=db.execute('SELECT * FROM work WHERE id=?',(ident,)).fetchone()
-        if row is None:raise FileNotFoundError('Unknown streaming work item')
+        if row is None:
+            with self.connect() as db:archived=db.execute('SELECT row FROM tombstones WHERE id=?',(ident,)).fetchone()
+            if archived:return {**json.loads(archived['row']),'archived':True}
+            raise FileNotFoundError('Unknown streaming work item')
         value=dict(row);value['spec']=json.loads(value['spec'])
         if value['result']:value['result']=json.loads(value['result'])
         return value
     def submit(self,spec,allowed):
         fingerprint=digest(spec)
         with self.connect() as db:
-            db.execute('BEGIN IMMEDIATE');old=db.execute('SELECT fingerprint FROM work WHERE id=?',(spec['id'],)).fetchone()
+            db.execute('BEGIN IMMEDIATE');old=db.execute('SELECT fingerprint FROM work WHERE id=? UNION ALL SELECT fingerprint FROM tombstones WHERE id=?',(spec['id'],spec['id'])).fetchone()
             if old and old['fingerprint']!=fingerprint:raise ValueError('Stream work ID already has a different immutable contract')
             if not old:
                 if not allowed:raise PermissionError('Worker paused; new streaming tasks refused')
@@ -497,7 +651,7 @@ class Journal:
                 db.execute('INSERT INTO transitions(id,state,attempt,time) VALUES(?,?,?,?)',(spec['id'],'queued',0,time.time()))
         return self.get(spec['id'])
     def update(self,ident,**values):
-        allowed={'state','attempt','container','folder','due','result','error','priority'}
+        allowed={'state','attempt','container','folder','due','result','error','priority','stop_target','progress_key','progress_at','phase','phase_at','started_at','retries','retry_since','queue_since'}
         if set(values)-allowed:raise ValueError('Invalid work state update')
         values={**values,'updated':time.time()}
         if 'result' in values and values['result'] is not None:values['result']=canonical(values['result'])
@@ -506,6 +660,32 @@ class Journal:
             if 'state' in values:
                 row=db.execute('SELECT attempt FROM work WHERE id=?',(ident,)).fetchone()
                 db.execute('INSERT INTO transitions(id,state,attempt,time) VALUES(?,?,?,?)',(ident,values['state'],row['attempt'],time.time()))
+    def archive(self,ident):
+        """Keep replay identity and receipt available after removing active history."""
+        row=self.get(ident)
+        if row.get('archived'):return row
+        if row['state'] not in TERMINAL or row['container']:raise ValueError('Only terminal work without a worker can be removed')
+        row['execution']=self.timings([ident]).get(ident)
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            current=db.execute('SELECT state,container,updated FROM work WHERE id=?',(ident,)).fetchone()
+            if not current or current['updated']!=row['updated'] or current['state'] not in TERMINAL or current['container']:raise ValueError('Work changed during removal')
+            transitions=[dict(r) for r in db.execute('SELECT * FROM transitions WHERE id=? ORDER BY sequence',(ident,))]
+            atomic_json(self.path.parent/'archives'/(ident+'.json'),{'work':row,'transitions':transitions})
+            tombstone={**row,'folder':None,'archived':True}
+            db.execute('INSERT INTO tombstones VALUES(?,?,?)',(ident,row['fingerprint'],canonical(tombstone)))
+            db.execute('DELETE FROM transitions WHERE id=?',(ident,))
+            db.execute('DELETE FROM work WHERE id=?',(ident,))
+        return tombstone
+
+    def record_execution(self,row,value):
+        with self.connect() as db:
+            old=db.execute('SELECT receipt FROM execution_receipts WHERE id=? AND attempt=?',(row['id'],row['attempt'])).fetchone()
+            if old:
+                saved=json.loads(old[0])
+                value=merge_execution_accounting(saved,value)
+            db.execute('INSERT OR REPLACE INTO execution_receipts VALUES(?,?,?)',(row['id'],row['attempt'],canonical(value)))
+
     def timings(self,ids):
         import datetime
         now=time.time();out={}
@@ -526,12 +706,21 @@ class Journal:
                     if type(finished) in (int,float) and start<=finished<=end:end=finished
                 elapsed=(end if end is not None else now)-start if start is not None else None
                 iso=lambda value:datetime.datetime.fromtimestamp(value,datetime.timezone.utc).isoformat() if value is not None else None
+                saved=db.execute('SELECT receipt FROM execution_receipts WHERE id=? AND attempt=?',(row['id'],row['attempt'])).fetchone()
+                accounting=json.loads(saved[0]) if saved else {}
+                events=db.execute('SELECT state,time FROM transitions WHERE id=? ORDER BY sequence',(row['id'],)).fetchall()
+                queue_seconds=sum(max(0,(events[n+1]['time'] if n+1<len(events) else now)-event['time']) for n,event in enumerate(events) if event['state'] in ('queued','admitting','launching','retry_wait'))
                 spec=json.loads(row['spec'])
                 out[row['id']]={'attempt':row['attempt'],'state':row['state'],'started':iso(start),'finished':iso(end),
                     'elapsed_seconds':elapsed if elapsed is not None and elapsed>=0 else None,
                     'container':row['container'],'resources':spec.get('resources'),'image':spec.get('image'),
                     'recorded_at':row['updated'],'sampled_at':now,
-                    'timing_basis':'node running transition to verified worker finish (terminal transition fallback); includes transfer and GPU waits; excludes prior attempts'}
+                    'timing_basis':'node running transition to verified worker finish (terminal transition fallback); includes transfer and GPU waits; excludes prior attempts',
+                    **accounting,'queue_seconds':queue_seconds,'queue_timing_basis':'Sum of recorded queued/admitting/launching/retry-wait intervals across attempts; execution excluded'}
+            archived=db.execute('SELECT id,row FROM tombstones WHERE id IN ('+','.join('?' for _ in ids)+')',ids).fetchall()
+            for row in archived:
+                execution=json.loads(row['row']).get('execution')
+                if execution is not None:out[row['id']]={**execution,'sampled_at':now}
         return out
 
     def list(self,states=None,limit=100,after='',has_container=False):
@@ -545,6 +734,7 @@ class Engine:
     def __init__(self,agent,lease_factory,policy,start=True,state_root=None):
         self.agent=agent;self.lease_factory=lease_factory;self.policy=policy;self.root=Path(state_root or agent.root)/'.stream-work';self.root.mkdir(mode=0o700,exist_ok=True)
         self.store=Journal(self.root/'work.sqlite3');self.stopped=threading.Event();self.pending={};self.lock=threading.RLock();self.last_error=None
+        self.stop_pool=concurrent.futures.ThreadPoolExecutor(max_workers=4,thread_name_prefix='stream-stop');self.stops={};self.maintenance_at=0
         self.machine=hashlib.sha256(Path('/etc/machine-id').read_bytes()).hexdigest();self.registry=recipes(agent.config)
         self.runtime=Path(__file__).resolve();self.revision=hashlib.sha256(self.runtime.read_bytes()).hexdigest()
         if start:
@@ -555,13 +745,29 @@ class Engine:
         return self.registry[spec['recipe']]
     def reply(self,row):
         result={k:row[k] for k in ('id','state','attempt','updated','result','error','container','priority')}
+        result['archived']=row.get('archived',False)
+        result['lifecycle']=lifecycle(row['spec'])
+        if 'lifecycle' not in row['spec']:result['lifecycle']['stall_seconds']=0
+        result['retries']=row.get('retries',0)
         result['contract_sha256']=row['fingerprint']
-        result['execution']=self.store.timings([row['id']]).get(row['id'])
+        result['execution']=row.get('execution') or self.store.timings([row['id']]).get(row['id'])
         if row.get('folder'):
             progress=Path(row['folder'])/'progress.json'
             try:result['progress']=json.loads(progress.read_text())
             except (OSError,ValueError):pass
         return result
+    def released_gpu_work(self):
+        released=set()
+        for row in self.rows(states=('running',)):
+            if not row.get('folder'):continue
+            try:
+                path=Path(row['folder'])/'gpu-released.json'
+                if path.is_symlink() or path.stat().st_size>4096:continue
+                value=json.loads(path.read_text())
+                if value.get('contract_sha256')==row['fingerprint'] and value.get('worker_machine')==self.machine:
+                    released.add(row['id'])
+            except (OSError,ValueError):pass
+        return released
     def dispatch(self,op,args):
         # Progress reads must not wait behind Docker admission or image probes.
         # The journal owns its SQLite transaction locks independently.
@@ -579,7 +785,7 @@ class Engine:
         if op=='stream.capabilities':self.registry=recipes(self.agent.config)
         if op=='stream.capabilities':
             if args:raise ValueError('Streaming capabilities accepts no arguments')
-            return {'version':VERSION,'runtime_sha256':self.revision,'recipes':list(BUILTINS)+sorted(self.registry),'buffer_bytes':BUFFER,'durable_checkpoints':True,'queue_priorities':True,'gpu_recipes':True,'shared_reference_volumes':True,'direct_result_export':True,'payload_cache':'streamed-by-default; shared verified references opt-in','shared_resource_pool':True,'storage_modes':['durable','ram-only'],'concurrency':'resource-admitted; no fixed job-count cap','last_error':self.last_error}
+            return {'version':VERSION,'runtime_sha256':self.revision,'recipes':list(BUILTINS)+sorted(self.registry),'buffer_bytes':BUFFER,'durable_cancellation':True,'safe_removal':True,'lifecycle_budgets':LIFECYCLE,'durable_checkpoints':True,'queue_priorities':True,'gpu_recipes':True,'shared_reference_volumes':True,'direct_result_export':True,'compute_phase_release':True,'payload_cache':'streamed-by-default; shared verified references opt-in','shared_resource_pool':True,'maintenance_mount_recipes':True,'separate_memory_reservation':True,'storage_modes':['durable','ram-only'],'concurrency':'resource-admitted; no fixed job-count cap','last_error':self.last_error}
         with self.lock:
             if op=='stream.submit':self.registry=recipes(self.agent.config)
             if op=='stream.submit':
@@ -595,8 +801,10 @@ class Engine:
                 spec=validate(args,registry)
                 if old:
                     prior={k:v for k,v in old['spec'].items() if k not in ('recipe_fingerprint','runtime_sha256','recipe_definition')}
+                    if 'lifecycle' in prior:spec={**spec,'lifecycle':lifecycle(spec) if 'lifecycle' in args else prior['lifecycle']}
                     if prior!=spec:raise ValueError('Stream work ID already has a different immutable contract')
                     return self.reply(old)
+                spec={**spec,'lifecycle':lifecycle(spec)}
                 definition=self.definition(spec);spec={**spec,'recipe_fingerprint':digest(definition),'runtime_sha256':self.revision,'recipe_definition':definition}
                 for row in [*spec['inputs'].values(),*([spec['output']] if spec.get('output') else [])]:
                     config=self.bulk()['config']
@@ -614,18 +822,23 @@ class Engine:
             if set(args)!={'id'} or not isinstance(args['id'],str):raise ValueError('Expected a streaming work ID')
             row=self.store.get(args['id'])
             if op=='stream.retry':
+                if row.get('archived'):raise ValueError('Archived work requires a new work ID')
                 if row['state'] in ('retry_wait','failed','cancelled'):
+                    if row['container'] or row['id'] in self.pending:raise ValueError('Worker cleanup must finish before retry')
                     if not self.policy(self.agent.config)['accepting_jobs']:raise PermissionError('Worker paused')
-                    self.store.update(row['id'],state='queued',due=0,error=None)
+                    self.store.update(row['id'],state='queued',due=0,error=None,retries=0,retry_since=0,stop_target=None,queue_since=time.time())
                 elif row['state']=='failed_integrity':raise ValueError('Integrity failures require corrected inputs and a new work contract')
                 return self.reply(self.store.get(row['id']))
             if op=='stream.cancel':
-                if row['state'] not in TERMINAL:
-                    if row['container']:
-                        state=self.inspect(row)
-                        if state and state.get('Running'):self.command(['docker','stop','--time','30',row['container']])
-                    self.store.update(row['id'],state='cancelled',error='Owner cancelled streaming work')
+                if row['state'] not in TERMINAL:self.request_stop(row,'cancelled','Owner cancelled streaming work')
                 return self.reply(self.store.get(row['id']))
+            if op=='stream.remove':
+                if row['state'] not in TERMINAL:raise ValueError('Cancel and confirm worker cleanup before removal')
+                if row.get('archived'):return self.reply(row)
+                self.cleanup(row)
+                row=self.store.get(row['id'])
+                if row['container'] or row['id'] in self.pending:raise ValueError('Worker cleanup remains pending')
+                return self.reply(self.archive(row))
             raise ValueError('Unsupported streaming work operation')
     def bulk(self):
         path=self.agent.config.parent/'bulk-streams.json'
@@ -675,7 +888,7 @@ class Engine:
             rootless=any(option=='name=rootless' for option in options)
             self._worker_user='0:0' if rootless else str(os.getuid())+':'+str(os.getgid())
         return self._worker_user
-    def command(self,args,**kwargs):return subprocess.run(args,check=True,capture_output=True,text=True,timeout=30,**kwargs)
+    def command(self,args,**kwargs):return subprocess.run(args,check=True,capture_output=True,text=kwargs.pop('text',True),timeout=kwargs.pop('timeout',30),**kwargs)
     def inspect(self,row):
         result=subprocess.run(['docker','inspect',row['container']],capture_output=True,text=True,timeout=15)
         if result.returncode:
@@ -690,7 +903,7 @@ class Engine:
             self.store.update(row['id'],folder=folder);row['folder']=folder
         return value['State']
     def resource(self,row):
-        spec=row['spec'];r=spec['resources'];return self.lease_factory('stream-work',r['cpus'],r['memory_mb'],row['container'],directory=os.getenv('SWARM_RESOURCE_DIR',str(self.agent.root/'.resources')),pids=max(32,r['cpus']*4+16),priority=row.get('priority',0),sink='gpu' if self.definition(spec).get('gpu') else 'cpu')
+        spec=row['spec'];r=spec['resources'];return self.lease_factory('stream-work',r['cpus'],r.get('memory_reservation_mb',r['memory_mb'])+gpu_host_memory_mb(self.definition(spec).get('gpu')),row['container'],directory=os.getenv('SWARM_RESOURCE_DIR',str(self.agent.root/'.resources')),pids=max(32,r['cpus']*4+16),priority=row.get('priority',0),sink='gpu' if self.definition(spec).get('gpu') else 'cpu')
     def execution_bindings(self,definition):
         """Only owner-installed bindings can expose devices or shared volumes."""
         validate_execution(definition)
@@ -712,8 +925,13 @@ class Engine:
             args+=['--mount','type=volume,src='+cache['volume']+',dst=/dev/shm,readonly,volume-nocopy','--label','org.lifetech.shared-cache='+cache['container']]
         if gpu:
             active=self.command(['docker','ps','-q','--filter','label=org.lifetech.accelerator='+gpu['uuid']]).stdout.strip()
-            if active and gpu.get('max_concurrency',1)==1:raise RuntimeError('Physical GPU already has an admitted worker')
-            if gpu.get('render_device'):
+            if hasattr(self.agent,'gpu_resources'):
+                inventory=self.agent.gpu_resources()
+                if inventory.get('machine')!=self.machine:raise ValueError('GPU inventory machine identity differs')
+                free={row['uuid']:row.get('memory_free_mib',0) for row in inventory.get('gpus',[]) if row.get('allocation_known')}
+                if gpu.get('memory_domain')=='shared-system-memory':free[gpu['uuid']]=inventory['host_memory']['available_mib']
+            elif gpu.get('memory_domain')=='shared-system-memory':raise RuntimeError('Integrated GPU requires node memory inventory')
+            elif gpu.get('render_device'):
                 device=Path('/sys/class/drm')/Path(gpu['render_device']).name/'device'
                 free={gpu['uuid']:(int((device/'mem_info_vram_total').read_text())-int((device/'mem_info_vram_used').read_text()))//1024**2}
             else:
@@ -724,7 +942,7 @@ class Engine:
             # it need not exist in the launcher's own mount namespace.
             directory=Path(gpu['lock_directory'])
             args+=gpu_container_args(gpu)+[
-                   '--mount','type=bind,src='+str(directory)+',dst=/gpu-locks','--label','org.lifetech.accelerator='+gpu['uuid'],'--label','org.lifetech.sink=gpu','--label','org.lifetech.gpu-concurrency='+str(gpu.get('max_concurrency',1)),'--label','org.lifetech.gpu-private-mib='+str(gpu.get('vram_mb',gpu['minimum_free_mib']))]
+                   '--mount','type=bind,src='+str(directory)+',dst=/gpu-locks','--label','org.lifetech.accelerator='+gpu['uuid'],'--label','org.lifetech.sink=gpu','--label','org.lifetech.gpu-memory-domain='+gpu.get('memory_domain','driver-reserved-vram'),'--label','org.lifetech.gpu-admission=pressure','--label','org.lifetech.gpu-private-mib='+str(gpu.get('vram_mb',gpu['minimum_free_mib']))]
         return args
 
     def launch(self,row):
@@ -735,7 +953,9 @@ class Engine:
                 state=self.inspect(row)
                 if state and state.get('Running'):
                     self.store.update(row['id'],state='running');return
-                if state:self.command(['docker','rm',row['container']])
+                if state:
+                    self.retain_execution(row,state)
+                    self.command(['docker','rm',row['container']])
                 old=self.pending.pop(row['id'],None)
                 if old:old.close()
             attempt=row['attempt']+1;name='swarm-job-'+digest({'id':row['id'],'contract':row['fingerprint']})[:32];folder=self.root/'work'/row['id']/str(attempt);folder.mkdir(mode=0o700,parents=True,exist_ok=True)
@@ -755,18 +975,20 @@ class Engine:
         if not self.policy(self.agent.config)['accepting_jobs']:
             lease.close();self.pending.pop(row['id'],None);self.store.update(row['id'],state='queued');return
         spec=row['spec'];folder=Path(row['folder']);bulk=self.bulk();tls=Path(bulk['root'])
-        runtime=self.runtime if spec['runtime_sha256']==self.revision else self.agent.root/'.stream-runtime'/spec['runtime_sha256']/'launcher_streams.py'
+        runtime=self.runtime if spec['runtime_sha256']==self.revision else self.root.parent/'.stream-runtime'/spec['runtime_sha256']/'launcher_streams.py'
         if not runtime.is_file() or hashlib.sha256(runtime.read_bytes()).hexdigest()!=spec['runtime_sha256']:raise ValueError('Pinned streaming runtime is unavailable')
         job={'request':spec,'contract_sha256':row['fingerprint'],'recipe_fingerprint':spec['recipe_fingerprint'],'worker_machine':self.machine,'cache_budget_bytes':self.cache_budget()}
         ram=spec.get('storage',{}).get('mode')=='ram-only'
         if ram:job.update(ram_argv=definition['argv'],cache_budget_bytes=0)
         if definition.get('gpu'):
             job.update(ram_argv=definition['argv'],gpu_lock='/gpu-locks/'+definition['gpu']['uuid']+'.lock')
-            if definition['gpu'].get('max_concurrency',1)>1 or definition['gpu'].get('render_device'):job['gpu_admission']={**definition['gpu'],'lock_directory':'/gpu-locks'}
+            if definition.get('gpu'):job['gpu_admission']={**definition['gpu'],'lock_directory':'/gpu-locks'}
         if definition.get('shared_cache'):job['shared_reference']={k:definition['shared_cache'][k] for k in ('key','memory_mb','container')}
         atomic_json(folder/'job.json',job)
-        args=['docker','run','-d','--pull=never','--name',row['container'],'--network','host','--read-only','--log-driver','none','--cpus',str(spec['resources']['cpus']),'--memory',str(spec['resources']['memory_mb'])+'m','--memory-swap',str(spec['resources']['memory_mb'])+'m','--pids-limit',str(max(32,spec['resources']['cpus']*4+16)),'--cap-drop','ALL','--security-opt','no-new-privileges','--user',self.worker_user(),'--tmpfs','/tmp:rw,nosuid,nodev,noexec,size='+str(max(1,spec['resources']['memory_mb']//8))+'m',
+        args=['docker','run','-d','--pull=never','--name',row['container'],'--network','host','--read-only','--log-driver','none','--cpus',str(spec['resources']['cpus']),'--memory',str(spec['resources']['memory_mb']+gpu_host_memory_mb(definition.get('gpu')))+'m','--memory-swap',str(spec['resources']['memory_mb']+gpu_host_memory_mb(definition.get('gpu')))+'m','--pids-limit',str(max(32,spec['resources']['cpus']*4+16)),'--cap-drop','ALL','--security-opt','no-new-privileges','--user',self.worker_user(),'--tmpfs','/tmp:rw,nosuid,nodev,noexec,size='+str(max(1,spec['resources']['memory_mb']//8))+'m',
               '--label','org.lifetech.worker=true','--label','org.lifetech.job='+row['container'].removeprefix('swarm-job-'),'--label','org.lifetech.group=stream-work','--label','org.lifetech.stream-work='+row['id'],'--label','org.lifetech.stream-contract='+row['fingerprint'],'--label','org.lifetech.stream-attempt='+str(row['attempt']),'-e','PYTHONPATH=/runtime','-w','/work','--mount','type=bind,src='+self.host_path(folder)+',dst=/work','--mount','type=bind,src='+self.host_path(runtime)+',dst=/runtime/launcher_streams.py,readonly']
+        if spec['resources'].get('memory_reservation_mb') or gpu_host_memory_mb(definition.get('gpu')):
+            args+=['--memory-reservation',str(spec['resources'].get('memory_reservation_mb',spec['resources']['memory_mb'])+gpu_host_memory_mb(definition.get('gpu')))+'m']
         if ram:
             # Keep the compact control journal separate from all payload and
             # scratch data. Container tmpfs is charged to the same no-swap lease.
@@ -781,16 +1003,156 @@ class Engine:
         for name in ('config.json','ca.crt','identity.crt','identity.key'):args+=['--mount','type=bind,src='+str(tls/name)+',dst=/tls/'+name+',readonly']
         args+=bindings
         for mount in definition.get('mounts',[]):args+=['--mount','type=bind,src='+mount['source']+',dst='+mount['target']+(',readonly' if mount['readonly'] else '')]
-        args+=(['--entrypoint','python3',definition['image'],'/runtime/launcher_streams.py','--ram-worker','/work/job.json'] if ram else ['--entrypoint','python3',definition['image'],'/runtime/launcher_streams.py','--recipe-worker','/work/job.json'] if definition.get('gpu') else ['--entrypoint',definition['argv'][0],definition['image'],*definition['argv'][1:]])
-        self.store.update(row['id'],state='launching')
+        worker_argv=['python3','/runtime/launcher_streams.py','--ram-worker','/work/job.json'] if ram else ['python3','/runtime/launcher_streams.py','--recipe-worker','/work/job.json'] if definition.get('gpu') else definition['argv']
+        key=row['fingerprint']+':'+str(row['attempt'])
+        accounting_path=('/control' if ram else '/work')+'/.execution-accounting.json'
+        args+=['--entrypoint','python3',definition['image'],'-c',EXECUTION_ACCOUNTING_SOURCE,accounting_path,key,*worker_argv]
+        self.store.update(row['id'],state='launching',started_at=time.time(),progress_at=time.time(),progress_key=None,phase=None,phase_at=time.time())
         try:self.command(args)
         except (OSError,subprocess.SubprocessError):
             # An acknowledged Docker start may outlive a lost CLI response.
             state=self.inspect(row)
             if state is None:raise
         self.store.update(row['id'],state='running')
-    def reconcile(self,row):
-        state=self.inspect(row)
+    def request_stop(self,row,target,reason):
+        if row['state']=='stopping':return
+        self.store.update(row['id'],state='stopping',stop_target=target,error=reason,due=0)
+        if not row['container']:
+            lease=self.pending.pop(row['id'],None)
+            if lease:lease.close()
+            self.store.update(row['id'],state=target)
+
+    def stop_worker(self,row):
+        state=self.inspect(row) if row['container'] else None
+        if state and (state.get('Running') or state.get('Paused') or state.get('Restarting')):
+            self.command(['docker','stop','--time','30',row['container']],timeout=45)
+        state=self.inspect(row) if row['container'] else None
+        if state and (state.get('Running') or state.get('Paused') or state.get('Restarting')):raise RuntimeError('Worker stop remains unconfirmed')
+        if state:
+            self.retain_execution(row,state)
+            self.command(['docker','rm',row['container']])
+
+    def finish_stops(self):
+        # A slow/unreachable daemon never holds the engine's admission lock.
+        for row in self.rows(states=('stopping',)):
+            future=self.stops.get(row['id'])
+            if future is None:
+                if row['due']>time.time():continue
+                if len(self.stops)<4:self.stops[row['id']]=self.stop_pool.submit(self.stop_worker,row)
+                continue
+            if not future.done():continue
+            self.stops.pop(row['id'])
+            try:future.result()
+            except Exception:
+                # Durable intent remains visible; daemon errors get backoff.
+                self.store.update(row['id'],due=time.time()+5)
+                continue
+            lease=self.pending.pop(row['id'],None)
+            if lease:lease.close()
+            self.store.update(row['id'],state=row['stop_target'] or 'cancelled',container=None)
+
+    def retry_interruption(self,row,reason):
+        now=time.time();limits=lifecycle(row['spec']);retries=row.get('retries',0)+1;since=row.get('retry_since') or now
+        exhausted=retries>limits['max_retries'] or (limits['retry_seconds'] and now-since>=limits['retry_seconds'])
+        self.store.update(row['id'],state='failed' if exhausted else 'retry_wait',retries=retries,retry_since=since,queue_since=now,
+                          due=now+min(300,2**min(retries,9)),error=('Automatic retry budget exhausted; explicit retry required: ' if exhausted else '')+reason)
+
+    def check_deadlines(self,row):
+        now=time.time();limits=lifecycle(row['spec'])
+        if row['state'] in ('queued','admitting','retry_wait'):
+            if limits['queue_seconds'] and now-(row.get('queue_since') or row['created'])>=limits['queue_seconds']:
+                self.request_stop(row,'failed','Queue deadline exceeded');return True
+            if row.get('retry_since') and limits['retry_seconds'] and now-row['retry_since']>=limits['retry_seconds']:
+                self.request_stop(row,'failed','Automatic retry elapsed budget exhausted');return True
+            return False
+        if row['state'] not in ('launching','running'):return False
+        progress=None
+        if row.get('folder'):
+            path=Path(row['folder'])/'progress.json'
+            try:
+                if not path.is_symlink() and path.stat().st_size<=65536:progress=json.loads(path.read_text())
+            except (OSError,ValueError):pass
+        phase=row.get('phase');phase_at=row.get('phase_at') or now
+        if isinstance(progress,dict):
+            # Heartbeats, ETA/rate fluctuations and error strings are not progress.
+            keys=('phase','compute_complete','completed_units','decoded_bytes','input_bytes','pieces','bytes_completed','bytes_received')
+            key=digest({k:progress[k] for k in keys if k in progress})
+            changes={}
+            if key!=row.get('progress_key'):changes.update(progress_key=key,progress_at=now)
+            if progress.get('phase')!=phase:
+                phase=progress.get('phase');phase_at=now;changes.update(phase=phase,phase_at=now)
+            if changes:self.store.update(row['id'],**changes);row={**row,**changes}
+        delivery=bool(isinstance(progress,dict) and progress.get('compute_complete')) or phase in ('exporting-results','exporting','delivering')
+        if delivery:
+            if limits['delivery_seconds'] and now-phase_at>=limits['delivery_seconds']:
+                self.request_stop(row,'failed','Output delivery deadline exceeded');return True
+            return False
+        started=row.get('started_at')
+        if started and limits['execution_seconds'] and now-started>=limits['execution_seconds']:
+            self.request_stop(row,'failed','Execution deadline exceeded');return True
+        # Existing accepted contracts acquire no new stall deadline on upgrade.
+        stall=limits['stall_seconds'] if 'lifecycle' in row['spec'] else 0
+        if stall and row.get('progress_at') and now-row['progress_at']>=stall:
+            self.request_stop(row,'failed','No measurable progress within stall budget');return True
+        return False
+
+    def archive(self,row):
+        archived=self.store.archive(row['id'])
+        folder=self.root/'work'/row['id']
+        # Only node-owned per-job control/scratch data; cache/result sinks stay.
+        disposable=row['spec'].get('storage',{}).get('mode')=='ram-only' or row['spec']['recipe'] in BUILTINS
+        if disposable and folder.parent==self.root/'work' and not folder.is_symlink():shutil.rmtree(folder,ignore_errors=True)
+        return archived
+
+    def maintenance(self):
+        now=time.time()
+        if now<self.maintenance_at:return
+        self.maintenance_at=now+60
+        config=json.loads(self.agent.config.read_text());retention=config.get('stream_retention_seconds',7*86400)
+        if type(retention) is not int or retention<0:raise ValueError('Invalid stream retention')
+        if not retention:return
+        count=0
+        for row in self.rows(states=TERMINAL):
+            if row['container'] or row['id'] in self.pending or now-row['updated']<retention:continue
+            self.archive(row);count+=1
+            if count>=100:break
+
+    def read_worker_accounting(self,item):
+        labels=item.get('Config',{}).get('Labels') or {};key=labels.get('org.lifetech.job','')
+        path=labels.get('org.lifetech.accounting-file')
+        if path!='/work/.swarm-execution-'+key+'.json':return {}
+        try:
+            data=self.command(['docker','cp',item['Id']+':'+path,'-'],text=False).stdout
+            value=accounting_tar(data,key)
+            if value.get('exit_code')!=item.get('State',{}).get('ExitCode'):raise ValueError('Accounting exit differs from Docker')
+            value.pop('exit_code',None)
+            return value
+        except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError):
+            return {'cpu_accounting_coverage':'unavailable'}
+
+    def retain_execution(self,row,state):
+        # Commit before terminal state publication and before removing Docker.
+        value={'cpu_accounting_coverage':'unavailable','attempt':row['attempt']}
+        path=Path(row['folder'])/'.execution-accounting.json'
+        try:
+            if path.exists():
+                if path.stat().st_size>8192:raise ValueError('Oversized accounting receipt')
+                observed=accounting_fields(json.loads(path.read_text()),row['fingerprint']+':'+str(row['attempt']))
+                if state and observed.get('exit_code')!=state.get('ExitCode'):raise ValueError('Accounting exit differs from Docker')
+                value.update(observed)
+        except (OSError,ValueError,KeyError,TypeError):
+            value['accounting_error']='Final accounting unavailable or invalid; scientific result validation remains independent'
+        if state:
+            import datetime
+            try:
+                start=datetime.datetime.fromisoformat(state['StartedAt'].replace('Z','+00:00')).timestamp()
+                end=datetime.datetime.fromisoformat(state['FinishedAt'].replace('Z','+00:00')).timestamp()
+                if start>0 and end>=start:value.update(started=state['StartedAt'],finished=state['FinishedAt'],elapsed_seconds=end-start,timing_basis='Docker daemon start to finish; queue waiting excluded')
+            except (KeyError,ValueError,TypeError):pass
+        self.store.record_execution(row,value)
+
+    def reconcile(self,row,state=UNINSPECTED):
+        if state is UNINSPECTED:state=self.inspect(row)
         if state and state.get('Running'):
             if row['state']!='running':self.store.update(row['id'],state='running')
             return
@@ -799,6 +1161,7 @@ class Engine:
                 self.command(['docker','start',row['container']]);self.store.update(row['id'],state='running')
             return
         if state is None and row['state']=='launching' and time.time()-row['updated']<35:return
+        self.retain_execution(row,state)
         path=Path(row['folder'])/'result.json'
         if state and state.get('ExitCode')==0 and path.exists():
             if path.stat().st_size>1024**2:raise ValueError('Recipe result must be a compact receipt; keep artifacts outside the control envelope')
@@ -811,29 +1174,48 @@ class Engine:
             self.store.update(row['id'],state='failed',error='Installed recipe failed; explicit retry required')
         else:
             reason='Worker memory budget exhausted; increase declared resources in a new contract' if state and state.get('OOMKilled') else 'Worker or transport interrupted; piece checkpoint retained'
-            self.store.update(row['id'],state='failed' if state and state.get('OOMKilled') else 'retry_wait',due=time.time()+min(60,2**min(row['attempt'],6)),error=reason)
-        if state:self.command(['docker','rm',row['container']])
+            if state and state.get('OOMKilled'):self.store.update(row['id'],state='failed',error=reason)
+            else:self.retry_interruption(row,reason)
+        if state:
+            self.retain_execution(row,state)
+            self.command(['docker','rm',row['container']])
         self.store.update(row['id'],container=None)
         lease=self.pending.pop(row['id'],None)
         if lease:lease.close()
     def cleanup(self,row):
         state=self.inspect(row) if row['container'] else None
         if state:
-            if state.get('Running'):return
+            if state.get('Running') or state.get('Paused') or state.get('Restarting'):return
+            self.retain_execution(row,state)
             self.command(['docker','rm',row['container']])
         lease=self.pending.pop(row['id'],None)
         if lease:lease.close()
         self.store.update(row['id'],container=None)
     def tick(self):
         with self.lock:
+            self.finish_stops()
             allowed=self.policy(self.agent.config)['accepting_jobs']
             for row in self.rows(states=('launching','running')):
-                try:self.reconcile(row)
+                state=None
+                try:
+                    # A finished worker/receipt wins over a simultaneously expired deadline.
+                    state=self.inspect(row)
+                    if state and state.get('Running') and self.check_deadlines(row):continue
+                    self.reconcile(row,state)
                 except (ValueError,TypeError,KeyError) as error:
-                    self.store.update(row['id'],state='failed_integrity',error=str(error));self.cleanup(row)
+                    if state and state.get('Running'):
+                        self.request_stop(row,'failed_integrity',str(error));continue
+                    self.store.update(row['id'],state='failed_integrity',error=str(error))
+                    try:self.cleanup(row)
+                    except (OSError,RuntimeError,ValueError,subprocess.SubprocessError):pass
+                except (OSError,RuntimeError,subprocess.SubprocessError):
+                    continue  # Unknown daemon state is neither failure nor permission to delete.
             for row in self.rows(states=TERMINAL,has_container=True):
-                if row['container'] or row['id'] in self.pending:self.cleanup(row)
+                if row['container'] or row['id'] in self.pending:
+                    try:self.cleanup(row)
+                    except (OSError,RuntimeError,ValueError,subprocess.SubprocessError):continue
             for row in sorted(self.rows(states=('queued','retry_wait','admitting')),key=lambda r:(-r['priority'],r['created'],r['id'])):
+                if self.check_deadlines(row):continue
                 if not allowed:
                     lease=self.pending.pop(row['id'],None)
                     if lease:lease.close()
@@ -848,7 +1230,8 @@ class Engine:
                     if current['container'] and self.inspect(current):continue
                     lease=self.pending.pop(row['id'],None)
                     if lease:lease.close()
-                    self.store.update(row['id'],state='retry_wait',due=time.time()+5,error='Worker admission or image unavailable')
+                    self.retry_interruption(current,'Worker admission or image unavailable')
+            self.maintenance()
     def rows(self,**filters):
         after=''
         while True:
@@ -864,6 +1247,7 @@ class Engine:
     def close(self):
         self.stopped.set()
         if hasattr(self,'thread'):self.thread.join(timeout=20)
+        self.stop_pool.shutdown(wait=False)
         with self.lock:
             for lease in self.pending.values():lease.close()
             self.pending.clear()
@@ -878,6 +1262,15 @@ def export_control_file(source,destination,limit):
     if len(data)>limit:raise ValueError('RAM worker control receipt too large')
     value=json.loads(data)
     atomic_json(destination,value)
+    return value
+
+
+def release_completed_gpu(guard,progress):
+    """Trusted recipe releases compute capacity while retaining RAM outputs."""
+    if guard is not None and isinstance(progress,dict) and progress.get('compute_complete') is True:
+        guard.close()
+        return None
+    return guard
 
 
 def execute_ram(job,control=True):
@@ -898,7 +1291,16 @@ def execute_ram(job,control=True):
     try:
         while process.poll() is None:
             try:
-                if control:export_control_file('/work/progress.json','/control/progress.json',65536)
+                if control:
+                    progress=export_control_file('/work/progress.json','/control/progress.json',65536)
+                else:
+                    path=Path('/work/progress.json')
+                    progress=json.loads(path.read_text()) if path.is_file() and not path.is_symlink() and path.stat().st_size<=65536 else None
+                held=guard is not None
+                guard=release_completed_gpu(guard,progress)
+                if held and guard is None:
+                    atomic_json('/control/gpu-released.json' if control else '/work/gpu-released.json',
+                        {'contract_sha256':job['contract_sha256'],'worker_machine':job['worker_machine'],'released_at':time.time()})
             except (OSError,ValueError):pass
             time.sleep(.25)
         if process.returncode:return process.returncode

@@ -25,6 +25,10 @@ def manage(action):
     if not server.is_dir():raise RuntimeError('Task dashboard source not found')
     source=ROOT/'swarm-control/server'
     for name in ASSETS:atomic_copy(source/'view'/name,view/name)
+    atomic_copy(source/'task_registry.py',server/'task_registry.py')
+    atomic_copy(source/'task_progress.py',server/'task_progress.py')
+    for name in ('tasks.js','tasks.css','tasks-export.js','task-machines.js','task-display.js','export-data.js'):
+        atomic_copy(source/'view'/name,view/name)
     atomic_copy(source/'runtime_estimates.py',server/'runtime_estimates.py')
     atomic_copy(source/'task_pipeline.py',server/'task_pipeline.py')
     atomic_copy(source/'task_machines.py',server/'task_machines.py')

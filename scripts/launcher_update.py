@@ -24,6 +24,17 @@ def main():
     else:
         folder=Path(__file__).resolve().parent
         sources={name:(folder/name).read_bytes() for name in FILES}
+        # Match enrollment bundles: installed releases contain only FILES, so
+        # the stream runtime must travel inside the agent source.
+        for filename,constant in (('launcher_streams.py','STREAM_RUNTIME_SOURCE'),('launcher_commands.py','COMMAND_RUNTIME_SOURCE')):
+            runtime=folder/filename
+            if runtime.is_file():
+                sources['launcher_agent.py']+=('\n'+constant+' = '+repr(runtime.read_text())+'\n').encode()
+        monitor=folder.parent/'ramtop/ramtop'
+        if (monitor/'bundle.py').is_file():
+            import runpy
+            bundle=runpy.run_path(str(monitor/'bundle.py'))['encoded_runtime'](monitor)
+            sources['launcher_agent.py']+=('\nPERFORMANCE_RUNTIME_B64 = '+repr(bundle)+'\n').encode()
         target=hashlib.sha256(b''.join(sources[name] for name in FILES)).hexdigest()
         if not (releases/target).exists():
             with tempfile.TemporaryDirectory(dir=releases,prefix='.staging-') as staging:

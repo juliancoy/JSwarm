@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
-ROOT=(Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('GenomeHarbor', 'JSwarm') else Path(__file__).resolve().parents[1])
+ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT),str(ROOT/'swarm-control/server')]
 from agent_client import CONFIG
 from agent_updates import LauncherUpdates
@@ -14,8 +14,10 @@ from agent_updates import LauncherUpdates
 class PressureWindow:
     def __init__(self):self.hot=0;self.cool=0
     def observe(self, sample):
-        hot=sample['iowait_percent']>=30 and sample['io_pressure']>=50
-        cool=sample['iowait_percent']<15 and sample['io_pressure']<25 and sample['memory_pressure']<5
+        disk=sample.get('local_disk_busy_percent')
+        hot=sample['iowait_percent']>=30 and sample['io_pressure']>=50 and (disk is None or disk>=50)
+        cool=sample['memory_pressure']<5 and ((disk is not None and disk<20) or
+            (sample['iowait_percent']<15 and sample['io_pressure']<25))
         self.hot=self.hot+1 if hot else 0;self.cool=self.cool+1 if cool else 0
         if self.hot>=2:return 'drain'
         if self.cool>=3:return 'restore'
@@ -28,11 +30,15 @@ if hashlib.sha256(pathlib.Path('/etc/machine-id').read_bytes()).hexdigest()!=p['
 config=pathlib.Path.home()/'.config/lifetech-launcher/peers.json'
 if json.loads(config.read_text())['name']!=p['name']:raise ValueError('Enrolled owner changed')
 def counters():return list(map(int,pathlib.Path('/proc/stat').read_text().splitlines()[0].split()[1:9]))
-a=counters();time.sleep(1);b=counters();v=[y-x for x,y in zip(a,b)]
+def disks():
+ names={d.name for d in pathlib.Path('/sys/block').iterdir() if '/virtual/' not in str(d.resolve())}
+ return {v[2]:int(v[12]) for line in pathlib.Path('/proc/diskstats').read_text().splitlines() if (v:=line.split()) and v[2] in names}
+a=counters();first=disks();started=time.monotonic();time.sleep(1);b=counters();last=disks();elapsed=time.monotonic()-started;v=[y-x for x,y in zip(a,b)]
+busy=max((100*max(0,value-first[name])/(elapsed*1000) for name,value in last.items() if name in first),default=0)
 def pressure(name):
  fields=pathlib.Path('/proc/pressure',name).read_text().splitlines()[0].split()[1:]
  return float(dict(x.split('=') for x in fields)['avg10'])
-print(json.dumps({'iowait_percent':100*v[4]/max(1,sum(v)),'io_pressure':pressure('io'),'memory_pressure':pressure('memory'),'sampled_at':time.time()}))
+print(json.dumps({'iowait_percent':100*v[4]/max(1,sum(v)),'io_pressure':pressure('io'),'memory_pressure':pressure('memory'),'local_disk_busy_percent':min(100,busy),'sampled_at':time.time()}))
 '''
 UPDATE=r'''import hashlib,json,pathlib,sys,time
 p=json.load(sys.stdin)

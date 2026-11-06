@@ -100,3 +100,17 @@ def test_pending_admission_reserves_physical_host_across_lanes_and_namespaces(tm
     assert b.claim('node#gpu',{'available_cpus':6,'available_mb':3808},requirements={'two':{'memory_mb':8192}}) is None
     a.update('one',first['token'],state='completed')
     assert b.claim('node#cpu',capacity,requirements={'two':{'memory_mb':8192}})
+
+
+def test_input_preparation_does_not_reserve_future_compute_memory(tmp_path):
+    q=SubmissionQueue('jobs',tmp_path/'q');budget={'cpus':2,'memory_mb':4096}
+    for ident in ('a','b','c'):q.submit({'id':ident,'resources':budget})
+    cap={'available_cpus':0,'available_mb':256}
+    a=q.claim('peer',cap,requirements={'a':budget},eligible=['a'],preparation_resources={'cpus':0,'memory_mb':128})
+    assert a['admission_resources']==budget
+    b=q.claim('peer',cap,requirements={'b':budget},eligible=['b'],preparation_resources={'cpus':0,'memory_mb':128})
+    assert b
+    assert q.claim('peer',cap,requirements={'c':budget},eligible=['c'],preparation_resources={'cpus':0,'memory_mb':128}) is None
+    with q.connect() as db:r=json.loads(db.execute("SELECT request FROM submissions WHERE id='a'").fetchone()[0])
+    r['inputs_ready']=True;q.update('a',a['token'],state='accepted',request=json.dumps(r))
+    assert q.claim('peer',{'available_cpus':4,'available_mb':4096},requirements={'c':budget},eligible=['c'],preparation_resources={'cpus':0,'memory_mb':128}) is None

@@ -8,6 +8,7 @@ import sys
 import tempfile
 
 FILES=('scripts/__init__.py','scripts/swarm_paged_cache.py','scripts/swarm_runtime.py',
+       'scripts/launcher_streams.py','scripts/swarm_stream_work.py','scripts/swarm_gpu_runtime.py',
        'scripts/swarm_shared_cache.py','scripts/swarm_command.py',
        'docker_utils/__init__.py','docker_utils/images.py','docker_utils/policy.py',
        'swarm-control/server/agent_client.py','swarm-control/server/agent_updates.py',

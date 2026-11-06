@@ -2,6 +2,11 @@
 import argparse
 import base64
 import http.client
+import hashlib
+import json
+import re
+import socket
+import subprocess
 import os
 import queue
 import threading
@@ -17,8 +22,77 @@ sys.path.insert(0,str(ROOT/'swarm-control/server'))
 from agent_client import AgentClient
 
 
+def process_start(pid):
+    try:
+        value=Path('/proc',str(pid),'stat').read_text()
+        return value[value.rfind(')')+2:].split()[19]
+    except (FileNotFoundError,ProcessLookupError):return None
+
+
+def journal_root():
+    return Path(os.environ.get('SWARM_SUBMISSION_QUEUE',str(Path.home()/'.local/state/swarm-control/submission/queue.sqlite'))).parent/'command-clients'
+
+
+def caller_record(host,ident,argv):
+    namespace=os.readlink('/proc/self/ns/pid')
+    name=socket.gethostname()
+    return {'id':ident,'host':host['host'],'machine':host['machine'],'agent_endpoint':host['agent_endpoint'],'pid':os.getpid(),
+        'start':process_start(os.getpid()),'namespace':namespace,
+        'boot':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+        'container':name if Path('/.dockerenv').exists() and re.fullmatch('[0-9a-f]{12,64}',name) else None,
+        'argv_sha256':hashlib.sha256(json.dumps(argv,separators=(',',':')).encode()).hexdigest()}
+
+
+def caller_gone(record):
+    if record['boot']!=Path('/proc/sys/kernel/random/boot_id').read_text().strip():return True
+    if record['namespace']==os.readlink('/proc/self/ns/pid'):
+        return process_start(record['pid'])!=record['start']
+    # Never mistake a PID in another namespace for a dead host process. A
+    # stopped/removed containing Docker instance is positive owner-death proof.
+    container=record.get('container')
+    if not container:return False
+    result=subprocess.run(['docker','inspect','--format','{{json .State.Running}}',container],capture_output=True,text=True,timeout=5)
+    if result.returncode==0:return json.loads(result.stdout) is False
+    return 'no such object' in result.stderr.lower() or 'no such container' in result.stderr.lower()
+
+
+def reap_orphan_clients(root=None,factory=None,*,host=None):
+    factory=factory or AgentClient
+    root=Path(root) if root is not None else journal_root()
+    if not root.exists():return 0
+    closed=0
+    for path in root.glob('*.json'):
+        client=None
+        try:
+            if path.is_symlink() or path.stat().st_size>8192:continue
+            record=json.loads(path.read_text())
+            if host is not None and record['host']!=host:continue
+            if not re.fullmatch('[0-9a-f]{32}',record['id']) or not caller_gone(record):continue
+            client=factory({'host':record['host'],'machine':record['machine'],'agent_endpoint':record['agent_endpoint']})
+            if client.call('status',timeout=5).get('machine')!=record['machine']:continue
+            if client.call('command.close',{'id':record['id']},timeout=10).get('closed') is True:
+                path.unlink();closed+=1
+        except (OSError,RuntimeError,ValueError,KeyError,subprocess.SubprocessError):pass
+        finally:
+            if client is not None:client.close()
+    return closed
+
+
+def save_caller(path,record):
+    path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+    temp=path.with_suffix('.tmp')
+    with temp.open('w') as stream:
+        json.dump(record,stream);stream.flush();os.fsync(stream.fileno())
+    temp.chmod(0o600);temp.replace(path)
+
+
 def run(host,argv):
-    client=AgentClient(host);ident=uuid.uuid4().hex;started=False
+    # An offline peer must not delay commands on a healthy worker. Its
+    # retained journals are reconciled when that peer is contacted again.
+    reap_orphan_clients(host=host['host'])
+    client=AgentClient(host);ident=uuid.uuid4().hex;started=False;start_requested=False
+    journal=journal_root()/(ident+'.json')
+    save_caller(journal,caller_record(host,ident,argv))
     def call(op,args):
         deadline=time.monotonic()+180
         while True:
@@ -30,6 +104,7 @@ def run(host,argv):
         status=call('status',{})
         if status['machine']!=host['machine']:raise ValueError('Enrolled command machine identity changed')
         if 'node-command-v1' not in status.get('capabilities',[]):raise RuntimeError('Launcher command transport unavailable; update launcher; SSH fallback is disabled')
+        start_requested=True
         call('command.start',{'id':ident,'argv':argv});started=True
         inputs=queue.Queue(maxsize=2)
         def read_input():
@@ -60,9 +135,11 @@ def run(host,argv):
             if row['exit_code'] is not None and row['stdout_eof'] and row['stderr_eof']:return row['exit_code']
             if not block and not output:time.sleep(.05)
     finally:
-        if started:
-            try:call('command.close',{'id':ident})
+        closed=not start_requested
+        if start_requested:
+            try:closed=call('command.close',{'id':ident}).get('closed') is True and started
             except Exception:pass
+        if closed:journal.unlink(missing_ok=True)
         client.close()
 
 

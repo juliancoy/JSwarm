@@ -131,7 +131,33 @@ def test_real_encrypted_command_transport_with_no_ssh(tmp_path):
     finally:server.shutdown();server.server_close();service.close()
 
 
-def test_rootless_owner_runtime_does_not_request_unmapped_supplementary_groups(tmp_path,monkeypatch):
+def test_stream_observation_survives_full_mutation_replay_cache_but_requires_authentication(tmp_path):
+    import asyncio,base64,secrets,threading,time
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from scripts.launcher_agent import Agent,VERSION
+    key=Ed25519PrivateKey.generate();public=key.public_key().public_bytes(serialization.Encoding.Raw,serialization.PublicFormat.Raw)
+    config=tmp_path/'node.json';config.write_text(json.dumps({'name':'worker','master':'master','key':'ab'*32,'peers':{'master':'address'},'controller_public_key':public.hex()}))
+    agent=Agent.__new__(Agent);agent.config=config;agent.nonces={str(n):time.time()+120 for n in range(4097)};agent.nonce_lock=threading.Lock()
+    agent.dispatch=lambda op,args:{'state':'running'}
+    cipher=AESGCM(bytes.fromhex('ab'*32))
+    def request(op,authenticated=True):
+        value={'from':'master','to':'worker','time':time.time(),'nonce':secrets.token_hex(16),'op':op,'args':{}}
+        signature=key.sign(json.dumps(value,sort_keys=True,separators=(',',':')).encode())
+        value['controller_signature']=base64.b64encode(signature if authenticated else b'wrong').decode()
+        nonce=secrets.token_bytes(12);return nonce+cipher.encrypt(nonce,json.dumps(value).encode(),VERSION.encode())
+    reply=asyncio.run(agent.process(request('stream.status')))
+    assert json.loads(cipher.decrypt(reply[:12],reply[12:],VERSION.encode()))['result']['state']=='running'
+    assert len(agent.nonces)==4097
+    with pytest.raises(ValueError,match='authentication rejected'):asyncio.run(agent.process(request('stream.status',False)))
+    mutation=request('stream.submit')
+    asyncio.run(agent.process(mutation))
+    with pytest.raises(ValueError,match='authentication rejected'):asyncio.run(agent.process(mutation))
+
+
+@pytest.mark.parametrize('persistent',[False,True])
+def test_rootless_owner_runtime_does_not_request_unmapped_supplementary_groups(tmp_path,monkeypatch,persistent):
     from unittest.mock import MagicMock,patch
     import docker
     from scripts import launcher_commands as module
@@ -147,12 +173,16 @@ def test_rootless_owner_runtime_does_not_request_unmapped_supplementary_groups(t
     monkeypatch.setattr(Path,'exists',lambda p:True if str(p)=='/.dockerenv' else exists(p))
     try:
         with patch.object(module.subprocess,'Popen'):
-            service.owner_spawn(['python3','-c','print(1)'])
+            if persistent:service.ensure_owner_helper(serve_script=tmp_path/'immutable.py')
+            else:service.owner_spawn(['python3','-c','print(1)'])
         options=client.containers.create.call_args.kwargs
         assert options['user']=='0:0' and options['group_add']==[]
         assert str(home) in options['volumes'] and options['cap_drop']==['ALL']
         assert options['volumes']['/etc/machine-id']=={'bind':'/etc/machine-id','mode':'ro'}
         assert options['volumes']['/dev']=={'bind':'/dev','mode':'ro'}
+        if persistent:
+            assert options['environment']['JSWARM_OWNER_RUNTIME']=='1'
+            assert client.containers.create.call_args.args[1]==['python3','-B',str(config.parent/'command-runtimes/immutable.py'),'--serve',str(config)]
         assert not options.get('privileged') and not options.get('devices')
     finally:service.close()
 
@@ -285,3 +315,52 @@ def test_proxy_remembers_owner_and_recovers_when_owner_disappears(tmp_path):
     assert calls==[old]
     owner=proxy.socket;calls.clear();proxy.dispatch('command.poll',args)
     assert calls==[old,proxy.socket]
+
+
+def test_owner_exec_cancellation_kills_remote_process_group(tmp_path):
+    import os
+    import signal
+    from scripts.launcher_commands import OWNER_EXEC,OWNER_CANCEL
+    token=os.urandom(16).hex();started=tmp_path/'started'
+    command=[sys.executable,'-c','import pathlib,time,sys;pathlib.Path(sys.argv[1]).write_text(str(__import__("os").getpid()));time.sleep(300)',str(started)]
+    wrapper=subprocess.Popen([sys.executable,'-c',OWNER_EXEC,token,json.dumps(command)])
+    try:
+        deadline=time.monotonic()+10
+        while not started.exists():
+            assert time.monotonic()<deadline
+            time.sleep(.01)
+        child=int(started.read_text())
+        subprocess.run([sys.executable,'-c',OWNER_CANCEL,token],check=True)
+        assert wrapper.wait(timeout=5)!=0
+        with pytest.raises(ProcessLookupError):os.kill(child,0)
+    finally:
+        if wrapper.poll() is None:wrapper.kill();wrapper.wait()
+
+
+def test_command_close_invokes_remote_cleanup_before_local_cli_exit():
+    from scripts.launcher_commands import Command
+    events=[]
+    def remote_cleanup():events.append('remote')
+    command=Command([sys.executable,'-c','import time;time.sleep(300)'],spawn)
+    command.process.remote_close=remote_cleanup
+    command.close()
+    assert events==['remote']
+    assert command.process.poll() is not None
+
+
+def test_persistent_owner_service_runs_native_process_with_real_exit_and_binary_output(monkeypatch):
+    from scripts.launcher_commands import CommandService
+    monkeypatch.setenv('JSWARM_OWNER_RUNTIME','1')
+    service=CommandService();ident='9'*32
+    try:
+        service.dispatch('command.start',{'id':ident,'argv':[sys.executable,'-c','import sys;sys.stdout.buffer.write(b"abc\\x00xyz");sys.exit(7)']})
+        deadline=time.monotonic()+5;offsets={'stdout':0,'stderr':0};output=b''
+        while time.monotonic()<deadline:
+            value=service.dispatch('command.poll',{'id':ident,**offsets,'eof':True})
+            for name in offsets:
+                data=base64.b64decode(value[name]);offsets[name]+=len(data)
+                if name=='stdout':output+=data
+            if value['exit_code'] is not None and value['stdout_eof'] and value['stderr_eof']:break
+            time.sleep(.01)
+        assert output==b'abc\x00xyz' and value['exit_code']==7
+    finally:service.close()

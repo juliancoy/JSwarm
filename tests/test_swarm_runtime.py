@@ -352,3 +352,87 @@ def test_private_reservation_must_cover_scratch_and_fit_hard_limit(tmp_path):
         with patch.object(runtime,'AgentClient') as client,pytest.raises(ValueError):
             runtime.run_job({},'image','true',[],str(tmp_path),1,1024,tmp_path/'status.json',group='test',memory_reservation_mb=reservation,tmpfs={'/work':scratch} if scratch else None)
         client.assert_not_called()
+
+
+def test_gpu_completion_marker_rejects_paths_outside_private_work():
+    import pytest
+    from scripts.swarm_runtime import run_job
+    for marker in ('relative', '/work', '/work/../gpu-locks/release', '/gpu-locks/release'):
+        with pytest.raises(ValueError,match='completion marker'):
+            run_job({},'image','true',[], '/work',1,128,'report',group='test',
+                    gpu={},gpu_compute_complete_file=marker)
+    with pytest.raises(ValueError,match='completion marker'):
+        run_job({},'image','true',[], '/work',1,128,'report',group='test',
+                gpu_compute_complete_file='/work/complete')
+
+
+def test_integrated_gpu_workspace_is_included_before_host_admission(tmp_path):
+    import pytest
+    from scripts import swarm_runtime as runtime
+    from test_node_execution import amd_binding
+    gpu={**amd_binding(tmp_path/'runtime'),'memory_domain':'shared-system-memory','vram_mb':256}
+    def call(op,args=None,**kw):
+        if op=='status':return {'machine':'id','capabilities':['renewable-resources']}
+        if op=='resource.capacity':return {'available_mb':500,'available_cpus':4}
+        return {}
+    with patch.object(runtime,'AgentClient') as client,patch.object(runtime,'eligible',return_value=True),patch.object(runtime.subprocess,'Popen') as launch:
+        client.return_value.call.side_effect=call
+        with pytest.raises(runtime.CapacityWait):
+            runtime.run_job({'host':'local','local':True,'machine':'id'},'sha256:pinned','true',[],str(tmp_path),1,2048,tmp_path/'status.json',group='test',memory_reservation_mb=300,gpu=gpu)
+        launch.assert_not_called()
+
+class ActiveTransferTests(unittest.TestCase):
+    def test_live_destination_lock_waits_without_touching_partial(self):
+        import fcntl
+        from scripts.swarm_runtime import CapacityWait
+        with tempfile.TemporaryDirectory() as folder:
+            source=Path(folder)/'public.bam';source.write_bytes(b'expected!')
+            digest=hashlib.sha256(b'expected!').hexdigest()
+            target=Path(folder)/'cache/incoming'/digest;target.mkdir(parents=True)
+            partial=target/'public.bam.partial';partial.write_bytes(b'expect')
+            first={'host':'source','local':True,'machine':'id'}
+            second={'host':'target','local':True,'cache':str(Path(folder)/'cache')}
+            receipt={'host':'source','path':str(source),'sha256':digest,'bytes':9}
+            with (target/'.transfer.lock').open('a') as lock:
+                fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                with patch('scripts.swarm_runtime.AgentClient') as client:
+                    client.return_value.call.return_value={'machine':'id'}
+                    with self.assertRaises(CapacityWait):copy_receipt(first,second,receipt)
+                self.assertEqual(partial.read_bytes(),b'expect')
+
+
+def test_workers_mount_every_shared_object_set_readonly(tmp_path):
+    from unittest.mock import MagicMock,patch,call
+    from scripts.swarm_runtime import run_job
+    def respond(op,args=None,**kwargs):
+        if op=='status':return {'machine':'id','capabilities':['renewable-resources']}
+        if op=='resource.capacity':return {'available_mb':4096,'available_cpus':4}
+        return {'acquired':True}
+    process=MagicMock();process.wait.return_value=0;process.poll.return_value=0
+    host={'host':'owner','local':True,'machine':'id'};private={'key':'private'};reference={'key':'reference'}
+    with patch('scripts.swarm_runtime.AgentClient') as client,patch('scripts.swarm_runtime.eligible',return_value=True),patch('scripts.swarm_runtime.subprocess.Popen',return_value=process) as launch,patch('scripts.swarm_runtime.cleanup_container',return_value=True),patch('scripts.swarm_shared_cache.mount_args',side_effect=lambda h,c,**kw:['--mount','immutable-'+c['key']]) as mounts:
+        client.return_value.call.side_effect=respond
+        run_job(host,'pinned','true',[],str(tmp_path),1,1024,tmp_path/'run.json',group='test',shared_cache=private,shared_caches={'/references/one':reference})
+    mounts.assert_has_calls([call(host,private),call(host,reference,target='/references/one',primary=False)])
+    assert 'immutable-reference' in launch.call_args.args[0]
+
+
+def test_receipt_persistence_failure_preserves_container_and_lease(tmp_path):
+    from unittest.mock import MagicMock,patch
+    from scripts import swarm_runtime as runtime
+    def call(op,args=None,**kw):
+        if op=='status':return {'machine':'id','ready':True,'protocol':'lifetech-agent.v1','worker_policy':{'accepting_jobs':True},'capabilities':['renewable-resources','docker-workers','generic-workers']}
+        if op=='resource.capacity':return {'available_mb':2048,'available_cpus':4}
+        return {'acquired':True}
+    process=MagicMock();process.wait.return_value=0
+    original=runtime.atomic_json;report=tmp_path/'status.json'
+    def persist(path,value):
+        if path==report and value.get('phase')=='complete':raise OSError('receipt storage unavailable')
+        original(path,value)
+    with patch.object(runtime,'AgentClient') as client,patch.object(runtime.subprocess,'Popen',return_value=process),patch.object(runtime,'cleanup_container') as cleanup,patch.object(runtime,'atomic_json',side_effect=persist):
+        client.return_value.call.side_effect=call
+        import pytest
+        with pytest.raises(RuntimeError,match='lease retained'):
+            runtime.run_job({'host':'local','local':True,'machine':'id'},'sha256:pinned','true',[],str(tmp_path),1,1024,report,group='test')
+        cleanup.assert_not_called()
+        assert not any(c.args[0]=='resource.release' for c in client.return_value.call.call_args_list)

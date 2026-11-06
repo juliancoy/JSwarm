@@ -91,10 +91,19 @@ def attach_runtime(task, folder, now=None):
 def registry_snapshot(root=STATE):
     tasks = []; plans = []; labels = {}; errors = []
     folder = root/'tasks'
-    for path in sorted(folder.glob('*.json')):
+    paths={path.stem:path for path in folder.glob('*.json')}
+    paths.update({path.stem:path for path in (root/'task-projections').glob('*.json')})
+    for path in sorted(paths.values()):
         try:
             if path.stat().st_size > 2 * 1024 * 1024: raise ValueError('Task too large')
             value = json.loads(path.read_text())
+            if path.parent.name=='task-projections' and not 0<=time.time()-value.get('updated',0)<90:
+                value['stale']=True
+                value['detail']='Live observations are stale. '+value.get('detail','')
+                def mark_stale(row):
+                    if row.get('status') in ('running','active','preparing','transferring'):row['status']='unknown'
+                    for child in row.get('children',[]):mark_stale(child)
+                mark_stale(value)
             if value.get('kind') == 'label': labels[value['id']] = value['name'];continue
             if re.fullmatch(r'[A-Za-z0-9_-]{1,100}', value.get('id', '')):
                 attach_runtime(value, root/'task-runtime'/value['id'])

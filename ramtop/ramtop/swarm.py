@@ -76,7 +76,8 @@ def main(argv=None):
             try:
                 sample=sampler.sample();publisher.publish(sample)
                 result={'status':'published','schema_version':1,'sampled_at':sample['sampled_at'],
-                        'runtime':'builtin-swarm-monitor','revision':os.getenv('SWARM_MONITOR_REVISION'),'backend_tier':sample['memory']['backend_tier']}
+                        'runtime':'builtin-swarm-monitor','revision':os.getenv('SWARM_MONITOR_REVISION'),'backend_tier':sample['memory']['backend_tier'],
+                        'gpu_devices':sample.get('gpu',{}).get('devices',{})}
             except Exception as error:
                 # Never log config, encryption keys, endpoint payloads or exception bodies.
                 result={'status':'unavailable','error':type(error).__name__,'sampled_at':time.time()}

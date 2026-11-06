@@ -100,6 +100,8 @@ def launcher_lock(path):
 
 _WORKER_MEMORY_CACHE={'time':0,'values':{}}
 _WORKER_MEMORY_LOCK=threading.Lock()
+_WORKER_SAMPLE_START_LOCK=threading.Lock()
+_WORKER_SAMPLE_THREAD=None
 _WORKER_CPU_CACHE={}
 _WORKER_RAM_CACHE={}
 _HOST_CPU_SAMPLE={'time':0,'total':0,'idle':0,'busy':None}
@@ -109,6 +111,18 @@ LAUNCH_RESERVATION_SECONDS=60
 
 def worker_memory_usage(ids,refresh=False):
     """Working-set bytes already charged against host MemAvailable; bounded cache."""
+    global _WORKER_SAMPLE_THREAD
+    if not refresh:
+        # Docker's per-container stats can block for seconds each. Admission
+        # must never wait for a fleet-sized serial telemetry sweep. Missing or
+        # stale samples remain unknown; memory_budget reserves their full RAM.
+        values=_WORKER_MEMORY_CACHE['values']
+        if time.monotonic()-_WORKER_MEMORY_CACHE['time']<5 and all(i in values for i in ids):return values
+        with _WORKER_SAMPLE_START_LOCK:
+            if _WORKER_SAMPLE_THREAD is None or not _WORKER_SAMPLE_THREAD.is_alive():
+                _WORKER_SAMPLE_THREAD=threading.Thread(target=worker_memory_usage,args=(list(ids),True),daemon=True,name='worker-resource-sampler')
+                _WORKER_SAMPLE_THREAD.start()
+        return values
     with _WORKER_MEMORY_LOCK:
         now=time.monotonic()
         for cache in (_WORKER_CPU_CACHE,_WORKER_RAM_CACHE):
@@ -127,13 +141,15 @@ def worker_memory_usage(ids,refresh=False):
                         if cpu_total is not None and previous and sample_time-previous['time']>=.5 and cpu_total>=previous['total']:
                             cpu_used=(cpu_total-previous['total'])/1e9/(sample_time-previous['time'])
                         if cpu_total is not None:
-                            sample={'time':sample_time,'total':cpu_total,'used':cpu_used,'first':previous.get('first',sample_time) if previous else sample_time}
+                            sample={'time':sample_time,'sampled_at':time.time(),'total':cpu_total,'used':cpu_used,'first':previous.get('first',sample_time) if previous else sample_time}
                             for key in (ident,stats.get('id'),stats.get('name','').lstrip('/')):
                                 if key:_WORKER_CPU_CACHE[key]=sample
                         inactive=memory.get('stats',{}).get('total_inactive_file',memory.get('stats',{}).get('inactive_file',0))
                         amount=max(0,memory.get('usage',0)-inactive)//1024**2
                         previous_ram=_WORKER_RAM_CACHE.get(ident,{})
-                        ram_sample={'time':sample_time,'used':amount,'peak':max(amount,previous_ram.get('peak',amount)),
+                        ram_sample={'sampled_at':time.time(),'raw_bytes':memory.get('usage',0),
+                                    'raw_peak_bytes':max(memory.get('usage',0),memory.get('max_usage',0),previous_ram.get('raw_peak_bytes',0)),
+                                    'time':sample_time,'used':amount,'peak':max(amount,previous_ram.get('peak',amount)),
                                     'growth':max(0,amount-previous_ram.get('used',amount)),'first':previous_ram.get('first',sample_time)}
                         for name in (ident,stats.get('id'),stats.get('name','').lstrip('/')):
                             if name:
@@ -207,7 +223,7 @@ def cpu_headroom(limits,active):
     # CPU PSI is a trailing average and includes quota/affinity contention in
     # individual workloads. It must not strand an otherwise idle whole host.
     # Still stop lending early when host utilization corroborates contention.
-    blocked=busy>=.9 or (pressure>=10 and busy>=.7) or limits.get('io_pressure_full_percent',0)>=20
+    blocked=busy>=.9 or (pressure>=10 and busy>=.7)
     charged=measured+pending+growth
     return {'available_cpus':0 if blocked else max(0,physical-charged),
             'reserved_cpus':requested,'charged_cpus':charged,'cpu_admission_mode':'pressure',
@@ -233,8 +249,15 @@ def memory_budget(limits,active):
         else:allowance=min(limit-used,max(64,used*.25)+max(0,sample.get('peak',used)-used)+sample.get('growth',0)*2)
         growth+=allowance
     safety=max(256,int(limits['memory_mb']*.05))
-    blocked=some>=1 or full>=.1 or limits.get('io_pressure_full_percent',0)>=20
-    available=0 if blocked else max(0,int(limits.get('available_mb',0)-safety-growth))
+    headroom=max(0,int(limits.get('available_mb',0)-safety-growth))
+    # Moderate page faults and unrelated I/O stalls do not imply RAM exhaustion.
+    # Corroborate those signals with actual available RAM after growth protection.
+    low_memory=headroom<max(1024,int(limits['memory_mb']*.15))
+    # I/O PSI also counts network filesystem waits. It cannot establish RAM
+    # exhaustion; local storage pressure is guarded separately by disk counters.
+    stalled=some>=1 or full>=.1
+    blocked=full>=10 or some>=50 or (low_memory and stalled)
+    available=0 if blocked else headroom
     return {'available_mb':available,'memory_admission_mode':'pressure','memory_growth_mb':growth,'memory_safety_mb':safety}
 
 
@@ -263,7 +286,9 @@ def docker_workers():
         if not (item['State'].get('Running') or item['State'].get('Restarting')):continue
         limits=item['HostConfig'];labels=item['Config'].get('Labels') or {}
         cpu=limits.get('NanoCpus',0)/1e9
-        memory=max(limits.get('Memory',0),limits.get('MemoryReservation',0))
+        hard_memory=limits.get('Memory',0)
+        private_memory=limits.get('MemoryReservation',0)
+        memory=min(private_memory,hard_memory) if hard_memory>0 and private_memory>0 else max(hard_memory,private_memory)
         if cpu<=0 or memory<=0:raise RuntimeError('Worker has no explicit CPU/RAM limits')
         name=item['Name'].removeprefix('/')
         gpu=bool(labels.get('org.lifetech.accelerator') or labels.get('org.lifetech.gpu-qc-service')=='true'
@@ -271,7 +296,7 @@ def docker_workers():
                  or any(str(device.get('PathInContainer','')).startswith(('/dev/dri/','/dev/nvidia')) for device in limits.get('Devices') or []))
         rows.append({'id':item['Id'],'container':name,'job':labels.get('org.lifetech.job',name.removeprefix('genomics-').removeprefix('swarm-job-')),
                      'run':labels.get('org.lifetech.run'),'sink':labels.get('org.lifetech.sink','gpu' if gpu else 'cpu'),
-                     'resident_mb':usage.get(item['Id'],0),'group':labels.get('org.lifetech.group','workers'),'cpus':cpu,'memory_mb':(memory+1024**2-1)//1024**2,
+                     'resident_mb':usage.get(item['Id'],0),'group':labels.get('org.lifetech.group','workers'),'cpus':cpu,'memory_mb':(memory+1024**2-1)//1024**2,'memory_limit_mb':(max(hard_memory,private_memory)+1024**2-1)//1024**2,
                      'cpu_observation':_WORKER_CPU_CACHE.get(item['Id'],_WORKER_CPU_CACHE.get(name)),
                      'memory_observation':_WORKER_RAM_CACHE.get(item['Id'],_WORKER_RAM_CACHE.get(name)),
                      'pids':limits.get('PidsLimit') or 512,'active':True,'created':0})
@@ -388,7 +413,11 @@ class ResourceLease:
                          'waiting_jobs':sum(not r['active'] and job_sink(r)==kind for r in rows),
                          'group_active_jobs':sum(r['group']==group and job_sink(r)==kind for r in active),
                          'reserved_cpus':sum(r['cpus'] for r in active if job_sink(r)==kind),
-                         'reserved_mb':sum(r['memory_mb'] for r in active if job_sink(r)==kind)}
+                         'reserved_mb':sum(r['memory_mb'] for r in active if job_sink(r)==kind),
+                         'measured_host_memory_mb':sum(max(0,r['memory_observation']['used']) for r in active if job_sink(r)==kind and r.get('memory_observation') and 0<=time.monotonic()-r['memory_observation']['time']<=10),
+                         'host_memory_measured_jobs':sum(bool(r.get('memory_observation')) and 0<=time.monotonic()-r['memory_observation']['time']<=10 for r in active if job_sink(r)==kind),
+                         'memory_domain':'host-ram',
+                         'measurement_basis':'Fresh container memory observations; GPU VRAM is reported separately by resource.gpus'}
                    for kind in ('cpu','gpu')}
             return {**limits,**memory_budget(limits,active),'reserved_mb':reserved,'job_sinks':sinks,
                     **cpu_headroom(limits,active),
@@ -487,7 +516,7 @@ LIMIT = 1024 * 1024
 UNPRIVILEGED_OPS={'status','metrics','metrics.publish','metrics.fleet','worker.policy','image.inspect','registry.read','tests.request','tests.status','stream.capabilities'}
 
 
-def gpu_worker_commitments():
+def gpu_worker_commitments(released=()):
     """Docker ownership metadata only; avoid another per-worker stats scan."""
     try:
         result=subprocess.run(['docker','ps','--filter','label=org.lifetech.accelerator','--format','{{json .Labels}}'],capture_output=True,text=True,check=True,timeout=5)
@@ -495,12 +524,13 @@ def gpu_worker_commitments():
         for line in result.stdout.splitlines():
             value=json.loads(line)
             labels=value if isinstance(value,dict) else dict(part.split('=',1) for part in value.split(',') if '=' in part)
+            if labels.get('org.lifetech.stream-work') in released:continue
             uuid=labels.get('org.lifetech.accelerator')
             if not uuid:continue
             row=devices.setdefault(uuid,{'active_workers':0,'private_commitment_mib':0,'exclusive_worker_present':False})
             concurrency=int(labels.get('org.lifetech.gpu-concurrency','1'))
             row['active_workers']+=1;row['private_commitment_mib']+=int(labels.get('org.lifetech.gpu-private-mib','0'))
-            row['exclusive_worker_present']|=concurrency<=1
+            row['exclusive_worker_present']|=concurrency<=1 and labels.get('org.lifetech.gpu-admission')!='pressure'
         return {'known':True,'devices':devices}
     except (OSError,ValueError,TypeError,subprocess.SubprocessError):return {'known':False,'devices':{}}
 
@@ -544,7 +574,7 @@ def nvidia_allocation_rows(output):
     return rows
 
 
-def hardware_sample(root=Path('/sys/bus/pci/devices'), disk=Path.home()):
+def hardware_sample(root=Path('/sys/bus/pci/devices'), disk=Path.home(), query_nvidia=True):
     """Read hardware without treating GPU detection as container validation."""
     usage=shutil.disk_usage(disk)
     result={'storage':{'path':str(disk),'total_bytes':usage.total,'free_bytes':usage.free},'gpus':[]}
@@ -565,7 +595,7 @@ def hardware_sample(root=Path('/sys/bus/pci/devices'), disk=Path.home()):
             if vendor in ('AMD','Intel'):row.update(drm_memory_allocation(path))
             result['gpus'].append(row)
         except OSError:continue
-    if shutil.which('nvidia-smi'):
+    if query_nvidia and shutil.which('nvidia-smi'):
         import csv
         try:
             output=subprocess.check_output(['nvidia-smi','--query-gpu=uuid,pci.bus_id,name,memory.total,memory.free,utilization.gpu,temperature.gpu','--format=csv,noheader,nounits'],text=True,stderr=subprocess.DEVNULL,timeout=2)
@@ -1314,27 +1344,34 @@ class LauncherTelemetry:
 
     def fleet(self, enrolled, after=0):
         now=time.time()
+        # Published events are immutable. Snapshot references under the lock;
+        # copying CPU arrays and rendering history must never block publishers.
         with self.lock:
-            hosts=[];events=[]
-            for name,entry in self.received.items():
-                if name not in enrolled:continue
-                hosts.append(self.host(name,entry['latest']))
-                # Each event carries a snapshot evaluated at its own measurement time.
-                latest={}
-                for row in sorted(entry['events'],key=lambda row:row['sampled_at']):
-                    latest[row['kind']]=row
-                    if row['sampled_at']>=now-300 and row['revision']>after:
-                        # Historical charts need aggregate counters, not a copy of
-                        # every logical CPU in every peripheral event.
-                        snapshot=self.host(name,latest)
-                        snapshot.pop('logical_cpus',None)
-                        if 'performance' in snapshot:snapshot['performance']=load_performance_runtime()[1](snapshot['performance'])
-                        if 'hardware' in snapshot:
-                            snapshot['hardware']={key:value for key,value in snapshot['hardware'].items() if key in ('gpus','sampled_at','stale')}
-                        events.append({'revision':row['revision'],'sampled_at':row['sampled_at'],'hosts':[snapshot]})
-            events=sorted(events,key=lambda row:row['revision'])[:128]
-            cursor=events[-1]['revision'] if events else self.revision
-            return {'hosts':hosts,'events':events,'session':self.session,'revision':cursor}
+            entries={name:{'latest':dict(entry['latest']),'events':list(entry['events'])}
+                     for name,entry in self.received.items() if name in enrolled}
+            revision=self.revision
+        hosts=[self.host(name,entry['latest']) for name,entry in entries.items()]
+        selected=sorted((row['revision'] for entry in entries.values() for row in entry['events']
+                         if row['sampled_at']>=now-300 and row['revision']>after))[:128]
+        selected=set(selected);events=[]
+        for name,entry in entries.items():
+            latest={}
+            for row in sorted(entry['events'],key=lambda row:row['sampled_at']):
+                # Compact each changed measurement once, before composing history.
+                value=row['value']
+                if row['kind']=='cpu':
+                    value={k:v for k,v in value.items() if k not in ('logical_cpus','performance')}
+                    if 'performance' in row['value']:
+                        value['performance']=load_performance_runtime()[1](row['value']['performance'])
+                elif row['kind']=='performance':value=load_performance_runtime()[1](value)
+                elif row['kind']=='hardware':value={k:v for k,v in value.items() if k in ('gpus','sampled_at','stale')}
+                latest[row['kind']]={**row,'value':value}
+                if row['revision'] in selected:
+                    events.append({'revision':row['revision'],'sampled_at':row['sampled_at'],
+                                   'hosts':[self.host(name,latest)]})
+        events.sort(key=lambda row:row['revision'])
+        return {'hosts':hosts,'events':events,'session':self.session,
+                'revision':events[-1]['revision'] if events else revision}
 
     def start(self):
         try:config=json.loads(self.agent.config.read_text())
@@ -1342,7 +1379,7 @@ class LauncherTelemetry:
         target={'local':True,'host':config.get('name','local')}
         interfaces=InterfaceSampler();disks=DiskSampler();gpu=GpuSampler();performance=PerformanceCollector()
         def hardware():
-            value=gpu.sample(target,hardware_sample(disk=self.agent.root))
+            value=gpu.sample(target,self.agent.hardware())
             value['sampled_at']=time.time()
             return value
         collectors={'cpu':self.agent.metrics_sampler.sample,'hardware':hardware,
@@ -1367,10 +1404,57 @@ class LauncherTelemetry:
         with self.lock:return self.host(name,self.latest)
 
 
+RAM_CACHE_PROBE=r'''
+import json,pathlib,re,stat,sys
+root=pathlib.Path('/dev/shm');p=root/'.ready.json';expected=json.loads(sys.argv[1])
+if not p.is_file() or p.is_symlink() or p.stat().st_size>65536:raise ValueError('RAM cache is not sealed')
+v=json.loads(p.read_text())
+if any(v.get(k)!=val for k,val in expected.items()):raise ValueError('RAM cache owner changed')
+files=v.get('files');identities=v.get('identities')
+if not isinstance(files,dict) or not files or len(files)>128 or not isinstance(identities,dict):raise ValueError('Invalid RAM cache manifest')
+for name,row in files.items():
+ if not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,119}',name):raise ValueError('Invalid RAM cache filename')
+ if type(row.get('bytes')) is not int or row['bytes']<1 or not re.fullmatch(r'[a-f0-9]{64}',str(row.get('sha256',''))):raise ValueError('Invalid RAM cache object')
+ f=root/name;s=f.stat()
+ if f.is_symlink() or not stat.S_ISREG(s.st_mode) or s.st_mode&0o222 or s.st_size!=row['bytes']:raise ValueError('RAM cache object is not sealed')
+ if [s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns]!=identities.get(name):raise ValueError('RAM cache object changed')
+print(json.dumps(files))
+'''
+
+
+def verified_ram_caches():
+    """Reuse sealed Docker tmpfs objects without re-reading their payloads."""
+    def command(args):
+        result=subprocess.run(['docker',*args],capture_output=True,text=True,timeout=15)
+        if result.returncode:raise RuntimeError('RAM cache inventory unavailable')
+        return result.stdout
+    ids=command(['ps','-q','--filter','label=org.lifetech.cache-owner']).split()
+    rows=json.loads(command(['inspect',*ids])) if ids else []
+    caches=[];pending=[]
+    for row in rows:
+        labels=row.get('Config',{}).get('Labels') or {};key=labels.get('org.lifetech.cache-owner','')
+        name=row.get('Name','').removeprefix('/')
+        if (not re.fullmatch(r'[a-f0-9]{64}',key) or name!='swarm-job-'+key[:32]
+                or labels.get('org.lifetech.group')!='shared-cache' or not row['State'].get('Running')):continue
+        volume='swarm-cache-'+key[:32]
+        if not any(m.get('Type')=='volume' and m.get('Name')==volume and m.get('Destination')=='/dev/shm' for m in row.get('Mounts',[])):continue
+        try:
+            mounted=json.loads(command(['volume','inspect',volume]))[0];options=mounted.get('Options') or {}
+            if (mounted.get('Driver')!='local' or options.get('type')!='tmpfs' or options.get('device')!='tmpfs'
+                    or (mounted.get('Labels') or {}).get('org.lifetech.cache-owner')!=key):continue
+            expected={'key':key,'container_id':row['Id'],'started_at':row['State']['StartedAt']}
+            files=json.loads(command(['exec',name,'python3','-c',RAM_CACHE_PROBE,json.dumps(expected)]))
+        except (RuntimeError,ValueError,KeyError):
+            pending.append(key);continue  # Filling caches take priority over optional prefetch.
+        caches.append({'key':key,'container':name,'image':row['Image'],'files':files})
+    return {'memory_domain':'host-ram','caches':caches,'pending_caches':pending}
+
+
 class DockerWorkerJournal:
     """Durable attempt identity and last observation, independent of agent lifetime."""
-    def __init__(self,path):
+    def __init__(self,path,accounting_reader=None):
         import sqlite3
+        self.accounting_reader=accounting_reader
         self.path=Path(path);self.path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
         with sqlite3.connect(self.path,timeout=15) as db:
             db.execute('PRAGMA journal_mode=WAL');db.execute('PRAGMA synchronous=FULL')
@@ -1393,10 +1477,52 @@ class DockerWorkerJournal:
                'exit_code':state.get('ExitCode') if state['Status'] in ('exited','dead') else None,
                'started_at':state.get('StartedAt'),'finished_at':state.get('FinishedAt') if state['Status'] in ('exited','dead') else None,
                'oom_killed':state.get('OOMKilled',False),'observed_at':time.time()}
+        sample=_WORKER_CPU_CACHE.get(item['Id']) or _WORKER_CPU_CACHE.get(name) or {}
+        if type(sample.get('total')) in (int,float) and sample['total']>=0:
+            value.update(cpu_core_seconds=sample['total']/1e9,cpu_sampled_at=sample.get('sampled_at',time.time()-max(0,time.monotonic()-sample.get('time',time.monotonic()))),cpu_accounting_coverage='sampled-partial',cpu_measurement_basis='Last observed Docker CPU total; terminal counter unavailable, not a complete execution measurement')
+        memory_fields=('memory_current_bytes','memory_peak_bytes','memory_anon_bytes','memory_file_bytes',
+                       'memory_shmem_bytes','memory_swap_bytes','memory_sampled_at','memory_measurement_basis','memory_accounting_coverage')
+        ram=_WORKER_RAM_CACHE.get(item['Id']) or _WORKER_RAM_CACHE.get(name) or {}
+        if type(ram.get('raw_bytes')) is int and ram['raw_bytes']>=0:
+            value.update(memory_current_bytes=ram['raw_bytes'],memory_peak_bytes=ram.get('raw_peak_bytes',ram['raw_bytes']),
+                         memory_sampled_at=ram.get('sampled_at',value['observed_at']),memory_accounting_coverage='sampled-partial',
+                         memory_measurement_basis='Last observed Docker raw RAM including file and shmem; sampled peak may miss between-sample usage')
+        if state['Status'] in ('exited','dead') and self.accounting_reader:
+            accounting=self.accounting_reader(item)
+            for key,amount in accounting.items():
+                family='memory' if key.startswith('memory_') else 'cpu' if key.startswith('cpu_') else None
+                if family and accounting.get(family+'_accounting_coverage')=='unavailable' and family+'_accounting_coverage' in value:continue
+                value[key]=amount
+        try:
+            import datetime
+            start=datetime.datetime.fromisoformat(value['started_at'].replace('Z','+00:00')).timestamp()
+            end=datetime.datetime.fromisoformat(value['finished_at'].replace('Z','+00:00')).timestamp() if value['finished_at'] else None
+            if start>0 and end is not None and end>=start:value.update(started=value['started_at'],finished=value['finished_at'],elapsed_seconds=end-start)
+        except (ValueError,TypeError):pass
         with sqlite3.connect(self.path,timeout=15) as db:
             db.execute('BEGIN IMMEDIATE')
-            previous=db.execute('SELECT container_id FROM workers WHERE job=?',(job,)).fetchone()
+            previous=db.execute('SELECT container_id,observation FROM workers WHERE job=?',(job,)).fetchone()
             if previous and previous[0]!=item['Id']:raise ValueError('Docker job identity was reused by a different container')
+            if previous:
+                durable=json.loads(previous[1])
+                if 'cpu_core_seconds' not in value and 'cpu_core_seconds' in durable:
+                    for key in ('cpu_core_seconds','cpu_throttled_seconds','cpu_sampled_at','cpu_measurement_basis','cpu_accounting_coverage'):
+                        if key in durable:value[key]=durable[key]
+                # Never discard a terminal pre-exit receipt when later cleanup
+                # makes its metadata unavailable. Identity is fenced above.
+                if durable.get('cpu_accounting_coverage')=='final-pre-exit' and value.get('cpu_accounting_coverage')!='final-pre-exit':
+                    for key in ('cpu_core_seconds','cpu_throttled_seconds','cpu_sampled_at','cpu_measurement_basis','cpu_accounting_coverage','elapsed_seconds','started','finished'):
+                        if key in durable:value[key]=durable[key]
+                if ('memory_peak_bytes' not in value or
+                    durable.get('memory_accounting_coverage')=='final-pre-exit' and value.get('memory_accounting_coverage')!='final-pre-exit'):
+                    for key in memory_fields:
+                        if key in durable:value[key]=durable[key]
+                elif value.get('memory_accounting_coverage')=='sampled-partial':
+                    value['memory_peak_bytes']=max(value['memory_peak_bytes'],durable.get('memory_peak_bytes',0))
+                # Poll freshness is volatile. Commit attempts and state changes,
+                # rather than fsyncing an unchanged worker on every status read.
+                if {k:v for k,v in durable.items() if k!='observed_at'}=={k:v for k,v in value.items() if k!='observed_at'}:
+                    return value
             db.execute('INSERT INTO workers VALUES(?,?,?,?) ON CONFLICT(job) DO UPDATE SET observation=excluded.observation,updated=excluded.updated',
                        (job,item['Id'],json.dumps(value),value['observed_at']))
         return value
@@ -1414,8 +1540,14 @@ class DockerWorkerJournal:
             row=db.execute('SELECT container_id,observation FROM workers WHERE job=?',(job,)).fetchone()
             if not row:return  # A receipt cannot invent a missing attempt's provenance.
             if row[0]!=actor.get('ID'):raise ValueError('Docker event container identity differs')
-            value=json.loads(row[1]);value.update(status='exited',running=False,exit_code=code,
-                finished_at=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime(event['time'])),observed_at=time.time())
+            import datetime
+            ended=event.get('timeNano',event['time']*1_000_000_000)/1_000_000_000
+            finished=datetime.datetime.fromtimestamp(ended,datetime.timezone.utc).isoformat()
+            value=json.loads(row[1]);value.update(status='exited',running=False,exit_code=code,finished_at=finished,observed_at=time.time())
+            try:
+                started=datetime.datetime.fromisoformat(value['started_at'].replace('Z','+00:00')).timestamp()
+                if started>0 and ended>=started:value.update(started=value['started_at'],finished=finished,elapsed_seconds=ended-started)
+            except (ValueError,TypeError,KeyError):pass
             db.execute('UPDATE workers SET observation=?,updated=? WHERE job=?',(json.dumps(value),value['observed_at'],job))
 
     def get(self,job):
@@ -1472,7 +1604,7 @@ class Agent:
         directory=Path(os.getenv('SWARM_RESOURCE_DIR',str(self.root/'.resources')))
         directory.mkdir(parents=True,exist_ok=True,mode=0o700);(directory/'docker-workers').touch()
         self.commands=load_command_runtime().CommandProxy(self,COMMAND_RUNTIME_SOURCE or (Path(__file__).resolve().parent/'launcher_commands.py').read_text())
-        self.worker_journal=DockerWorkerJournal(self.config.parent/'docker-worker-journal.sqlite')
+        self.worker_journal=DockerWorkerJournal(self.config.parent/'docker-worker-journal.sqlite',self.stream_work.read_worker_accounting)
         self.recover_docker_workers()
         self.recover_pending_resources()
         self.busy()
@@ -1598,17 +1730,27 @@ class Agent:
             # Authentication must not block the event loop on Docker/job I/O.
             # Command frames have their own idempotent IDs, input offsets and
             # output acknowledgements. Their high-rate polling must not exhaust
-            # the replay cache used by non-idempotent control mutations.
-            if value['op'] not in ('command.start','command.poll','command.close'):
+            # the replay cache used by non-idempotent control mutations. Fresh,
+            # authenticated stream observations cannot mutate accepted work.
+            if value['op'] not in ('command.start','command.poll','command.close','stream.status','stream.list','stream.capabilities'):
                 with self.nonce_lock:
-                    self.nonces = {n:t for n,t in self.nonces.items() if t > time.time()}
-                    if value['nonce'] in self.nonces or len(self.nonces)>4096:
+                    import heapq
+                    now=time.time()
+                    if not hasattr(self,'nonce_expirations'):
+                        self.nonce_expirations=[(expiry,nonce) for nonce,expiry in self.nonces.items()]
+                        heapq.heapify(self.nonce_expirations)
+                    while self.nonce_expirations and self.nonce_expirations[0][0]<=now:
+                        expiry,nonce=heapq.heappop(self.nonce_expirations)
+                        if self.nonces.get(nonce)==expiry:self.nonces.pop(nonce)
+                    if value['nonce'] in self.nonces:
                         raise ValueError('Replayed request or request limit')
-                    self.nonces[value['nonce']] = time.time()+120
+                    expiry=now+120
+                    self.nonces[value['nonce']]=expiry
+                    heapq.heappush(self.nonce_expirations,(expiry,value['nonce']))
             try:
                 if value['op']=='metrics.publish':
                     if config['name']!=config.get('master','compai.local'):raise ValueError('Telemetry receiver is not the master')
-                    result=self.telemetry.accept(value['from'],value.get('args',{}))
+                    result=await asyncio.to_thread(self.telemetry.accept,value['from'],value.get('args',{}))
                     result['policy']=self.telemetry_policy()
                 else:
                     executor=getattr(self,'control_executor',None)
@@ -1750,9 +1892,9 @@ class Agent:
             rows=[{'id':ident,'kind':'test','status':'stopping' if (self.folder(ident)/'STOP').exists() else 'running',
                    'label':'Source preparation' if job.get('prepare_only') else 'Test job'}
                   for ident,job in self.jobs.items() if job['status'] in ('running','starting')]
-            streams=self.stream_work.store.list(states=('queued','admitting','launching','running','retry_wait'),limit=100) if hasattr(self,'stream_work') else []
+            streams=self.stream_work.store.list(states=('queued','admitting','launching','running','retry_wait','stopping'),limit=100) if hasattr(self,'stream_work') else []
             stream_containers={r['container'] for r in streams if r['container']}
-            rows.extend({'id':r['id'],'kind':'stream','status':'running' if r['state'] in ('launching','running') else 'waiting','label':r['spec'].get('label',r['spec']['recipe'])} for r in streams)
+            rows.extend({'id':r['id'],'kind':'stream','status':'stopping' if r['state']=='stopping' else 'running' if r['state'] in ('launching','running') else 'waiting','label':r['spec'].get('label',r['spec']['recipe'])} for r in streams)
             rows.extend({'id':r['job'],'kind':'resource','status':'running','label':r['group']} for r in self.reconcile_resources() if r['container'] not in stream_containers)
             rows.extend({'id':ident,'kind':'resource','status':'waiting','label':entry['lease'].row['group']} for ident,entry in self.pending_resources.items())
             rows.extend({'id':ident,'kind':'browser','status':'running','label':'Swarm browser'} for ident in self.browsers)
@@ -1809,6 +1951,9 @@ class Agent:
         if op=='resource.gpus':
             if args:raise ValueError('GPU inventory accepts no arguments')
             return self.gpu_resources()
+        if op=='resource.caches':
+            if args:raise ValueError('RAM cache inventory accepts no arguments')
+            return verified_ram_caches()
         if op=='resource.capacity':
             if set(args)-{'group','include_gpus'} or 'include_gpus' in args and type(args['include_gpus']) is not bool:raise ValueError('Invalid capacity request')
             with self.lock:
@@ -1947,7 +2092,7 @@ class Agent:
                     'machine':hashlib.sha256(machine.read_bytes()).hexdigest(),'hostname':socket.gethostname(),
                     'addresses':addresses,'platform':info['OSType']+'/'+info['Architecture'],
                     'routing':getattr(self,'routing_status',{'status':'pending'}),
-                    'worker_policy':policy,'capabilities':['controller-signature','github-jobs','p2p-browser','cancel','events','layer-pull','registry-read','peer-layer-cache','mptcp-transport','file-queue','snapshot-stage','event-wait','shared-resources','renewable-resources','docker-workers','durable-docker-workers-v1','persistent-command-pipes-v1','generic-workers','encrypted-backup','gpu-kernel','telemetry-push','performance-v1','builtin-monitor','stream-work-v1','independent-job-sinks-v1','node-command-v1','gpu-resource-inventory-v1'],
+                    'worker_policy':policy,'capabilities':['controller-signature','github-jobs','p2p-browser','cancel','events','layer-pull','registry-read','peer-layer-cache','mptcp-transport','file-queue','snapshot-stage','event-wait','shared-resources','renewable-resources','docker-workers','durable-docker-workers-v1','execution-accounting-v1','persistent-command-pipes-v1','generic-workers','encrypted-backup','gpu-kernel','telemetry-push','performance-v1','builtin-monitor','stream-work-v1','independent-job-sinks-v1','node-command-v1','gpu-resource-inventory-v1','node-maintenance-recipes-v1','verified-ram-caches-v1'],
                     'enrolled_peers':sorted(config['peers']),'storage':self.storage_status,
                     'hardware':self.hardware(info),
                     'preparations':[key for key,j in self.jobs.items() if j['status']=='running' and j.get('prepare_only')],
@@ -2448,12 +2593,56 @@ print(json.dumps(result))"""
         except (OSError,ValueError,subprocess.SubprocessError):return {}
         self.gpu_render_groups=groups;self.gpu_render_groups_at=time.time();return groups
 
+    def host_intel_devices(self,render,gid,icd):
+        """Classify physical Intel Vulkan devices; heap budgets are not free VRAM."""
+        key=(render,gid,icd);cache=self.__dict__.setdefault('intel_device_cache',{})
+        if key in cache and time.time()-cache[key][0]<60:return cache[key][1]
+        code=r"""import ctypes as c,json
+v=c.CDLL('libvulkan.so.1')
+class Info(c.Structure):
+ _fields_=[('type',c.c_uint32),('next',c.c_void_p),('flags',c.c_uint32),('app',c.c_void_p),('layers',c.c_uint32),('layer_names',c.c_void_p),('extensions',c.c_uint32),('extension_names',c.c_void_p)]
+v.vkCreateInstance.argtypes=[c.POINTER(Info),c.c_void_p,c.POINTER(c.c_void_p)]
+v.vkEnumeratePhysicalDevices.argtypes=[c.c_void_p,c.POINTER(c.c_uint32),c.POINTER(c.c_void_p)]
+v.vkGetPhysicalDeviceProperties.argtypes=[c.c_void_p,c.c_void_p]
+v.vkDestroyInstance.argtypes=[c.c_void_p,c.c_void_p]
+instance=c.c_void_p();assert v.vkCreateInstance(c.byref(Info(type=1)),None,c.byref(instance))==0
+try:
+ n=c.c_uint32();assert v.vkEnumeratePhysicalDevices(instance,c.byref(n),None)==0
+ devices=(c.c_void_p*n.value)();assert v.vkEnumeratePhysicalDevices(instance,c.byref(n),devices)==0
+ rows=[]
+ for device in devices:
+  data=c.create_string_buffer(4096);v.vkGetPhysicalDeviceProperties(device,data)
+  fields=c.cast(data,c.POINTER(c.c_uint32));rows.append({'vendor_id':hex(fields[2]),'device_id':hex(fields[3]),'integrated':fields[4]==1,'name':data.raw[20:276].split(b'\0')[0].decode()})
+ print(json.dumps(rows))
+finally:v.vkDestroyInstance(instance,None)
+"""
+        name='swarm-gpu-inventory-intel-'+secrets.token_hex(8)
+        try:
+            result=subprocess.run(['docker','run','--rm','--pull=never','--name',name,'--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--memory','128m','--memory-swap','128m','--cpus','0.25','--pids-limit','64','--label','org.lifetech.service=gpu-inventory','--device',render,'--group-add',str(gid),'--mount','type=bind,src=/usr,dst=/usr,readonly','--tmpfs','/tmp:rw,nosuid,nodev,size=16m','--env','XDG_CACHE_HOME=/tmp','--env','VK_ICD_FILENAMES='+icd,'organization-launcher:webrtc-1','/usr/bin/python3','-c',code],capture_output=True,text=True,check=True,timeout=15)
+            rows=json.loads(result.stdout)
+            if not isinstance(rows,list) or any(not isinstance(r,dict) or type(r.get('integrated')) is not bool for r in rows):raise ValueError('Invalid Vulkan physical devices')
+        except (OSError,ValueError,subprocess.SubprocessError):rows=[]
+        finally:
+            try:subprocess.run(['docker','rm','-f',name],capture_output=True,timeout=5)
+            except (OSError,subprocess.SubprocessError):pass
+        cache[key]=(time.time(),rows);return rows
+
     def host_nvidia_allocations(self):
         # The agent need not hold compute-device access to collect driver metadata.
+        name='swarm-gpu-inventory-nvidia-'+secrets.token_hex(8)
+        completed=False
         try:
-            result=subprocess.run(['docker','run','--rm','--pull=never','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--memory','96m','--memory-swap','96m','--cpus','0.25','--pids-limit','128','--label','org.lifetech.service=gpu-inventory','--gpus','all','--env','NVIDIA_DRIVER_CAPABILITIES=utility','organization-launcher:webrtc-1','nvidia-smi','--query-gpu=uuid,pci.bus_id,name,memory.total,memory.free,utilization.gpu,temperature.gpu','--format=csv,noheader,nounits'],capture_output=True,text=True,check=True,timeout=10)
+            result=subprocess.run(['docker','run','--rm','--pull=never','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--memory','96m','--memory-swap','96m','--cpus','0.25','--pids-limit','128','--name',name,'--label','org.lifetech.service=gpu-inventory','--gpus','all','--env','NVIDIA_DRIVER_CAPABILITIES=utility','organization-launcher:webrtc-1','nvidia-smi','--query-gpu=uuid,pci.bus_id,name,memory.total,memory.free,utilization.gpu,temperature.gpu','--format=csv,noheader,nounits'],capture_output=True,text=True,check=True,timeout=10)
+            completed=True
             return nvidia_allocation_rows(result.stdout)
         except (OSError,ValueError,subprocess.SubprocessError):return []
+
+        finally:
+            # docker CLI timeouts do not remove a created/running container.
+            # Unique names avoid poisoning every later inventory refresh.
+            if not completed:
+                try:subprocess.run(['docker','rm','-f',name],capture_output=True,timeout=10)
+                except (OSError,subprocess.SubprocessError):pass
 
     def gpu_resources(self):
         with self.__dict__.setdefault('gpu_inventory_lock',threading.RLock()):return self._gpu_resources()
@@ -2462,13 +2651,14 @@ print(json.dumps(result))"""
         """Node-owned GPU identity/allocation detection; no application profiles."""
         now=time.time()
         if getattr(self,'gpu_resource_cache',None) is not None and now-self.gpu_resource_sampled<1:return self.gpu_resource_cache
-        inventory=hardware_sample(disk=self.root)
+        inventory=hardware_sample(disk=self.root,query_nvidia=False)
         if any(row.get('vendor')=='NVIDIA' and (not row.get('uuid') or row.get('memory_free_mib') is None) for row in inventory['gpus']):
             nvidia=self.host_nvidia_allocations()
             if nvidia:inventory['gpus']=[r for r in inventory['gpus'] if r['vendor']!='NVIDIA']+nvidia
         machine=hashlib.sha256(Path('/etc/machine-id').read_bytes()).hexdigest()
         memory={line.split(':',1)[0]:int(line.split()[1]) for line in Path('/proc/meminfo').read_text().splitlines() if len(line.split())>=2 and line.split()[1].isdigit()}
-        workers=gpu_worker_commitments()
+        released=self.stream_work.released_gpu_work() if hasattr(self,'stream_work') else set()
+        workers=gpu_worker_commitments(released) if released else gpu_worker_commitments()
         rows=[];groups=None
         for raw in inventory['gpus']:
             row=dict(raw)
@@ -2480,6 +2670,16 @@ print(json.dumps(result))"""
                     icds=getattr(self,'gpu_host_icds',None)
                     row['vulkan_icds_known']=icds is not None
                     row['icd_candidates']=[x['path'] for x in (icds or []) if 'radeon' in x['library'].lower()]
+                if row['vendor']=='Intel':
+                    icds=getattr(self,'gpu_host_icds',None)
+                    row['vulkan_icds_known']=icds is not None
+                    row['icd_candidates']=[x['path'] for x in (icds or []) if Path(x['library']).name=='libvulkan_intel.so']
+                    candidates=row['icd_candidates']
+                    if len(candidates)==1 and type(row.get('render_gid')) is int:
+                        devices=self.host_intel_devices(row['render_device'],row['render_gid'],candidates[0])
+                        matches=[d for d in devices if d.get('vendor_id')==row.get('vendor_id') and d.get('device_id')==row.get('device_id')]
+                        if len(matches)==1 and matches[0]['integrated']:
+                            row.update(device_type='integrated',name=matches[0]['name'],memory_domain='shared-system-memory',memory_source='Vulkan physical integrated device; kernel host RAM',memory_total_mib=None,memory_free_mib=None,memory_used_mib=None,shared_memory_available_mib=memory.get('MemAvailable',0)/1024,gpu_allocation_added_to_host_ram=False)
             row['allocation_known']=row.get('memory_total_mib') is not None and row.get('memory_free_mib') is not None
             row.update(workers['devices'].get(row.get('uuid'),{'active_workers':0,'private_commitment_mib':0,'exclusive_worker_present':False}))
             row['workers_known']=workers['known'];row['sampled_at']=now;rows.append(row)
@@ -2491,12 +2691,35 @@ print(json.dumps(result))"""
         return self.gpu_resource_cache
 
     def hardware(self, info=None):
+        with self.__dict__.setdefault('hardware_lock',threading.RLock()):return self._hardware(info)
+
+    def _hardware(self, info=None):
         if self.hardware_cache is None or time.time()-self.hardware_sampled>15:
-            self.hardware_cache=hardware_sample(disk=self.root)
+            self.hardware_cache=hardware_sample(disk=self.root,query_nvidia=False)
             self.hardware_sampled=time.time()
         if info is not None:self.cuda_runtime='nvidia' in info.get('Runtimes',{})
         value={**self.hardware_cache,'gpu_validation':self.gpu_validation,
                'cuda_container_runtime':getattr(self,'cuda_runtime',None)}
+        try:
+            state=json.loads((self.config.parent/'performance-state.json').read_text())
+            if state.get('status')=='published' and 0<=time.time()-state['sampled_at']<15:
+                devices=state.get('gpu_devices',{})
+                value['gpus']=[{**g,**devices.get(g.get('pci_id'),{})} for g in value.get('gpus',[])]
+        except (OSError,ValueError,TypeError,KeyError):pass
+        # Driver/runtime probes must never hold up node readiness or CPU RPCs.
+        if time.time()-getattr(self,'hardware_gpu_at',0)<20:
+            rows={g['pci_id']:g for g in getattr(self,'hardware_gpu_rows',[])}
+            value['gpus']=[({**rows.get(g.get('pci_id'),{}),**g} if g.get('utilization_percent') is not None else {**g,**rows.get(g.get('pci_id'),{})}) for g in value.get('gpus',[])]
+        missing=any(g.get('vendor')=='NVIDIA' and g.get('utilization_percent') is None for g in value.get('gpus',[]))
+        probe=getattr(self,'hardware_gpu_probe',None)
+        if missing and (probe is None or not probe.is_alive()) and time.time()-getattr(self,'hardware_gpu_attempt',0)>30:
+            self.hardware_gpu_attempt=time.time()
+            def collect():
+                rows=self.host_nvidia_allocations()
+                with self.hardware_lock:
+                    self.hardware_gpu_rows=rows;self.hardware_gpu_at=time.time()
+            self.hardware_gpu_probe=threading.Thread(target=collect,daemon=True,name='node-gpu-counters')
+            self.hardware_gpu_probe.start()
         return value
 
     def close(self):

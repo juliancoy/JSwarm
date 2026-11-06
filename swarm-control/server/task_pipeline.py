@@ -43,7 +43,7 @@ def resources(value):
     return result or None
 
 
-def execution_report(namespace,ident,host,root=WGS):
+def execution_report(namespace,ident,host,root=WGS,retained_reports=None):
     # Local, bounded reads for active alignments only. No SSH, Docker inspection,
     # fleet polling, or filesystem scans on dashboard requests.
     if not namespace.startswith('venter-alignment:'):return None
@@ -55,11 +55,13 @@ def execution_report(namespace,ident,host,root=WGS):
         report=json.loads(path.read_text())
         if str(report.get('host','')).lower()!=str(host or '').split('#')[0].lower():return None
         retained=Path.home()/'.local/state/swarm-control/shard-runtime.sqlite'
-        if retained.exists():
+        if retained_reports is not None:
+            report={**retained_reports.get((ident,report.get('container')),{}),**report}
+        elif retained.exists():
             try:
                 with sqlite3.connect(retained.resolve().as_uri()+'?mode=ro',uri=True,timeout=.2) as db:
                     saved=db.execute('SELECT report FROM observations WHERE job=? AND container=?',(ident,report.get('container'))).fetchone()
-                    if saved:report={**json.loads(saved[0]),**report}
+                    if saved:report={**json.loads(saved[0]),**{k:v for k,v in report.items() if v is not None}}
             except (sqlite3.Error,OSError,ValueError):pass
         io=None
         try:
@@ -68,7 +70,7 @@ def execution_report(namespace,ident,host,root=WGS):
                 candidate=json.loads(io_path.read_text())
                 if candidate.get('container')==report.get('container') and candidate.get('worker')==report.get('host'):io=candidate
         except (OSError,ValueError,AttributeError):pass
-        return {**{k:report[k] for k in ('cpu_core_seconds','cpu_throttled_seconds','cpu_sampled_at','cpu_measurement_basis','memory_current_bytes','memory_peak_bytes','memory_anon_bytes','memory_file_bytes','memory_shmem_bytes','memory_swap_bytes','memory_sampled_at','memory_measurement_basis','profiling_context') if k in report},'io':io,'phase':report.get('phase'),'resources':resources(report),'recorded_at':path.stat().st_mtime,
+        return {**{k:report[k] for k in ('sink','gpu','cpu_core_seconds','cpu_throttled_seconds','cpu_sampled_at','cpu_measurement_basis','cpu_accounting_coverage','queue_seconds','queue_timing_basis','admission_wait_seconds','memory_current_bytes','memory_peak_bytes','memory_anon_bytes','memory_file_bytes','memory_shmem_bytes','memory_swap_bytes','memory_sampled_at','memory_measurement_basis','memory_accounting_coverage','profiling_context') if k in report},'io':io,'phase':report.get('phase'),'resources':resources(report),'recorded_at':path.stat().st_mtime,
                 'container':report.get('container'), 'reference_transport':report.get('reference_transport'),
                 'shared_index':'LIFETECH_BWA_SHARED=1' in report.get('command',''),
                 'shared_reference_ram':bool(report.get('shared_cache')),
@@ -156,6 +158,8 @@ def run_type(spec,request,namespace):
     if recipe.startswith('fastq.') and 'qc' in recipe or kind in ('genetic-qc','genomic-qc','fastq-qc'):return 'genetic-qc'
     if kind in ('paired-read-alignment','read-alignment','mapping') or namespace.startswith('venter-alignment:'):return 'mapping'
     if kind=='application-test' or namespace.startswith('application-tests:'):return 'web'
+    if namespace.startswith('genomics-followup:'):
+        if kind=='regional' or kind in ('qualification','audit','report','dat1','adopted'):return 'genome-analysis'
     return 'other'
 
 
@@ -177,6 +181,67 @@ def stream_observations(path):
     except (sqlite3.Error,OSError,ValueError):return {}
 
 
+def alignment_observations(path):
+    """One bounded local DB read, rather than one connection per shard."""
+    if not path.exists():return {}
+    try:
+        with sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=.5) as db:
+            return {(job,container):json.loads(report) for job,container,report in
+                    db.execute("SELECT job,container,report FROM observations WHERE job LIKE 'SRR%'") if len(report)<=1024*1024}
+    except (sqlite3.Error,OSError,ValueError):return {}
+
+
+def followup_observations(path):
+    """Read retained local telemetry once; match the exact accepted attempt below."""
+    if not path.exists():return {}
+    result={}
+    try:
+        with sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=.5) as db:
+            rows=db.execute("SELECT job,container,report FROM observations WHERE job LIKE 'genomics-followup:%' OR job LIKE 'genomics-followup-inputs:%'")
+            for job,container,encoded in rows:
+                if len(encoded)>1024*1024:continue
+                try:
+                    report=json.loads(encoded)
+                    if report.get('container')!=container:continue
+                    namespace,ident=job.split('#',1)
+                    result[(namespace,ident,report['attempt_directory'])]=report
+                except (KeyError,TypeError,ValueError):continue
+    except (sqlite3.Error,OSError):pass
+    return result
+
+
+def followup_telemetry(report):
+    keys=('host','container','phase','started','finished','elapsed_seconds','sink','image',
+          'cpu_core_seconds','cpu_sampled_at','cpu_throttled_seconds','cpu_measurement_basis','cpu_accounting_coverage','queue_seconds','queue_timing_basis','admission_wait_seconds',
+          'memory_current_bytes','memory_peak_bytes','memory_anon_bytes','memory_file_bytes',
+          'memory_shmem_bytes','memory_swap_bytes','memory_sampled_at','memory_measurement_basis','memory_accounting_coverage',
+          'profiling_context','recorded_at')
+    return {**{k:report[k] for k in keys if k in report},'resources':resources({**report,'memory_mb':report.get('memory_reservation_mb') or report.get('memory_mb')}),
+            'timing_basis':'Worker execution report; queue waiting time excluded'}
+
+
+def shard_title(spec,ident,namespace):
+    if spec.get('name'):return spec['name']
+    if not namespace.startswith('genomics-followup:'):
+        return spec.get('id') or ('Shard '+str(spec['shard']) if 'shard' in spec else ident)
+    labels=(('qualify-','Executor controls'),('call-','Variant calling'),('project-','Reference projection'),
+            ('compare-samples-','Sample comparison'),('compare-references-','Reference comparison'),
+            ('structural-','Structural evidence'),('phase-','Local phasing'),('boundaries-','Boundary audit'),
+            ('aggregate-','Evidence aggregation'),('dat1-','DAT1 evidence'))
+    operation=next((label for prefix,label in labels if ident.startswith(prefix)),ident.replace('-',' ').capitalize())
+    if ident.startswith('qualify-'):operation+=' · '+ident.removeprefix('qualify-').capitalize()
+    if ident.startswith('aggregate-'):operation+=' · '+ident.removeprefix('aggregate-').replace('-',' ')
+    parts=[operation]
+    if spec.get('sample'):parts.append(str(spec['sample']).capitalize())
+    if spec.get('reference_space'):parts.append(str(spec['reference_space']))
+    if spec.get('chromosome') is not None:
+        location='chr'+str(spec['chromosome']);region=spec.get('region')
+        if isinstance(region,dict) and type(region.get('start')) is int and type(region.get('end')) is int:
+            location+=f":{region['start']:,}–{region['end']:,} (0-based)"
+        parts.append(location)
+    return ' · '.join(parts)
+
+
 def enrolled_machines(config=None):
     """Enrollment is independent of workload filters and never polls nodes."""
     if config is None:
@@ -188,9 +253,81 @@ def enrolled_machines(config=None):
     except (OSError,ValueError,TypeError):return []
 
 
+def finalizer_blocker(spec,root):
+    if spec.get('kind')!='adopted' or (spec.get('executor') or {}).get('unit')!='lifetech-wgs-venter-finalize.service':return None
+    try:
+        path=root/'recall/venter/finalize/state.json'
+        if path.stat().st_size>4*1024*1024:return None
+        report=json.loads(path.read_text())
+        if report.get('phase')!='waiting_for_sufficient_ssd_scratch':return None
+        plan=report.get('storage_plan') or {};needs=plan.get('conservative_peak_additional_bytes') or {};free=plan.get('candidates') or {}
+        return 'Finalizer waiting for SSD scratch: '+('; '.join(f'{host}: needs {size/1e9:.1f} GB additional, {free.get(host,0)/1e9:.1f} GB available' for host,size in needs.items()))+'. Original reads retained. Observed '+datetime.datetime.fromtimestamp(path.stat().st_mtime,datetime.timezone.utc).isoformat()
+    except (OSError,ValueError,TypeError):return None
+
+
+def blocked_detail(spec,state):
+    if state not in ('waiting_dependency','waiting_implementation'):return None
+    gates=spec.get('required_gates') or []
+    prerequisites=spec.get('depends_on') or []
+    notes=[]
+    if state=='waiting_implementation':notes.append('Executor implementation/qualification required; not eligible for dispatch.')
+    elif spec.get('kind')=='adopted':notes.append('Observing existing finalizer; not a duplicate submitted job.')
+    else:notes.append('Waiting for verified prerequisite receipts; not executing.')
+    if prerequisites:notes.append('Prerequisites: '+', '.join(map(str,prerequisites)))
+    if gates:notes.append('Required evidence gates: '+', '.join(map(str,gates)))
+    return ' '.join(notes)
+
+
+def project_finalizer(items,root,runtime_path):
+    """Read-only children of the existing finalizer, backed by retained observations."""
+    parents=[i for i in items if i['job_id']=='adopt-venter-finalizer']
+    if not parents or not runtime_path.exists():return
+    try:
+        state=json.loads((root/'recall/venter/finalize/state.json').read_text());generation=state['generation']
+        if not re.fullmatch('[a-f0-9]{12}',generation):return
+        with sqlite3.connect(runtime_path.resolve().as_uri()+'?mode=ro',uri=True,timeout=.5) as db:
+            rows={ident:json.loads(report) for ident,report in db.execute('SELECT id,report FROM finalizer_observations WHERE generation=?',(generation,))}
+    except (OSError,ValueError,KeyError,sqlite3.Error):return
+    metadata=rows.pop('__workflow__',{})
+    if not metadata:return
+    parent=parents[-1];parent.update(worker=metadata.get('host'),name='Venter final publication',
+        resources=None,worker_resources=None,submission_resources=None,placement_resources=None,
+        detail=f"{metadata.get('prepared',0):,}/{metadata.get('total',0):,} batches prepared; {metadata.get('phase','unknown').replace('_',' ')}. Individual worker observations are shown separately.")
+    if parent['status']=='running':parent['status']='waiting_dependency'
+    existing_items={i['id']:i for i in items}
+    for ident,report in rows.items():
+        status=report['status']
+        if status in ('running','preparing') and time.time()-report.get('sampled_at',0)>120:status='unknown'
+        execution=followup_telemetry(report) if report.get('container') else None
+        worker=report.get('host');merge=ident=='global-merge'
+        display_id='venter-finalization:'+generation+'/'+ident
+        queued=existing_items.get(display_id)
+        if queued:
+            if queued['queue_state'] in ('queued','preparing'):status=queued['status'];worker=queued.get('worker')
+            elif queued['queue_state']=='accepted' and not execution:status='preparing';worker=queued.get('worker')
+            elif queued['queue_state']=='completed':status='completed'
+            elif queued['queue_state']=='failed':status='failed'
+        resources_=execution.get('resources') if execution else None
+        projected={'id':display_id,'job_id':ident,'parent':parent['parent'],'kind':'venter-global-merge' if merge else 'venter-mate-preparation',
+            'name':'Venter · global merge and duplicate marking' if merge else 'Venter · mate preparation · batch '+str(int(ident.rsplit('-',1)[-1])),
+            'shard':None if merge else int(ident.rsplit('-',1)[-1]),'run_type':'genome-analysis','status':status,'queue_state':'observed',
+            'worker':worker,'resources':resources_,'worker_resources':resources_,'submission_resources':None,'placement_resources':None,
+            'execution':execution,'runtime':runtime_observation(execution,{},worker),'completed_at':completion_time(execution,{},0) if status=='completed' else None,
+            'updated':report.get('recorded_at') or metadata['sampled_at'],'created':0,'dependencies':[],
+            'output_verified':report.get('verified') is True,'peak_memory_bytes':report.get('memory_peak_bytes'),
+            'io':io_observation(None,{},worker,status),'forecast_excluded':True,
+            'detail':'Observed existing finalizer worker; verified checkpoint required for completion. Included in the parent finalization dependency.',
+            'detail_label':'Execution provenance','generation':generation,'reference_mode':'GRCh38'}
+        if queued:
+            projected['queue_state']=queued['queue_state']
+            projected['detail']=queued.get('detail') or 'Shared queue claim; verified checkpoint required for completion.'
+            queued.update(projected)
+        else:items.append(projected)
+
+
 def snapshot(path=QUEUE,report_root=WGS,runtime_path=RUNTIME_DB):
     if not path.exists():return {'sampled_at':time.time(),'items':[],'machines':enrolled_machines(),'errors':[]}
-    items=[];stream_reports=stream_observations(runtime_path)
+    items=[];stream_reports=stream_observations(runtime_path);followup_reports=followup_observations(runtime_path);alignment_reports=alignment_observations(runtime_path)
     with sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=2) as db:
         db.row_factory=sqlite3.Row
         task_column='task_id' if any(column[1]=='task_id' for column in db.execute('PRAGMA table_info(submissions)')) else 'NULL AS task_id'
@@ -199,30 +336,39 @@ def snapshot(path=QUEUE,report_root=WGS,runtime_path=RUNTIME_DB):
             if not isinstance(request,dict):request={}
             state=row['state'];phase=state
             if state=='accepted':
-                phase='waiting_capacity' if request.get('admission_pending') is True or 'admission_pending' not in request and 'capacity' in (row['error'] or '').lower() else 'preparing'
+                phase='preparing' if request.get('inputs_ready') is False else 'waiting_capacity' if request.get('admission_pending') is True or 'admission_pending' not in request and 'capacity' in (row['error'] or '').lower() else 'preparing'
             elif state=='preparing':phase='preparing'
             submitted=resources(spec.get('resources'))
             placement=resources(request.get('resources')) if state in ('preparing','accepted') else None
-            execution=execution_report(row['namespace'],row['id'],row['host'],report_root) if state in ('accepted','completed','failed') and request.get('admission_pending') is not True else None
+            execution=execution_report(row['namespace'],row['id'],row['host'],report_root,retained_reports=alignment_reports) if state in ('accepted','completed','failed') and request.get('admission_pending') is not True else None
             if row['namespace'].startswith('stream:'):
                 saved=stream_reports.get((row['namespace'],row['id']))
                 if saved and saved[:2]==(row['host'],row['task_id']):
                     execution=saved[2]
                     if state=='accepted':phase=execution.get('phase',phase)
+            if row['namespace'].startswith(('genomics-followup:','genomics-followup-inputs:')) and state in ('accepted','completed','failed'):
+                saved=followup_reports.get((row['namespace'],row['id'],request.get('directory')))
+                regional=row['namespace'].startswith('genomics-followup-inputs:')
+                image=request.get('source_image') if regional else request.get('image')
+                binding_matches=regional or (saved and (saved.get('profiling_context') or {}).get('recipe_sha256')==request.get('binding'))
+                if saved and saved.get('host')==row['host'] and image and saved.get('image')==image and binding_matches and request.get('admission_pending') is not True and (state=='accepted' or saved.get('finished')):
+                    execution=followup_telemetry(saved)
             worker_resources=None
             if execution and execution['container']:
-                if execution['phase']=='running':phase='running';worker_resources=execution['resources']
-                elif execution['phase'] in ('failed','interrupted'):phase='retrying'
+                if execution['phase']=='running' and state=='accepted':phase='running';worker_resources=execution['resources']
+                elif execution['phase'] in ('failed','interrupted') and state=='accepted':phase='retrying'
             try:result=json.loads(row['result'] or '{}')
             except (TypeError,ValueError):result={}
             if not isinstance(result,dict):result={}
+            finalizer_wait=finalizer_blocker(spec,report_root)
+            if finalizer_wait and state=='waiting_dependency':phase='waiting_capacity'
             peak=result.get('peak_memory_bytes') if state=='completed' else None
             if not isinstance(peak,(int,float)) or isinstance(peak,bool) or not math.isfinite(peak) or peak<=0:peak=None
             dependencies=spec.get('depends_on',spec.get('dependencies',[]))
             if not isinstance(dependencies,list):dependencies=[str(dependencies)]
             items.append({'id':row['namespace']+'/'+row['id'],'job_id':row['id'],'parent':row['namespace'],
-                'name':spec.get('name') or ('Shard '+str(spec['shard']) if 'shard' in spec else row['id']),
-                'shard':spec.get('shard'),'kind':spec.get('kind','work item'),'run_type':run_type(spec,request,row['namespace']),'completed_at':completion_time(execution,result,row['updated']) if state=='completed' else None,'status':phase,'queue_state':state,
+                'name':shard_title(spec,row['id'],row['namespace']),
+                'shard':spec.get('shard'),'chromosome':spec.get('chromosome'),'region':spec.get('region'),'stage':spec.get('stage'),'kind':spec.get('kind','work item'),'run_type':run_type(spec,request,row['namespace']),'completed_at':completion_time(execution,result,row['updated']) if state=='completed' else None,'status':phase,'queue_state':state,
                 'worker':row['host'],'dependencies':dependencies,'resources':worker_resources or placement or submitted,
                 'submission_resources':submitted,'placement_resources':placement,'worker_resources':worker_resources,
                 'execution':{k:v for k,v in execution.items() if k!='io'} if execution else None,'peak_memory_bytes':peak,
@@ -232,7 +378,7 @@ def snapshot(path=QUEUE,report_root=WGS,runtime_path=RUNTIME_DB):
                 'io':io_observation(result.get('io') if state=='completed' else (execution or {}).get('io'),result,row['host'],state),
                 'runtime':runtime_observation(execution,result,row['host']),
                 'work_units':result.get('pairs') or spec.get('reads'),
-                'detail':row['error'] or failure_detail(spec,result,state),'detail_label':'Prior queue note (before worker started)' if execution and execution['phase']=='running' and execution['recorded_at']>row['updated'] else 'Benchmark outcome' if spec.get('kind')=='memory-pressure-benchmark' and not row['error'] and failure_detail(spec,result,state) else 'Last queue note','created':row['created'],'updated':row['updated'],
+                'detail':row['error'] or finalizer_wait or blocked_detail(spec,state) or failure_detail(spec,result,state),'detail_label':'Prior queue note (before worker started)' if execution and execution['phase']=='running' and execution['recorded_at']>row['updated'] else 'Benchmark outcome' if spec.get('kind')=='memory-pressure-benchmark' and not row['error'] and failure_detail(spec,result,state) else 'Last queue note','created':row['created'],'updated':row['updated'],
                 'reference_mode':result.get('reference_transport') or (execution or {}).get('reference_transport') or ('shared-index' if (execution or {}).get('shared_index') else request.get('reference_mode') if state in ('preparing','accepted') else None),'generation':spec.get('generation')})
     # A stream workflow's recipe can be retained only on admitted rows. Apply
     # its unambiguous run type to queued siblings in that same workflow.
@@ -242,6 +388,7 @@ def snapshot(path=QUEUE,report_root=WGS,runtime_path=RUNTIME_DB):
     for item in items:
         types=workflow_types.get(item['parent'],set())
         if item['run_type']=='other' and item['parent'].startswith('stream:') and len(types)==1:item['run_type']=next(iter(types))
+    project_finalizer(items,report_root,runtime_path)
     archive_benchmark_attempts(items,report_root)
     items=collapse_test_attempts(items)
     inference=attach_estimates(items)
@@ -254,7 +401,7 @@ def runtime_observation(execution, result, worker):
     try:
         start=datetime.datetime.fromisoformat(report['started']).timestamp()
         end=datetime.datetime.fromisoformat(report['finished']).timestamp() if report.get('finished') else time.time()
-        elapsed=end-start
+        if report.get('finished') or report.get('phase') in (None,'running'):elapsed=end-start
     except (KeyError,TypeError,ValueError):pass
     if type(elapsed) not in (int,float) or not math.isfinite(elapsed) or elapsed<=0:elapsed=None
     backend=result.get('alignment_backend') or report.get('alignment_backend') or {}
@@ -284,13 +431,14 @@ def runtime_observation(execution, result, worker):
         technologies.append('Shared BWA index (file mapping)')
     if backend.get('backend'):technologies.append(backend['backend'])
     if result.get('execution_owner')=='jswarm-node' or report.get('execution_owner')=='jswarm-node':technologies.append('JSwarm node')
+    report={**{k:result[k] for k in ('cpu_core_seconds','cpu_sampled_at','cpu_throttled_seconds','cpu_measurement_basis','cpu_accounting_coverage','queue_seconds','queue_timing_basis','admission_wait_seconds') if k in result},**report}
     core=report.get('cpu_core_seconds')
     if type(core) not in (int,float) or not math.isfinite(core) or core<0:core=None
     cpu_wall=elapsed
     try:
         cpu_wall=report['cpu_sampled_at']-datetime.datetime.fromisoformat(report['started']).timestamp()
     except (KeyError,TypeError,ValueError):pass
-    return {'cpu_core_seconds':core,'average_cores':core/cpu_wall if core is not None and cpu_wall and cpu_wall>0 else None,
+    return {**{k:report[k] for k in ('cpu_accounting_coverage','queue_seconds','queue_timing_basis','admission_wait_seconds') if k in report},'cpu_core_seconds':core,'average_cores':core/cpu_wall if core is not None and cpu_wall and cpu_wall>0 else None,
             'cpu_sampled_at':report.get('cpu_sampled_at'),'cpu_throttled_seconds':report.get('cpu_throttled_seconds'),
             'cpu_measurement_basis':report.get('cpu_measurement_basis'),'machine':worker,'elapsed_seconds':elapsed,'started':report.get('started'),
             'finished':report.get('finished'),'technologies':technologies,'gpu_used':gpu_used,'gpu_devices':devices,
@@ -305,7 +453,7 @@ def runtime_summary(items, now=None):
     a fallback for older attempts whose executor discarded their start time.
     """
     now=time.time() if now is None else now
-    items=[i for i in items if not i.get('superseded_by')]
+    items=[i for i in items if not i.get('superseded_by') and not i.get('forecast_excluded')]
     pending=[i for i in items if i['status']!='completed']
     forecasts=[];unknown=[]
     blocked=[i for i in pending if i['status'] in ('failed','interrupted','partial','unknown','error','timed_out')]

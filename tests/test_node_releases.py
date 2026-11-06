@@ -73,3 +73,37 @@ def test_pager_component_sources_are_pinned_and_tampering_is_rejected(tmp_path):
     value['components']['public-pager']['files']['scripts/swarm_paged_cache.py']+='\n# tampered\n'
     corrupt=tmp_path/'corrupt.json';corrupt.write_text(json.dumps(value))
     with pytest.raises(ValueError,match='component checksum'):LauncherUpdates.published(corrupt,lambda:False,Mock())
+
+
+def test_source_snapshot_freezes_modules_without_copying_ignored_runtime_data(tmp_path):
+    import subprocess
+    from scripts.deploy_swarm_inputs import freeze_source
+    root=tmp_path/'source';project=root/'JSwarm';(project/'scripts').mkdir(parents=True)
+    subprocess.run(['git','init','-q',str(project)],check=True)
+    (project/'.gitignore').write_text('runtime-data/\n')
+    (project/'scripts/module.py').write_text('VALUE=1\n')
+    (project/'runtime-data').mkdir();(project/'runtime-data/private').write_text('excluded')
+    (root/'scripts').mkdir();(root/'scripts/module.py').symlink_to('../JSwarm/scripts/module.py')
+    (root/'swarm-control').symlink_to('JSwarm/swarm-control')
+    target=tmp_path/'snapshot';freeze_source(root,target)
+    (project/'scripts/module.py').write_text('VALUE=2\n')
+    assert (target/'scripts/module.py').read_text()=='VALUE=1\n'
+    assert not (target/'JSwarm/runtime-data').exists()
+
+
+def test_local_update_bundles_stream_runtime_in_installed_agent(tmp_path,monkeypatch):
+    sources=tmp_path/'sources';sources.mkdir()
+    config=tmp_path/'config/peers.json';config.parent.mkdir();config.write_text('{}')
+    for name in launcher_update.FILES:(sources/name).write_text('# source\n')
+    (sources/'launcher_streams.py').write_text('VERSION="bundled-test"\n')
+    (sources/'launcher_commands.py').write_text('VERSION="command-test"\n')
+    monkeypatch.setenv('LIFETECH_PEER_CONFIG',str(config))
+    monkeypatch.setattr(launcher_update,'__file__',str(sources/'launcher_update.py'))
+    monkeypatch.setattr('sys.argv',['launcher_update.py'])
+    launcher_update.main()
+    installed=(config.parent/'agent-releases/current').resolve()
+    namespace={}
+    exec((installed/'launcher_agent.py').read_text(),namespace)
+    assert namespace['STREAM_RUNTIME_SOURCE']==(sources/'launcher_streams.py').read_text()
+
+    assert namespace['COMMAND_RUNTIME_SOURCE']==(sources/'launcher_commands.py').read_text()

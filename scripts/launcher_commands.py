@@ -16,6 +16,29 @@ import time
 WINDOW=512*1024
 
 
+# The Docker CLI can exit while its exec process keeps filling an abandoned
+# pipe. Keep a machine-local process identity so close also stops that group.
+OWNER_EXEC = r'''import json,os,pathlib,signal,subprocess,sys
+path=pathlib.Path('/tmp')/('swarm-command-'+sys.argv[1]+'.json')
+process=subprocess.Popen(json.loads(sys.argv[2]),start_new_session=True)
+identity=pathlib.Path('/proc/self/stat').read_text().split()[21]
+path.write_text(json.dumps({'wrapper':os.getpid(),'start':identity,'group':process.pid}))
+try:raise SystemExit(process.wait())
+finally:
+ try:os.killpg(process.pid,signal.SIGTERM)
+ except ProcessLookupError:pass
+ path.unlink(missing_ok=True)
+'''
+OWNER_CANCEL = r'''import json,os,pathlib,signal,sys
+path=pathlib.Path('/tmp')/('swarm-command-'+sys.argv[1]+'.json')
+try:
+ row=json.loads(path.read_text())
+ if pathlib.Path('/proc',str(row['wrapper']),'stat').read_text().split()[21]==row['start']:
+  try:os.killpg(row['group'],signal.SIGKILL)
+  except ProcessLookupError:pass
+except FileNotFoundError:pass
+'''
+
 class Command:
     def __init__(self,argv,spawn):
         self.argv=argv;self.lock=threading.Lock();self.changed=threading.Condition(self.lock);self.closed=False;self.touched=time.monotonic()
@@ -84,6 +107,8 @@ class Command:
             return result
     def close(self):
         with self.changed:self.closed=True;self.changed.notify_all()
+        if hasattr(self.process,'remote_close'):
+            self.process.remote_close()
         if self.process.poll() is None:
             self.process.terminate()
             try:self.process.wait(timeout=5)
@@ -100,11 +125,7 @@ class CommandService:
     def active(self):
         # Exited processes can still have unacknowledged output in their pipes.
         return len(self.starts)+len(self.closing)+len(self.rows)
-    def owner_spawn(self,argv):
-        if not Path('/.dockerenv').exists() or argv[0] in ('docker','nvidia-smi'):
-            return subprocess.Popen(argv,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-        # The daemon supplies the enrolled owner's filesystem view. No host root,
-        # privileged container, shell interpolation or additional network port.
+    def ensure_owner_helper(self,serve_script=None):
         with self.helper_lock:
             if not hasattr(self,'helper'):
                 import docker
@@ -122,23 +143,47 @@ class CommandService:
                     except docker.errors.ImageNotFound:image=client.images.get('python:3.12-bookworm').id
                     # Device nodes are metadata here: the helper receives no device
                     # grants. Compute workers still acquire their own GPU devices.
-                    name='swarm-owner-'+hashlib.sha256(('owner-v4:'+str(home)+endpoint+image).encode()).hexdigest()[:16]
+                    identity=('owner-service-v1:'+serve_script.name) if serve_script else 'owner-v4:'
+                    name='swarm-owner-'+hashlib.sha256((identity+str(home)+endpoint+image).encode()).hexdigest()[:16]
+                    config_dir=Path(json.loads(descriptor.read_text())['config_dir']) if descriptor.exists() else self.agent.config.parent
+                    command=['python3','-B',str(config_dir/'command-runtimes'/serve_script.name),'--serve',str(config_dir/self.agent.config.name)] if serve_script else ['python3','-c','import time; time.sleep(10**9)']
                     try:container=client.containers.get(name)
                     except docker.errors.NotFound:
-                        container=client.containers.create(image,['python3','-c','import time; time.sleep(10**9)'],name=name,
+                        container=client.containers.create(image,command,name=name,
                             labels={'organization.container-class':'launcher-owner-runtime','org.lifetech.owner-home':str(home)},
                             network_mode='host',user=f'{uid}:{gid}',group_add=[] if rootless else [str(os.stat(socket_path).st_gid)],
-                            read_only=True,cap_drop=['ALL'],security_opt=['no-new-privileges'],mem_limit='256m',memswap_limit='256m',pids_limit=128,
+                            read_only=True,cap_drop=['ALL'],security_opt=['no-new-privileges'],mem_limit='1024m',memswap_limit='1024m',pids_limit=1024,
                             tmpfs={'/tmp':'rw,nosuid,nodev,size=64m,mode=1777'},working_dir=str(home),
-                            environment={'HOME':str(home),'DOCKER_HOST':endpoint,'PYTHONDONTWRITEBYTECODE':'1'},
+                            environment={'HOME':str(home),'DOCKER_HOST':endpoint,'PYTHONDONTWRITEBYTECODE':'1',**({'JSWARM_OWNER_RUNTIME':'1'} if serve_script else {})},
                             volumes={str(home):{'bind':str(home),'mode':'rw'},socket_path:{'bind':socket_path,'mode':'rw'},'/etc/machine-id':{'bind':'/etc/machine-id','mode':'ro'},
                                      '/dev':{'bind':'/dev','mode':'ro'}},
                             restart_policy={'Name':'unless-stopped'},healthcheck={'test':['NONE']})
                     if (container.labels or {}).get('org.lifetech.owner-home')!=str(home):raise ValueError('Owner runtime identity differs')
                     container.reload()
+                    limits=container.attrs.get('HostConfig',{})
+                    if 0<limits.get('PidsLimit',0)<1024 or 0<limits.get('Memory',0)<1024**3:
+                        container.update(pids_limit=1024,mem_limit='1024m',memswap_limit='1024m')
                     if not container.attrs['State']['Running']:container.start()
                 self.helper=name
-        return subprocess.Popen(['docker','exec','-i',self.helper,*argv],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+
+    def owner_spawn(self,argv):
+        if os.getenv('JSWARM_OWNER_RUNTIME')=='1' or not Path('/.dockerenv').exists() or argv[0] in ('docker','nvidia-smi'):
+            process=subprocess.Popen(argv,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+            def cancel_group():
+                import signal
+                if process.poll() is None or not process.stdout.closed or not process.stderr.closed:
+                    try:os.killpg(process.pid,signal.SIGTERM)
+                    except ProcessLookupError:pass
+            process.remote_close=cancel_group
+            return process
+        self.ensure_owner_helper()
+        token=os.urandom(16).hex()
+        process=subprocess.Popen(['docker','exec','-i',self.helper,'python3','-c',OWNER_EXEC,token,json.dumps(argv)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        def remote_close():
+            try:subprocess.run(['docker','exec',self.helper,'python3','-c',OWNER_CANCEL,token],capture_output=True,timeout=10)
+            except (OSError,subprocess.SubprocessError):pass
+        process.remote_close=remote_close
+        return process
     def changed(self):
         if self.agent:self.agent.busy()
     def dispatch(self,op,args):
@@ -207,7 +252,7 @@ class CommandProxy:
     subprocesses and acknowledged windows remain in the same process on update.
     """
     def __init__(self,agent,source):
-        self.config=Path(agent.config);self.source=source
+        self.agent=agent;self.config=Path(agent.config);self.source=source
         self.digest=hashlib.sha256(source.encode()).hexdigest()
         self.socket=self.config.parent/('command-runtime-'+self.digest[:16]+'.sock')
         import fcntl
@@ -229,8 +274,15 @@ class CommandProxy:
             temporary=folder/(digest+'.tmp');temporary.write_text(source);temporary.chmod(0o600);temporary.replace(script)
         if hashlib.sha256(script.read_bytes()).hexdigest()!=digest:raise ValueError('Command runtime checksum mismatch')
         import sys
-        with (folder/'runtime.log').open('ab') as log:
-            subprocess.Popen([sys.executable,'-B',str(script),'--serve',str(self.config)],stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True,close_fds=True)
+        if Path('/.dockerenv').exists() and hasattr(self.agent,'client'):
+            # Serve owner processes directly inside their persistent filesystem
+            # view. A completed command must not wait on Docker exec attachment.
+            helper=CommandService.__new__(CommandService)
+            helper.agent=self.agent;helper.helper_lock=threading.Lock()
+            helper.ensure_owner_helper(serve_script=script)
+        else:
+            with (folder/'runtime.log').open('ab') as log:
+                subprocess.Popen([sys.executable,'-B',str(script),'--serve',str(self.config)],stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True,close_fds=True)
         deadline=time.monotonic()+15
         while time.monotonic()<deadline:
             try:self._call('runtime.status',{});return

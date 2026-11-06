@@ -136,10 +136,19 @@ class Sampler:
             self.publish('julian-original-read-replica',name,current)
 
     def venter(self):
-        root=self.wgs/'recall/venter';generation=load(root/'generation.json');state=load(root/'full/state.json')
-        if not generation.get('work') or state.get('generation')!=generation.get('generation'):return
+        root=self.wgs/'recall/venter';generation=load(root/'generation.json')
+        from scripts.venter_task_progress import current_state
+        _,_,_,state=current_state(root)
+        if not generation.get('work'):return
         stream=load(root/'stream.json')
-        remote=self.remote({'shards':generation['work']+'/shards','container':stream.get('container') if stream.get('phase')=='running' else None})
+        source_request={'shards':generation['work']+'/shards','container':stream.get('container') if stream.get('phase')=='running' else None}
+        cache=self.state/'task-runtime/venter-source.json'
+        try:
+            remote=self.remote(source_request)
+            from scripts.launcher_streams import atomic_json
+            atomic_json(cache,{'generation':generation['generation'],'observation':remote})
+        except (OSError,RuntimeError,subprocess.SubprocessError):
+            saved=load(cache);remote=saved.get('observation',{}) if saved.get('generation')==generation['generation'] else {}
         done=sum(j.get('phase')=='complete' for j in state.get('jobs',{}).values())
         verified=remote.get('stream_verified',{});total=verified.get('shards')
         phase='Mapping verified source shards' if total else 'Preparing and mapping streamed source shards'
@@ -194,10 +203,13 @@ class Sampler:
             if report.get('phase')=='waiting_capacity' and report.get('storage_policy')=='ram-only' and not path.with_name(path.stem+'.receipt.json').exists():
                 ram_waits[report['host']]=report
             if report.get('host')!=stream.get('host') or report.get('container') not in running:continue
+            progress=report.get('node_progress') or {}
+            fresh=0<=now-progress.get('updated',0)<60
+            observed={key:progress[key] for key in ('completed_units','total_units','unit','units_per_second','execution_eta_seconds','eta_scope') if key in progress} if fresh else {}
             children.append({'id':path.stem,'name':'Align Venter shard '+path.stem.rsplit('-',1)[-1],
                 'worker':report['host'],'status':'running','sampled_at':now,
-                'current_phase':'Alignment pipeline: mapping, sorting and verification',
-                'detail':'Live container verified. Reserved '+str(report.get('cpus'))+' CPUs and '+str(report.get('memory_mb'))+' MiB RAM. Within-shard progress not instrumented.'})
+                'current_phase':progress.get('phase') if fresh else 'Alignment pipeline: mapping, sorting and verification',
+                'detail':'Node-owned execution; progress reported by the worker.' if fresh else 'Live container verified. Reserved '+str(report.get('cpus'))+' CPUs and '+str(report.get('memory_mb'))+' MiB RAM. Awaiting a fresh worker progress sample.',**observed})
         for worker,report in ram_waits.items():
             children.append({'id':'ram-only-'+worker.replace('.','-'),'name':'RAM-only alignment admission','worker':worker,
                 'status':'waiting_capacity','sampled_at':now,'current_phase':'Waiting for '+str(report['memory_mb'])+' MiB available RAM',
@@ -207,6 +219,49 @@ class Sampler:
               'detail':'Fresh read-only Docker observations; executor ownership is unchanged.'}
         from scripts.launcher_streams import atomic_json
         atomic_json(self.state/'tasks'/(task['id']+'.json'),task)
+        self.project_current_venter(root,remote)
+
+
+
+    def project_current_venter(self,root,remote):
+        from concurrent.futures import ThreadPoolExecutor
+        from scripts.swarm_runtime import AgentClient,CONFIG
+        from scripts.venter_task_progress import project
+        from scripts.launcher_streams import atomic_json
+        config=load(CONFIG)
+        hosts=[h for h in load(self.wgs/'recall-hosts.json') if h['host'] in config.get('peers',{})] if (self.wgs/'recall-hosts.json').exists() else []
+        def observe(host):
+            client=AgentClient({**host,'agent_endpoint':'http://'+config['peers'][host['host']]+':8790'})
+            try:
+                row=client.call('status',timeout=2)
+                if row.get('machine')!=host['machine']:raise ValueError('Worker identity changed')
+                return host['host'],{'sampled_at':time.time(),'workers':row.get('workers',[])}
+            except Exception as error:return host['host'],{'error':type(error).__name__}
+            finally:client.close()
+        with ThreadPoolExecutor(max_workers=max(1,len(hosts))) as pool:fleet=dict(pool.map(observe,hosts))
+        try:
+            probe=subprocess.run(['docker','inspect','swarm-control-alignment','--format','{{json .State}}'],capture_output=True,text=True,timeout=5)
+            controller=json.loads(probe.stdout) if probe.returncode==0 else {}
+        except (OSError,ValueError,subprocess.SubprocessError):controller={}
+        alignment,assignments=project(root,remote,fleet,controller=controller)
+        folder=self.state/'task-projections'
+        for task in (alignment,assignments):atomic_json(folder/(task['id']+'.json'),task)
+        recovery=load(self.state/'tasks/alignment-reliability-recovery-20261102.json')
+        if recovery:
+            recovery.update(updated=time.time(),detail=alignment['detail'],stale=alignment['stale'])
+            for child in recovery.get('children',[]):
+                if child['id']=='venter-resume':child.update(status=alignment['status'],detail=alignment['detail'],completed_units=alignment['primary_progress']['completed'],total_units=alignment['primary_progress']['total'],unit='batches')
+            atomic_json(folder/(recovery['id']+'.json'),recovery)
+        qc=load(self.wgs/'qc/shard-audit/progress.json')
+        proof=remote.get('stream_verified',{});total=proof.get('shards',0)*2
+        if qc.get('generation')==alignment['generation'] and proof.get('phase')=='paired_stream_md5_verified' and total>0:
+            counts=qc.get('jobs',{});done=counts.get('completed',0);failed=counts.get('failed',0)+counts.get('failed_integrity',0)
+            status='completed' if done==total and not failed else 'failed' if failed else 'running'
+            task=load(self.state/'tasks/minipc-venter-shard-qc.json')
+            if task:
+                task.update(status=status,updated=time.time(),stale=False)
+                for child in task.get('children',[]):child.update(status=status,completed_units=done,total_units=total,unit='mate shards')
+                atomic_json(folder/(task['id']+'.json'),task)
 
 
     def once(self):

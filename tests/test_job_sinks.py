@@ -110,3 +110,22 @@ def test_explicit_cpu_burst_is_bounded_and_does_not_relax_memory(tmp_path):
 def test_cpu_burst_cannot_relax_general_jobs(tmp_path,cpu,sink):
     with pytest.raises(ValueError,match='quarter-CPU GPU feeders'):
         ResourceLease('job',cpu,128,directory=tmp_path,sink=sink,cpu_burst=True)
+
+
+def test_sink_memory_measurements_keep_gpu_host_buffers_separate(tmp_path,monkeypatch):
+    limits={'cpus':8,'memory_mb':4096,'available_mb':4096}
+    monkeypatch.setattr(ResourceLease,'capacity',lambda self:limits)
+    cpu=ResourceLease('cpu',1,512,directory=tmp_path,sink='cpu')
+    gpu=ResourceLease('gpu',1,1024,directory=tmp_path,sink='gpu')
+    try:
+        assert cpu.try_acquire() and gpu.try_acquire()
+        for lease,used in ((cpu,200),(gpu,700)):
+            lease.row['memory_observation']={'used':used,'time':time.monotonic()};lease.write()
+        sinks=ResourceLease.pool_capacity(tmp_path)['job_sinks']
+        assert sinks['cpu']['measured_host_memory_mb']==200
+        assert sinks['gpu']['measured_host_memory_mb']==700
+        assert sinks['gpu']['host_memory_measured_jobs']==1
+        assert sinks['gpu']['memory_domain']=='host-ram'
+        gpu.row['memory_observation']['time']-=11;gpu.write()
+        assert ResourceLease.pool_capacity(tmp_path)['job_sinks']['gpu']['host_memory_measured_jobs']==0
+    finally:gpu.close();cpu.close()

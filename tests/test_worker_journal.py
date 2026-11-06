@@ -38,6 +38,22 @@ def test_journal_rejects_reused_identity_and_unowned_containers(tmp_path):
     assert journal.get(JOB)['container_id']=='c'*64
 
 
+def test_status_polls_do_not_commit_unchanged_workers_but_exits_are_durable(tmp_path,monkeypatch):
+    import sqlite3
+    journal=DockerWorkerJournal(tmp_path/'workers.sqlite')
+    clock=iter((100.,101.,102.,103.));monkeypatch.setattr(module.time,'time',lambda:next(clock))
+    journal.record(container())
+    with sqlite3.connect(journal.path) as observer:
+        version=observer.execute('PRAGMA data_version').fetchone()[0]
+        assert journal.record(container())['observed_at']==101.
+        assert journal.record(container())['observed_at']==102.
+        assert observer.execute('PRAGMA data_version').fetchone()[0]==version
+        journal.record(container(False))
+        assert observer.execute('PRAGMA data_version').fetchone()[0]!=version
+    recovered=DockerWorkerJournal(journal.path).get(JOB)
+    assert recovered['status']=='exited' and recovered['observed_at']==103.
+
+
 def test_startup_reconciles_docker_before_readiness_without_launch_or_stop(tmp_path,monkeypatch):
     agent=Agent.__new__(Agent);agent.worker_journal=DockerWorkerJournal(tmp_path/'workers.sqlite')
     replies=[subprocess.CompletedProcess([],0,'c'*64+'\n',''),subprocess.CompletedProcess([],0,json.dumps([container()]),'')]

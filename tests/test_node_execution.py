@@ -12,7 +12,7 @@ import pytest
 from scripts import launcher_streams as s
 from scripts.swarm_tls_transfer import make_server
 from test_launcher_streams import engine,request
-from test_wgs_distributed_verify import tls_server
+from tls_test_server import tls_server
 
 
 def test_direct_export_is_pinned_idempotent_and_never_overwrites(tls_server,tmp_path):
@@ -78,6 +78,17 @@ def test_unavailable_gpu_never_launches_cpu_fallback(engine,tmp_path):
     assert not any(c[:2]==['docker','run'] for c in engine.commands)
 
 
+def test_gpu_admission_uses_agent_driver_inventory_without_local_nvidia_binary(engine,tmp_path):
+    gpu={'uuid':'GPU-11111111-1111-1111-1111-111111111111','minimum_free_mib':512,'lock_directory':str(tmp_path/'locks')}
+    engine.agent.gpu_resources=lambda:{'machine':engine.machine,'gpus':[{'uuid':gpu['uuid'],'allocation_known':True,'memory_free_mib':4096}]}
+    original=engine.command
+    def command(args):
+        assert args[0]!='nvidia-smi'
+        return SimpleNamespace(stdout='') if args[:2]==['docker','ps'] else original(args)
+    engine.command=command
+    assert '--gpus' in engine.execution_bindings({'image':'sha256:'+'1'*64,'version':'a'*64,'argv':['python3','/app/worker.py'],'gpu':gpu})
+
+
 def test_shared_reference_contract_is_content_bound():
     from scripts.swarm_shared_cache import contract
     files={'index':{'bytes':5,'sha256':'a'*64}};key,value=contract('sha256:'+'1'*64,files)
@@ -133,19 +144,22 @@ def test_priority_fifo_and_unavailable_job_does_not_block(engine):
     assert launched==['z-first','a-second','ordinary']
 
 
-def test_gpu_slots_allow_concurrency_and_release_after_exit(tmp_path,monkeypatch):
+def test_gpu_admission_uses_vram_instead_of_legacy_concurrency_limit(tmp_path,monkeypatch):
     ns={'__name__':'gpu_test'};exec(s.GPU_ADMISSION_SOURCE,ns)
     gpu={'uuid':'GPU-11111111-1111-1111-1111-111111111111','minimum_free_mib':512,'lock_directory':str(tmp_path),'max_concurrency':2,'vram_mb':512}
     monkeypatch.setattr(s.subprocess,'check_output',lambda *a,**k:gpu['uuid']+', 4096\n')
-    first=ns['acquire_gpu'](gpu);second=ns['acquire_gpu'](gpu)
+    guards=[]
     try:
-        with pytest.raises(BlockingIOError):ns['acquire_gpu'](gpu)
-        second.close()
+        # Seven private commitments plus the free floor fit. The obsolete
+        # two-job count must not keep an otherwise roomy GPU idle.
+        for _ in range(7):guards.append(ns['acquire_gpu'](gpu))
+        with pytest.raises(BlockingIOError,match='VRAM'):ns['acquire_gpu'](gpu)
+        guards.pop().close()
         with ns['acquire_gpu'](gpu):pass
-        with pytest.raises(BlockingIOError):ns['acquire_gpu']({**gpu,'max_concurrency':1})
-    finally:first.close();second.close()
+    finally:
+        for guard in guards:guard.close()
     with ns['acquire_gpu']({**gpu,'max_concurrency':1}):
-        with pytest.raises(BlockingIOError):ns['acquire_gpu'](gpu)
+        with ns['acquire_gpu'](gpu):pass
 
 
 def test_gpu_slots_reserve_vram_atomically_and_ignore_dead_slot_records(tmp_path,monkeypatch):
@@ -228,3 +242,107 @@ def test_existing_gpu_worker_reattaches_before_inventory_admission(engine,tmp_pa
     engine.store.update('piece-1',state='admitting')
     engine.agent.gpu_resources=lambda:(_ for _ in ()).throw(AssertionError('Existing work must not pass fresh GPU admission'))
     engine.tick();assert engine.store.get('piece-1')['state']=='running'
+
+
+def test_owner_mounted_maintenance_recipe_has_distinct_private_and_mapping_budgets():
+    registry={'cache.warm':{'image':'sha256:'+'a'*64,'mounts':[{'source':'/public/index','target':'/reference/index','readonly':True}]}}
+    spec={'id':'warm','recipe':'cache.warm','image':'sha256:'+'a'*64,'inputs':{},'resources':{'cpus':1,'memory_mb':6000,'memory_reservation_mb':128}}
+    assert s.validate(spec,registry)['resources']['memory_reservation_mb']==128
+    with pytest.raises(ValueError):s.validate({**spec,'resources':{'cpus':1,'memory_mb':128,'memory_reservation_mb':6000}},registry)
+    with pytest.raises(ValueError):s.validate(spec,{'cache.warm':{'image':spec['image']}})
+    with pytest.raises(ValueError):s.validate({**spec,'recipe':'bytes.sha256.v1'})
+
+
+def test_gpu_wrapper_releases_slot_before_result_holder_exits(tmp_path):
+    import subprocess
+    import sys
+    import time
+    import json
+    import fcntl
+    from scripts.launcher_streams import GPU_ADMISSION_SOURCE
+    wrapper=tmp_path/'admission.py';wrapper.write_text(GPU_ADMISSION_SOURCE)
+    probe=tmp_path/'nvidia-smi';probe.write_text('#!/bin/sh\necho test-device, 4096\n');probe.chmod(0o700)
+    import os
+    environment={**os.environ,'PATH':str(tmp_path)+os.pathsep+os.environ['PATH']}
+    marker=tmp_path/'complete';finish=tmp_path/'exported'
+    gpu={'uuid':'test-device','lock_directory':str(tmp_path),'max_concurrency':1,'minimum_free_mib':1,'vram_mb':1,
+         'compute_complete_file':str(marker)}
+    child="import pathlib,time,sys; p=pathlib.Path(sys.argv[1]); p.touch(); f=pathlib.Path(sys.argv[2]);\nwhile not f.exists(): time.sleep(.05)"
+    process=subprocess.Popen([sys.executable,str(wrapper),json.dumps(gpu),sys.executable,'-c',child,str(marker),str(finish)],env=environment)
+    try:
+        deadline=time.monotonic()+10
+        while not marker.exists() and time.monotonic()<deadline:time.sleep(.05)
+        assert marker.exists()
+        with (tmp_path/'test-device.slot-0.lock').open('a') as lock:
+            while True:
+                try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB);break
+                except BlockingIOError:
+                    assert time.monotonic()<deadline
+                    time.sleep(.05)
+            assert process.poll() is None
+        finish.touch()
+        assert process.wait(timeout=10)==0
+    finally:
+        finish.touch()
+        if process.poll() is None:process.kill();process.wait()
+
+
+def test_gpu_wrapper_keeps_slot_until_compute_finishes(tmp_path):
+    import subprocess
+    import sys
+    import json
+    import time
+    import fcntl
+    import pytest
+    from scripts.launcher_streams import GPU_ADMISSION_SOURCE
+    wrapper=tmp_path/'admission.py';wrapper.write_text(GPU_ADMISSION_SOURCE)
+    probe=tmp_path/'nvidia-smi';probe.write_text('#!/bin/sh\necho test-device, 4096\n');probe.chmod(0o700)
+    import os
+    environment={**os.environ,'PATH':str(tmp_path)+os.pathsep+os.environ['PATH']}
+    started=tmp_path/'started';finish=tmp_path/'finish'
+    gpu={'uuid':'test-device','lock_directory':str(tmp_path),'max_concurrency':1,'minimum_free_mib':1,'vram_mb':1,
+         'compute_complete_file':str(tmp_path/'absent')}
+    child="import pathlib,time,sys; pathlib.Path(sys.argv[1]).touch();\nwhile not pathlib.Path(sys.argv[2]).exists(): time.sleep(.05)\nraise SystemExit(7)"
+    process=subprocess.Popen([sys.executable,str(wrapper),json.dumps(gpu),sys.executable,'-c',child,str(started),str(finish)],env=environment)
+    try:
+        deadline=time.monotonic()+10
+        while not started.exists() and time.monotonic()<deadline:time.sleep(.05)
+        assert started.exists()
+        with (tmp_path/'test-device.slot-0.lock').open('a') as lock:
+            with pytest.raises(BlockingIOError):fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        finish.touch()
+        assert process.wait(timeout=10)==7
+    finally:
+        finish.touch()
+        if process.poll() is None:process.kill();process.wait()
+
+
+def test_integrated_gpu_workspace_is_charged_to_host_ram_and_container_limit(engine,tmp_path):
+    gpu={**amd_binding(tmp_path/'runtime'),'memory_domain':'shared-system-memory','lock_directory':str(tmp_path/'locks'),'vram_mb':256}
+    definition={'image':'sha256:'+'1'*64,'version':'a'*64,'argv':['python3','/app/worker.py'],'gpu':gpu}
+    (engine.agent.config.parent/'stream-recipes.json').write_text(json.dumps({'test.intel.v1':definition}))
+    leases=[];old=engine.lease_factory
+    engine.lease_factory=lambda *args,**kwargs:(leases.append((args,kwargs)) or old(*args,**kwargs))
+    engine.agent.gpu_resources=lambda:{'machine':engine.machine,'sampled_at':time.time(),'host_memory':{'available_mib':8192},'gpus':[{'uuid':gpu['uuid'],'vendor':'Intel','device_type':'integrated','memory_domain':'shared-system-memory','pci_id':gpu['pci_id'],'render_device':gpu['render_device'],'render_gid':gpu['render_gid']}]}
+    command=engine.command
+    engine.command=lambda args:SimpleNamespace(stdout='') if args[:2]==['docker','ps'] else command(args)
+    spec=request(recipe='test.intel.v1');spec['resources']={'cpus':1,'memory_mb':2048,'memory_reservation_mb':512}
+    engine.dispatch('stream.submit',spec);engine.tick()
+    assert engine.store.get('piece-1')['state']=='running'
+    assert leases[0][0][2]==768
+    argv=next(args for args in engine.commands if args[:2]==['docker','run'])
+    assert argv[argv.index('--memory')+1]=='2304m'
+    assert argv[argv.index('--memory-reservation')+1]=='768m'
+    assert 'org.lifetech.gpu-memory-domain=shared-system-memory' in argv
+
+
+def test_image_native_vulkan_preserves_container_python_and_driver_dependencies(tmp_path):
+    from scripts.swarm_runtime import validate_gpu
+    gpu={**amd_binding(tmp_path),'runtime_mode':'image-native','memory_domain':'shared-system-memory',
+         'runtime_files':{'followup.so':'a'*64,'followup.spv':'b'*64},'icd':'/usr/share/vulkan/icd.d/intel_icd.x86_64.json'}
+    validate_gpu(gpu);args=s.gpu_container_args(gpu)
+    assert '--device' in args and 'VK_ICD_FILENAMES='+gpu['icd'] in args
+    assert not any('src=/usr,' in x or x.startswith(('PATH=','LD_LIBRARY_PATH=','BWA_VULKAN_SHADER=')) for x in args)
+    assert any('dst=/gpu-runtime,readonly' in x for x in args)
+    for change in ({'runtime_mode':'unknown'},{'runtime_files':{'followup.so':'a'*64}},{'runtime_files':{'bwa':'a'*64,'exact-extension.spv':'b'*64}}):
+        with pytest.raises(ValueError):validate_gpu({**gpu,**change})

@@ -11,6 +11,7 @@ import math
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 
 from scripts.swarm_runtime import AgentClient,CapacityWait,shell_command
 
@@ -94,6 +95,8 @@ def users(host,cache):
 
 def remove_unused(host,cache):
     if users(host,cache):return False
+    owner=inspect(host,'container',cache['container'])
+    if owner and owner.get('ExecIDs'):return False  # A bulk reader is a live consumer too.
     if inspect(host,'container',cache['container']):command(host,['docker','rm','-f',cache['container']])
     if inspect(host,'volume',cache['volume']):command(host,['docker','volume','rm',cache['volume']])
     return True
@@ -101,12 +104,13 @@ def remove_unused(host,cache):
 
 def evict_unused(host,keep=None):
     """Reclaim only named RAM caches with no attached consumer containers."""
+    keep={keep} if isinstance(keep,str) else set(keep or ())
     ids=command(host,['docker','ps','-aq','--filter','label='+OWNER]).split()
     if not ids:return 0
     rows=json.loads(command(host,['docker','inspect',*ids]));removed=0
     for row in rows:
         key=(row['Config'].get('Labels') or {}).get(OWNER,'')
-        if not re.fullmatch(r'[0-9a-f]{64}',key) or key==keep:continue
+        if not re.fullmatch(r'[0-9a-f]{64}',key) or key in keep:continue
         cache={'key':key,'container':'swarm-job-'+key[:32],'volume':'swarm-cache-'+key[:32]}
         if row.get('Name','').lstrip('/')!=cache['container']:continue
         volume=inspect(host,'volume',cache['volume'])
@@ -126,7 +130,17 @@ def lock(host):
         fcntl.flock(f,fcntl.LOCK_EX);yield
 
 
-def ensure(host,image,files,load):
+def park_verified_owner(host,cache,row):
+    """A sealed immutable RAM holder needs scheduling headroom, not a full core.
+
+    Loading/sealing retains its full CPU allowance. Readers execute in their own
+    cgroups and are unaffected by the sleeping owner's CPU limit.
+    """
+    if row.get('HostConfig',{}).get('NanoCpus')!=100000000:
+        command(host,['docker','update','--cpus','0.1',cache['container']])
+
+
+def ensure(host,image,files,load,metrics=None):
     """Load once; callback streams files into the admitted owner container."""
     key,value=contract(image,files);shm_mb=math.ceil(sum(r['bytes'] for r in files.values())/1024**2)+16
     cache={**value,'key':key,'container':'swarm-job-'+key[:32],'volume':'swarm-cache-'+key[:32],
@@ -135,7 +149,10 @@ def ensure(host,image,files,load):
         owner=inspect(host,'container',cache['container']);volume=inspect(host,'volume',cache['volume'])
         if volume:validate_volume(volume,cache)
         if owner and ((owner['Config'].get('Labels') or {}).get(OWNER)!=key or owner.get('Image')!=image):raise ValueError('Shared cache owner differs')
-        if owner and volume and ready(host,cache,owner):return cache
+        if owner and volume and ready(host,cache,owner):
+            park_verified_owner(host,cache,owner)
+            if metrics is not None:metrics.update(cache_hit=True,loaded_bytes=0)
+            return cache
         if (owner or volume) and not remove_unused(host,cache):raise CapacityWait('Previous shared cache is still attached to workers')
         client=AgentClient(host);requested=False
         try:
@@ -149,7 +166,10 @@ def ensure(host,image,files,load):
             if not acquired:raise CapacityWait('Waiting for the shared cache RAM reservation')
             command(host,['docker','volume','create','--driver','local','--label',OWNER+'='+key,'--opt','type=tmpfs','--opt','device=tmpfs',
                           '--opt','o=size='+str(shm_mb)+'m,mode=1777,nosuid,nodev,noexec',cache['volume']])
-            command(host,['docker','run','-d','--pull=never','--name',cache['container'],'--restart','unless-stopped','--network','none',
+            # tmpfs payloads disappear on a host reboot. An automatically
+            # restarted sleeping owner would reserve RAM for an empty cache.
+            # Leave it stopped; the next ensure() verifies/reloads it on demand.
+            command(host,['docker','run','-d','--pull=never','--name',cache['container'],'--restart','no','--network','none',
                           '--read-only','--user',host.get('container_user','1000:1000'),'--cap-drop','ALL','--security-opt','no-new-privileges',
                           '--memory',str(cache['memory_mb'])+'m','--memory-swap',str(cache['memory_mb'])+'m','--cpus','1','--pids-limit','32',
                           '--label','org.lifetech.worker=true','--label','org.lifetech.job='+key[:32],'--label','org.lifetech.group=shared-cache',
@@ -160,6 +180,8 @@ def ensure(host,image,files,load):
             proof={k:cache[k] for k in ('key','files')};proof.update(container_id=owner['Id'],started_at=owner['State']['StartedAt'])
             command(host,['docker','exec',cache['container'],'python3','-c',SEAL,json.dumps(proof)],timeout=180)
             if not ready(host,cache,owner):raise RuntimeError('Cache did not become verified')
+            park_verified_owner(host,cache,owner)
+            if metrics is not None:metrics.update(cache_hit=False,loaded_bytes=sum(r['bytes'] for r in files.values()))
             return cache
         except BaseException:
             # Incomplete objects are never published or mistaken for reusable data.
@@ -170,11 +192,48 @@ def ensure(host,image,files,load):
             client.close()
 
 
-def mount_args(host,cache):
+def mount_args(host,cache,target='/dev/shm',primary=True):
+    path=Path(target)
+    if not path.is_absolute() or '..' in path.parts or str(path)!=target or not re.fullmatch(r'/[A-Za-z0-9_./-]+',target) or target=='/':raise ValueError('Invalid cache mount target')
     key,value=contract(cache['image'],cache['files'])
     if cache.get('key')!=key or cache.get('container')!='swarm-job-'+key[:32] or cache.get('volume')!='swarm-cache-'+key[:32]:raise ValueError('Invalid shared cache binding')
     volume=inspect(host,'volume',cache['volume']);owner=inspect(host,'container',cache['container'])
     if not volume or not owner:raise CapacityWait('Shared cache needs preparation')
     validate_volume(volume,cache)
     if not ready(host,cache,owner):raise CapacityWait('Shared cache is not verified')
-    return ['--mount','type=volume,src='+cache['volume']+',dst=/dev/shm,readonly,volume-nocopy','--label',DEPENDENCY+'='+cache['container']]
+    label=DEPENDENCY if primary else DEPENDENCY+'-'+key[:12]
+    return ['--mount','type=volume,src='+cache['volume']+',dst='+target+',readonly,volume-nocopy','--label',label+'='+cache['container']]
+
+
+def ensure_derived(host,image,identity,build,load):
+    """Materialize an immutable object once on its local owner, then reuse RAM.
+
+    The lookup is metadata only; Docker names, seals and the existing pool remain
+    authoritative. Applications supply derivation and authenticated transport.
+    Different identities may prepare concurrently; identical requests coalesce.
+    """
+    if not host.get('local'):raise ValueError('Derivation must run on its authenticated local input owner')
+    encoded=json.dumps({'identity':identity,'image':image},sort_keys=True,separators=(',',':'))
+    if len(encoded)>65536:raise ValueError('Object identity exceeds metadata bound')
+    key=hashlib.sha256(encoded.encode()).hexdigest()
+    folder=Path.home()/'.local/state/swarm-control/submission/shared-objects';folder.mkdir(parents=True,exist_ok=True,mode=0o700)
+    with (folder/(key+'.lock')).open('a') as lockfile:
+        fcntl.flock(lockfile,fcntl.LOCK_EX)
+        metadata=folder/(key+'.json')
+        if metadata.exists():
+            record=json.loads(metadata.read_text());cache=record['cache']
+            if record.get('identity')!=identity or cache.get('image')!=image:raise ValueError('Immutable object lookup changed')
+            owner=inspect(host,'container',cache['container'])
+            if owner and ready(host,cache,owner):return record
+        with tempfile.TemporaryDirectory(prefix='jswarm-object-',dir='/dev/shm') as temp:
+            root=Path(temp);build(root)
+            files={}
+            for p in root.iterdir():
+                if not p.is_file() or p.is_symlink():raise ValueError('Derived objects must be flat regular files')
+                with p.open('rb') as stream:digest=hashlib.file_digest(stream,'sha256').hexdigest()
+                files[p.name]={'bytes':p.stat().st_size,'sha256':digest}
+            cache=ensure(host,image,files,lambda owner:load(owner,root,files))
+        record={'identity':identity,'cache':cache}
+        from scripts.swarm_runtime import atomic_json
+        atomic_json(metadata,record)
+        return record

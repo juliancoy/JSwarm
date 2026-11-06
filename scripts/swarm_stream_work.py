@@ -30,10 +30,14 @@ def byte_ranges(size,target_bytes=64*1024*1024):
 class StreamClient:
     def __init__(self,host,stopped=lambda:False,client=None):
         self.host=host;self.stopped=stopped;self.client=client or AgentClient(host)
-    def call(self,op,args=None):
+    def call(self,op,args=None,*,deadline=None):
         while not self.stopped():
-            try:return self.client.call(op,args or {})
-            except (OSError,http.client.HTTPException):self.client.close();time.sleep(1)
+            if deadline is not None and time.monotonic()>=deadline:raise TimeoutError('Wait ended; launcher retains accepted streaming work')
+            try:return self.client.call(op,args or {},**({'timeout':max(.1,min(30,deadline-time.monotonic()))} if deadline is not None else {}))
+            except (OSError,http.client.HTTPException):
+                self.client.close()
+                if deadline is not None and time.monotonic()>=deadline:raise TimeoutError('Wait ended; launcher retains accepted streaming work') from None
+                time.sleep(min(1,max(0,deadline-time.monotonic())) if deadline is not None else 1)
         raise InterruptedError('Streaming controller stopped; accepted work remains on its launcher')
     def capabilities(self):
         status=self.call('status')
@@ -51,7 +55,7 @@ class StreamClient:
     def wait(self,ident,progress=lambda row:None,timeout=None):
         started=time.monotonic()
         while not self.stopped():
-            row=self.call('stream.status',{'id':ident});progress(row)
+            row=self.call('stream.status',{'id':ident},deadline=started+timeout if timeout is not None else None);progress(row)
             if row['state']=='completed':
                 result=row['result']
                 if result.get('contract_sha256')!=row['contract_sha256'] or result.get('worker_machine')!=self.host['machine']:raise IntegrityFailure('Launcher result identity differs')
@@ -59,7 +63,7 @@ class StreamClient:
             if row['state']=='failed_integrity':raise IntegrityFailure(row['error'])
             if row['state'] in ('failed','cancelled'):raise WorkFailure(row['error'])
             if timeout is not None and time.monotonic()-started>=timeout:raise TimeoutError('Wait ended; launcher retains the accepted streaming task')
-            time.sleep(.25)
+            time.sleep(2)
         raise InterruptedError('Controller stopped; launcher work retained')
     def run(self,spec,progress=lambda row:None,timeout=None):
         row=self.submit(spec)

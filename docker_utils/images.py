@@ -8,6 +8,8 @@ import shlex
 import subprocess
 import time
 import threading
+import fcntl
+from pathlib import Path
 
 class ImageResolver:
     def __init__(self, hosts=(), ssh=None, cancelled=lambda:False, notify=lambda *args:None, builders=None):
@@ -24,7 +26,7 @@ class ImageResolver:
 
     @staticmethod
     def cache_tag(image):
-        return 'docker-utils-digest:'+hashlib.sha256(image.encode()).hexdigest() if '@sha256:' in image else image
+        return 'docker-utils-digest:'+hashlib.sha256(image.encode()).hexdigest() if '@sha256:' in image or image.startswith('sha256:') else image
 
     def inspect(self, host, image):
         for reference in dict.fromkeys((image,self.cache_tag(image))):
@@ -173,7 +175,15 @@ class ImageResolver:
         for host in destinations:
             actual = self.inspect(host, image)
             if actual != expected and (not actual or not self.fingerprint(source, image) or self.fingerprint(source, image) != self.fingerprint(host, image)):
-                self.transfer(source, host, image, expected)
+                folder=Path.home()/'.local/state/swarm-control/image-distribution'
+                folder.mkdir(parents=True,exist_ok=True,mode=0o700)
+                identity={'destination':host.get('machine',host['host']) if host else 'local','image':expected}
+                key=hashlib.sha256(json.dumps(identity,sort_keys=True).encode()).hexdigest()
+                with (folder/(key+'.lock')).open('a+') as lock:
+                    fcntl.flock(lock,fcntl.LOCK_EX)
+                    actual=self.inspect(host,image)
+                    if actual!=expected and (not actual or not self.fingerprint(source,image) or self.fingerprint(source,image)!=self.fingerprint(host,image)):
+                        self.transfer(source, host, image, expected)
             self.host_images.setdefault(host['host'] if host else 'local', {})[image] = self.inspect(host, image)
         self.images[image] = expected
         self.notify(image, 'ready', source['host'] if source else 'compai.local', None)

@@ -86,3 +86,53 @@ def test_repeated_trials_on_one_shard_cannot_inflate_qualification():
     assert profile['observations']==6 and profile['independent_inputs']==1
     assert profile['max_peak_mb']==300
     assert profile['recommended_limit_mb'] is None
+
+
+def test_gpu_memory_measurements_never_train_cpu_or_other_gpu_profiles():
+    cpu=[memory_item('cpu'+str(i),peak=250) for i in range(5)]
+    gpu=[memory_item('gpu'+str(i),peak=900,sink='gpu',gpu_uuid='GPU-a') for i in range(5)]
+    pending_cpu=memory_item('new-cpu','running')
+    pending_gpu=memory_item('new-gpu','running',sink='gpu',gpu_uuid='GPU-a')
+    other=memory_item('other-gpu','running',sink='gpu',gpu_uuid='GPU-b')
+    attach_estimates(cpu+gpu+[pending_cpu,pending_gpu,other])
+    assert pending_cpu['memory_profile']['max_peak_mb']==250
+    assert pending_gpu['memory_profile']['max_peak_mb']==900
+    assert pending_gpu['memory_profile']['memory_domain']=='host-ram'
+    assert pending_gpu['measurement_sink']=='gpu'
+    assert pending_cpu['measurement_sink']=='cpu'
+    assert 'memory_profile' not in other
+
+
+def test_recorded_execution_class_overrides_gpu_queue_assignment():
+    from runtime_estimates import measurement_sink
+    fallback=memory_item('fallback',sink='cpu')
+    fallback['worker']='machine-a#gpu'
+    assert measurement_sink(fallback)=='cpu'
+
+
+def test_backtest_keeps_chronological_history_separate_per_worker():
+    rows=[]
+    for i in range(40):
+        for worker,elapsed in [('a#cpu',100),('b#cpu',1000)]:
+            sample=item(str(i)+worker,worker=worker,elapsed=elapsed)
+            sample['updated']=i+1
+            rows.append(sample)
+    result=attach_estimates(list(reversed(rows)))['validation']
+    assert result['predictions']==74
+    assert result['median_absolute_percentage_error']==0
+
+
+def test_genome_estimates_separate_methods_samples_and_references():
+    from runtime_estimates import attach_estimates
+    def row(ident,state,group,elapsed=None):
+        return {'id':ident,'run_type':'genome-analysis','kind':'regional','parent':'genomics-followup:revision',
+                'estimate_class':group,'worker':'worker','status':state,'completed_at':1,
+                'runtime':{'elapsed_seconds':elapsed},'execution':{}}
+    group=['call-','julian','GRCh38']
+    done=[row(str(i),'completed',group,100+i) for i in range(5)]
+    running=row('now','running',group,10)
+    other_reference=row('native','running',['call-','julian','HuRef2'],10)
+    other_method=row('project','running',['project-',None,'HuRef2'],10)
+    attach_estimates([*done,running,other_reference,other_method],now=1000)
+    assert running['runtime_estimate']['samples']==5
+    assert 'runtime_estimate' not in other_reference and 'runtime_estimate' not in other_method

@@ -12,6 +12,19 @@ def test_ranges_cover_exactly_and_allow_empty():
     assert list(byte_ranges(0))==[]
 
 
+def test_wait_deadline_applies_while_node_is_disconnected_without_cancelling_work(monkeypatch):
+    from scripts import swarm_stream_work as module
+    clock=[0.0];monkeypatch.setattr(module.time,'monotonic',lambda:clock[0])
+    calls=[]
+    class Client:
+        def call(self,op,args,timeout):
+            calls.append((op,args,timeout));clock[0]+=timeout;raise ConnectionResetError()
+        def close(self):pass
+    with pytest.raises(TimeoutError,match='retains accepted'):
+        StreamClient({'machine':'worker'},client=Client()).wait('accepted',timeout=2)
+    assert calls==[('stream.status',{'id':'accepted'},2)]
+
+
 def test_fleet_queue_claim_recovery_and_input_binding(tmp_path):
     path=tmp_path/'queue.sqlite';units=[{'id':'one','input':'sha'},{'id':'two'}];q=FleetQueue(path,units)
     row=q.claim('node');assert row['id']=='one';assert q.claim('other')['id']=='two'

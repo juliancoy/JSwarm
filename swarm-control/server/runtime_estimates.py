@@ -3,20 +3,33 @@ import math
 import json
 import statistics
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 
 
 def positive(value):
     return type(value) in (int,float) and math.isfinite(value) and value>0
 
 
+def measurement_sink(item):
+    context=item.get('profiling_context') or {}
+    execution=item.get('execution') or {}
+    runtime=item.get('runtime') or {}
+    if context.get('sink') in ('cpu','gpu'):return context['sink']
+    if (context.get('sink')=='gpu' or context.get('gpu_uuid') or
+        str(context.get('backend','')).startswith(('bwa-vulkan','bwa-gasal')) or
+        runtime.get('gpu_used') or execution.get('gpu') or execution.get('sink')=='gpu' or
+        str(item.get('worker','')).endswith('#gpu')):return 'gpu'
+    return 'cpu'
+
+
 def signature(item):
     runtime=item.get('runtime') or {}
     r=item.get('execution') or {}
-    sink='gpu' if runtime.get('gpu_used') or r.get('sink')=='gpu' or str(item.get('worker','')).endswith('#gpu') else 'cpu'
+    sink=measurement_sink(item)
     # Keep reference generations and execution backends separate; presentation
     # labels and memory reservations are not identities of scientific work.
-    return (item.get('run_type'),item.get('kind'),item.get('generation') or item.get('parent'),sink)
+    base=(item.get('run_type'),item.get('kind'),item.get('generation') or item.get('parent'),sink)
+    return (*base,json.dumps(item.get('estimate_class'),sort_keys=True)) if item.get('run_type')=='genome-analysis' else base
 
 
 def quantile(values,p):
@@ -32,7 +45,7 @@ def attach_memory_profiles(items):
         context=item.get('profiling_context')
         if not isinstance(context,dict) or context.get('schema')!='alignment-memory.v1':return None
         if any(context.get(key) is None for key in keys):return None
-        return (str(item.get('worker') or '').split('#')[0],json.dumps({k:context[k] for k in keys},sort_keys=True))
+        return (str(item.get('worker') or '').split('#')[0],measurement_sink(item),context.get('gpu_uuid') or ('unknown-device' if measurement_sink(item)=='gpu' else None),json.dumps({k:context[k] for k in keys},sort_keys=True))
     groups=defaultdict(list);failed=set()
     for item in items:
         key=identity(item)
@@ -65,7 +78,8 @@ def attach_memory_profiles(items):
         scratch=max(s['profiling_context'].get('scratch_mb',0) for s in samples)
         recommended=64*math.ceil(max(high_water*1.5+192,scratch+384)/64)
         qualified=distinct>=5 and covered and key not in failed and context.get('baseline_configuration') is True
-        item['memory_profile']={'samples':len(samples),'observations':observations,'independent_inputs':distinct,'median_peak_mb':statistics.median(peaks),
+        item['measurement_sink']=measurement_sink(item)
+        item['memory_profile']={'sink':measurement_sink(item),'memory_domain':'host-ram','gpu_uuid':context.get('gpu_uuid'),'samples':len(samples),'observations':observations,'independent_inputs':distinct,'median_peak_mb':statistics.median(peaks),
             'p95_peak_mb':quantile(peaks,.95),'max_peak_mb':high_water,'recommended_limit_mb':recommended if qualified else None,
             'qualified':qualified,'blocked_by_failed_attempt':key in failed,'input_envelope_covered':bool(covered),
             'max_pairs':max_pairs,'max_input_bytes':max_bytes,'shared_cache_separate':context.get('reference_layout')=='node-shared-ram',
@@ -81,18 +95,19 @@ def attach_estimates(items,now=None):
     memory=attach_memory_profiles(items)
     groups=defaultdict(list)
     for item in items:
+        item['measurement_sink']=measurement_sink(item)
         elapsed=(item.get('runtime') or {}).get('elapsed_seconds')
-        if item.get('status')=='completed' and positive(elapsed) and not item.get('superseded_by') and item.get('run_type') in ('mapping','genetic-qc','web'):
+        if item.get('status')=='completed' and positive(elapsed) and not item.get('superseded_by') and item.get('run_type') in ('mapping','genetic-qc','genome-analysis','web'):
             groups[signature(item)].append(item)
     validation=[]
     for group in groups.values():
-        history=[]
+        histories=defaultdict(lambda:deque(maxlen=30))
         for sample in sorted(group,key=lambda s:s.get('completed_at') or s.get('updated',0)):
-            prior=[s for s in history if s.get('worker')==sample.get('worker')]
+            prior=histories[sample.get('worker')]
             if len(prior)>=3:
-                predicted=statistics.median(s['runtime']['elapsed_seconds'] for s in prior[-30:])
+                predicted=statistics.median(s['runtime']['elapsed_seconds'] for s in prior)
                 validation.append(abs(predicted-sample['runtime']['elapsed_seconds'])/sample['runtime']['elapsed_seconds'])
-            history.append(sample)
+            prior.append(sample)
     coverage=0
     for item in items:
         if item.get('status') not in ('running','preparing','waiting_capacity','queued','accepted'):continue

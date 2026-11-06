@@ -83,6 +83,9 @@ def test_docker_capacity_reads_limits_and_fails_closed_on_daemon_error(monkeypat
     monkeypatch.setattr(module.subprocess,'run',run)
     assert docker_workers()[0]['cpus']==2
     assert docker_workers()[0]['memory_mb']==256
+    row['HostConfig']['Memory']=6598*1024**2
+    worker=docker_workers()[0]
+    assert worker['memory_mb']==256 and worker['memory_limit_mb']==6598
     monkeypatch.setattr(module.subprocess,'run',lambda cmd,**kw:subprocess.CompletedProcess(cmd,1,'','daemon unavailable'))
     with pytest.raises(RuntimeError,match='Docker unavailable'):docker_workers()
 
@@ -209,10 +212,10 @@ def test_cpu_lending_requires_fresh_idle_evidence(busy,pressure,age,used):
     assert module.cpu_headroom(limits,[row])['available_cpus']==0
 
 
-def test_trailing_cpu_stalls_do_not_strand_idle_host_but_io_stalls_block():
+def test_trailing_cpu_or_network_io_stalls_do_not_strand_idle_host():
     limits={'cpus':8,'cpu_busy_fraction':.2,'cpu_pressure_percent':25}
     assert module.cpu_headroom(limits,[])['available_cpus']==pytest.approx(6.4)
-    assert module.cpu_headroom({**limits,'io_pressure_full_percent':20},[])['available_cpus']==0
+    assert module.cpu_headroom({**limits,'io_pressure_full_percent':80},[])['available_cpus']==pytest.approx(6.4)
 
 
 def test_shared_cache_idle_charge_does_not_change_execution_quota():
@@ -283,10 +286,16 @@ def test_pressure_memory_lends_unused_limits_but_protects_peak_growth_and_startu
     assert module.memory_headroom(limits,[row,{'memory_mb':4000}])==2250
 
 
-@pytest.mark.parametrize('field,value',[('memory_pressure_some_percent',1),('memory_pressure_full_percent',.1),('io_pressure_full_percent',20)])
-def test_actual_stalls_block_memory_admission_even_with_no_reservations(field,value):
-    limits={'memory_mb':16000,'available_mb':15000,'memory_pressure_some_percent':0,'memory_pressure_full_percent':0,field:value}
+@pytest.mark.parametrize('field,value',[('memory_pressure_some_percent',1),('memory_pressure_full_percent',.1)])
+def test_actual_stalls_block_memory_admission_when_headroom_is_low(field,value):
+    limits={'memory_mb':16000,'available_mb':1500,'memory_pressure_some_percent':0,'memory_pressure_full_percent':0,field:value}
     assert module.memory_headroom(limits,[])==0
+
+
+def test_network_io_wait_does_not_invent_memory_exhaustion():
+    limits={'memory_mb':16000,'available_mb':1500,'memory_pressure_some_percent':0,
+            'memory_pressure_full_percent':0,'io_pressure_full_percent':90}
+    assert module.memory_headroom(limits,[])==700
 
 
 def test_pressure_memory_admission_is_atomic_for_competing_launches(tmp_path):
@@ -331,3 +340,42 @@ def test_cpu_timesharing_preserves_ram_and_pid_bounds(tmp_path):
         gpu.row['pids']=32;gpu.write()
         assert gpu.try_acquire()
     finally:gpu.close();cpu.close()
+
+
+@pytest.mark.parametrize('field,value',[('memory_pressure_some_percent',1.2),('memory_pressure_full_percent',1.2),('io_pressure_full_percent',24)])
+def test_moderate_stalls_do_not_strand_abundant_physical_ram(field,value):
+    limits={'memory_mb':8000,'available_mb':5600,'memory_pressure_some_percent':0,'memory_pressure_full_percent':0,field:value}
+    assert module.memory_headroom(limits,[])==5200
+
+
+@pytest.mark.parametrize('field,value',[('memory_pressure_full_percent',10),('memory_pressure_some_percent',50)])
+def test_severe_memory_stalls_still_pause_admission(field,value):
+    limits={'memory_mb':8000,'available_mb':5600,'memory_pressure_some_percent':0,'memory_pressure_full_percent':0,field:value}
+    assert module.memory_headroom(limits,[])==0
+
+
+def test_capacity_sampling_never_waits_for_slow_docker_stats(monkeypatch):
+    import threading
+    import time
+    import launcher_agent as module
+    entered=threading.Event();release=threading.Event()
+    class SlowLock:
+        def __enter__(self):
+            entered.set();release.wait(5)
+        def __exit__(self,*args):pass
+    monkeypatch.setattr(module,'_WORKER_MEMORY_CACHE',{'time':0,'values':{}})
+    monkeypatch.setattr(module,'_WORKER_MEMORY_LOCK',SlowLock())
+    monkeypatch.setattr(module,'_WORKER_SAMPLE_THREAD',None)
+    started=time.monotonic()
+    try:
+        assert module.worker_memory_usage([])=={}
+        assert time.monotonic()-started<1
+        assert entered.wait(1)
+        thread=module._WORKER_SAMPLE_THREAD
+        assert module.worker_memory_usage([])=={}
+        assert module._WORKER_SAMPLE_THREAD is thread
+        limits={'memory_mb':8192,'available_mb':4096,'memory_pressure_some_percent':0,'memory_pressure_full_percent':0}
+        row={'memory_mb':2048,'resident_mb':0}
+        assert module.memory_budget(limits,[row])['memory_growth_mb']==2048
+    finally:
+        release.set();module._WORKER_SAMPLE_THREAD.join(10)

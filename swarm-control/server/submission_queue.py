@@ -86,9 +86,11 @@ class SubmissionQueue:
             self.begin(db)
             if db.execute('UPDATE submissions SET priority=?,updated=? WHERE namespace=? AND id=?',(priority,time.time(),self.namespace,ident)).rowcount!=1:raise KeyError(ident)
 
-    def claim(self,host,capacity=None,eligible=None,requirements=None):
+    def claim(self,host,capacity=None,eligible=None,requirements=None,preparation_resources=None):
         """Skip nonfitting jobs, without letting a large/GPU job block CPU work."""
         capacity=dict(capacity or {});eligible=None if eligible is None else set(eligible)
+        if preparation_resources is not None:
+            if set(preparation_resources)!={'cpus','memory_mb'} or any(type(v) is not int or v<0 for v in preparation_resources.values()):raise ValueError('Invalid preparation resource budget')
         if capacity.get('accepting_jobs') is False:return None
         with self.connect() as db:
             self.begin(db)
@@ -98,7 +100,7 @@ class SubmissionQueue:
                 try:request=json.loads(pending['request'])
                 except ValueError:continue
                 if request.get('admission_pending') is not True:continue
-                reserved=request['resources']
+                reserved=request.get('preparation_resources',request['resources']) if request.get('inputs_ready') is False else request['resources']
                 if capacity.get('cpu_admission_mode')!='timeshare':capacity['available_cpus']=capacity.get('available_cpus',float('inf'))-reserved.get('cpus',0)
                 capacity['available_mb']=capacity.get('available_mb',float('inf'))-reserved.get('memory_mb',0)
             for row in db.execute("SELECT * FROM submissions WHERE namespace=? AND state='queued' ORDER BY priority DESC,created,id",(self.namespace,)):
@@ -109,12 +111,14 @@ class SubmissionQueue:
                 for value in estimate.values():
                     if not isinstance(value,(int,float)) or isinstance(value,bool) or not math.isfinite(value) or value<=0:raise ValueError('Invalid placement resource estimate')
                 resources={**resources,**estimate}
-                if resources.get('cpus',0)>capacity.get('available_cpus',float('inf')):continue
-                if resources.get('memory_mb',0)>capacity.get('available_mb',float('inf')):continue
+                admission=preparation_resources if preparation_resources is not None else resources
+                if admission.get('cpus',0)>capacity.get('available_cpus',float('inf')):continue
+                if admission.get('memory_mb',0)>capacity.get('available_mb',float('inf')):continue
                 if resources.get('sink','cpu')=='gpu' and not capacity.get('gpu',False):continue
                 if not set(resources.get('capabilities',[]))<=set(capacity.get('capabilities',[])):continue
                 token=(self.epoch+':' if self.epoch else '')+uuid.uuid4().hex
                 pending_request=json.dumps({'admission_pending':True,'resources':resources}) if requirements is not None else row['request']
+                if preparation_resources is not None:pending_request=json.dumps({'admission_pending':True,'inputs_ready':False,'resources':resources,'preparation_resources':preparation_resources})
                 db.execute("UPDATE submissions SET state='preparing',host=?,token=?,updated=?,request=? WHERE namespace=? AND id=?",(host,token,time.time(),pending_request,self.namespace,row['id']))
                 return {**dict(row),'host':host,'token':token,'state':'preparing','admission_resources':resources}
         return None

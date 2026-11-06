@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 from scripts import launcher_streams as s
-from test_wgs_distributed_verify import tls_server
+from tls_test_server import tls_server
 from scripts.swarm_tls_transfer import identity
 
 
@@ -59,7 +59,7 @@ def engine(tmp_path,monkeypatch):
     e.worker_user=lambda:'1000:1000'
     e.policy_value=policy;e.containers={};e.commands=[]
     def inspect(row):return e.containers.get(row['container'])
-    def command(args):
+    def command(args,**kwargs):
         e.commands.append(args)
         if args[:2]==['docker','run']:e.containers[args[args.index('--name')+1]]={'Running':True}
         if args[:2]==['docker','rm']:e.containers.pop(args[2],None)
@@ -78,8 +78,18 @@ def test_pause_after_admission_and_recovery(engine):
     e.policy_value['accepting_jobs']=True;e.tick();row=e.store.get('piece-1');assert row['state']=='running'
     e.pending.clear();e.tick()  # New launcher memory; existing worker continues.
     assert len([c for c in e.commands if c[:2]==['docker','run']])==1
-    e.dispatch('stream.cancel',{'id':'piece-1'});e.tick()
+    e.dispatch('stream.cancel',{'id':'piece-1'});finish_stop(e)
     assert e.store.get('piece-1')['state']=='cancelled' and not e.containers
+
+
+def test_cancel_allows_docker_its_full_grace_period(engine):
+    from unittest.mock import Mock
+    engine.dispatch('stream.submit',request());engine.tick()
+    engine.command=Mock(wraps=engine.command)
+    assert engine.dispatch('stream.cancel',{'id':'piece-1'})['state']=='stopping'
+    finish_stop(engine)
+    stop=next(c for c in engine.command.call_args_list if c.args[0][:2]==['docker','stop'])
+    assert stop.kwargs['timeout']>int(stop.args[0][stop.args[0].index('--time')+1])
 
 
 def test_lost_docker_start_ack_reattaches(engine):
@@ -166,6 +176,18 @@ def test_reload_source_is_content_addressed(tmp_path):
     assert load_stream_runtime(tmp_path) is m
     Path(m.__file__).write_text('changed')
     with pytest.raises(ValueError,match='runtime changed'):load_stream_runtime(tmp_path)
+
+
+def test_queued_contract_uses_persistent_runtime_after_agent_work_directory_changes(engine,tmp_path):
+    engine.dispatch('stream.submit',request())
+    pinned=engine.root.parent/'.stream-runtime'/engine.revision/'launcher_streams.py'
+    pinned.parent.mkdir(parents=True);pinned.write_bytes(engine.runtime.read_bytes())
+    engine.revision='f'*64
+    engine.agent.root=tmp_path/'new-agent-working-directory'
+    engine.tick()
+    assert engine.store.get('piece-1')['state']=='running'
+    argv=next(c for c in engine.commands if c[:2]==['docker','run'])
+    assert any(str(pinned) in arg for arg in argv)
 
 
 def test_cached_input_obeys_stream_buffer(tmp_path):
@@ -318,3 +340,230 @@ def test_execution_timings_exclude_admission_and_prior_attempts(engine,monkeypat
     assert timing['piece-1']['elapsed_seconds']==20
     assert timing['piece-1']['attempt']==2
     with pytest.raises(ValueError):e.dispatch('stream.timings',{'ids':['x']*101})
+
+
+def test_gpu_compute_completion_releases_guard_without_completing_delivery():
+    from scripts.launcher_streams import release_completed_gpu
+    from unittest.mock import Mock
+    guard=Mock()
+    assert release_completed_gpu(guard,{'phase':'aligning','compute_complete':False}) is guard
+    guard.close.assert_not_called()
+    assert release_completed_gpu(guard,{'phase':'exporting-results','compute_complete':True}) is None
+    guard.close.assert_called_once()
+    assert release_completed_gpu(None,{'compute_complete':True}) is None
+
+
+def test_gpu_release_requires_node_contract_confirmation(tmp_path):
+    from scripts.launcher_streams import Engine
+    from types import SimpleNamespace
+    folder=tmp_path/'attempt';folder.mkdir()
+    row={'id':'job','folder':str(folder),'fingerprint':'a'*64}
+    engine=Engine.__new__(Engine);engine.machine='machine';engine.rows=lambda **kw:iter([row])
+    proof=folder/'gpu-released.json'
+    proof.write_text(json.dumps({'contract_sha256':'wrong','worker_machine':'machine'}))
+    assert engine.released_gpu_work()==set()
+    proof.write_text(json.dumps({'contract_sha256':'a'*64,'worker_machine':'machine'}))
+    assert engine.released_gpu_work()=={'job'}
+
+
+def finish_stop(engine,ident='piece-1'):
+    engine.tick()
+    future=engine.stops.get(ident)
+    if future:future.result(timeout=5)
+    engine.tick()
+
+
+@pytest.mark.parametrize('limits',[{'bogus':1},{'stall_seconds':-1},{'max_retries':True},{'execution_seconds':float('inf')}])
+def test_lifecycle_rejects_invalid_budgets(limits):
+    with pytest.raises(ValueError,match='lifecycle'):s.validate(request(lifecycle=limits))
+
+
+def test_cancel_intent_survives_restart_and_unknown_daemon(engine):
+    e=engine;e.dispatch('stream.submit',request());e.tick()
+    assert e.dispatch('stream.cancel',{'id':'piece-1'})['state']=='stopping'
+    restored=s.Engine(e.agent,Lease,e.policy,start=False)
+    restored.inspect=e.inspect;restored.command=e.command
+    inspect=restored.inspect
+    restored.inspect=lambda row:(_ for _ in ()).throw(RuntimeError('daemon unavailable'))
+    try:
+        restored.tick()
+        future=restored.stops['piece-1']
+        with pytest.raises(RuntimeError):future.result(timeout=5)
+        restored.tick()
+        assert restored.store.get('piece-1')['state']=='stopping'
+        assert e.containers
+        restored.inspect=inspect;restored.store.update('piece-1',due=0)
+        finish_stop(restored)
+        assert restored.store.get('piece-1')['state']=='cancelled'
+        assert not e.containers
+    finally:restored.close()
+
+
+def test_slow_stop_does_not_block_status_or_other_jobs(engine):
+    import threading
+    e=engine;e.dispatch('stream.submit',request());e.tick();command=e.command
+    entered=threading.Event();release=threading.Event()
+    def slow(args,**kwargs):
+        if args[:2]==['docker','stop']:
+            entered.set();assert release.wait(5)
+        return command(args,**kwargs)
+    e.command=slow
+    try:
+        e.dispatch('stream.cancel',{'id':'piece-1'});e.tick();assert entered.wait(2)
+        assert e.dispatch('stream.status',{'id':'piece-1'})['state']=='stopping'
+        e.dispatch('stream.submit',request(id='piece-2'));e.tick()
+        assert e.store.get('piece-2')['state']=='running'
+        with pytest.raises(ValueError,match='confirm'):e.dispatch('stream.remove',{'id':'piece-1'})
+    finally:release.set();finish_stop(e)
+    assert e.store.get('piece-1')['state']=='cancelled'
+
+
+def test_lost_stop_ack_never_claims_cancelled_until_confirmed(engine):
+    import subprocess
+    e=engine;e.dispatch('stream.submit',request());e.tick();command=e.command
+    def lost(args,**kwargs):
+        result=command(args,**kwargs)
+        if args[:2]==['docker','stop']:raise subprocess.TimeoutExpired(args,45)
+        return result
+    e.command=lost;e.dispatch('stream.cancel',{'id':'piece-1'});e.tick()
+    with pytest.raises(subprocess.TimeoutExpired):e.stops['piece-1'].result(timeout=5)
+    e.tick();assert e.store.get('piece-1')['state']=='stopping'
+    e.store.update('piece-1',due=0);finish_stop(e)
+    assert e.store.get('piece-1')['state']=='cancelled' and not e.containers
+
+
+def test_retry_budget_is_bounded_and_explicit_retry_resets_it(engine):
+    e=engine;req=request(lifecycle={'max_retries':1})
+    e.dispatch('stream.submit',req);assert e.dispatch('stream.submit',req)['attempt']==0
+    e.tick()
+    for expected in ('retry_wait','failed'):
+        row=e.store.get('piece-1');e.containers[row['container']]={'Running':False,'ExitCode':75}
+        e.tick();assert e.store.get('piece-1')['state']==expected
+        if expected=='retry_wait':e.store.update('piece-1',due=0);e.tick()
+    assert 'retry budget exhausted' in e.store.get('piece-1')['error']
+    e.dispatch('stream.retry',{'id':'piece-1'});e.tick()
+    assert e.store.get('piece-1')['state']=='running' and e.store.get('piece-1')['retries']==0
+
+
+def test_queue_and_execution_deadlines_are_node_owned(engine,monkeypatch):
+    e=engine;now=s.time.time();monkeypatch.setattr(s.time,'time',lambda:now)
+    e.policy_value['accepting_jobs']=True
+    e.dispatch('stream.submit',request(lifecycle={'queue_seconds':10}));e.policy_value['accepting_jobs']=False
+    now+=11;e.tick();assert e.store.get('piece-1')['state']=='failed' and not e.containers
+    e.policy_value['accepting_jobs']=True
+    e.dispatch('stream.submit',request(id='piece-2',lifecycle={'execution_seconds':10}));e.tick()
+    now+=11;e.tick();assert e.store.get('piece-2')['state']=='stopping'
+    finish_stop(e,'piece-2');assert e.store.get('piece-2')['state']=='failed'
+
+
+def test_heartbeat_and_eta_changes_do_not_reset_stall_deadline(engine,monkeypatch):
+    e=engine;now=s.time.time();monkeypatch.setattr(s.time,'time',lambda:now)
+    e.dispatch('stream.submit',request(lifecycle={'stall_seconds':10}));e.tick();row=e.store.get('piece-1')
+    path=Path(row['folder'])/'progress.json'
+    s.atomic_json(path,{'phase':'aligning','completed_units':10,'updated':now,'execution_eta_seconds':100});e.tick()
+    now+=8;s.atomic_json(path,{'phase':'aligning','completed_units':11,'updated':now});e.tick()
+    now+=8;s.atomic_json(path,{'phase':'aligning','completed_units':11,'updated':now,'execution_eta_seconds':999});e.tick()
+    assert e.store.get('piece-1')['state']=='running'
+    now+=3;e.tick();assert e.store.get('piece-1')['state']=='stopping'
+    finish_stop(e);assert e.store.get('piece-1')['state']=='failed'
+
+
+def test_verified_ram_results_survive_delivery_outage(engine,monkeypatch):
+    e=engine;now=s.time.time();monkeypatch.setattr(s.time,'time',lambda:now)
+    e.dispatch('stream.submit',request(lifecycle={'stall_seconds':10,'execution_seconds':20}));e.tick();row=e.store.get('piece-1')
+    s.atomic_json(Path(row['folder'])/'progress.json',{'phase':'exporting-results','compute_complete':True});e.tick()
+    now+=86400;e.tick()
+    assert e.store.get('piece-1')['state']=='running' and row['container'] in e.containers
+
+
+def test_removal_archives_receipt_and_blocks_duplicate_execution(engine):
+    e=engine;req=request();e.dispatch('stream.submit',req);e.tick();row=e.store.get('piece-1')
+    e.store.update('piece-1',state='completed',result={'verified':'receipt'})
+    with pytest.raises(ValueError,match='cleanup'):e.dispatch('stream.remove',{'id':'piece-1'})
+    e.containers[row['container']]={'Running':False,'ExitCode':0}
+    removed=e.dispatch('stream.remove',{'id':'piece-1'})
+    assert removed['archived'] and removed['result']=={'verified':'receipt'}
+    assert removed['execution'] is not None
+    assert not e.store.list() and not e.containers
+    assert (e.root/'archives/piece-1.json').exists() and not Path(row['folder']).exists()
+    assert e.dispatch('stream.submit',req)['archived']
+    assert len([cmd for cmd in e.commands if cmd[:2]==['docker','run']])==1
+    with pytest.raises(ValueError,match='immutable contract'):e.dispatch('stream.submit',request(label='changed'))
+    with pytest.raises(ValueError,match='Archived'):e.dispatch('stream.retry',{'id':'piece-1'})
+    assert e.dispatch('stream.remove',{'id':'piece-1'})['archived']
+
+
+def test_retention_never_removes_active_or_unconfirmed_worker(engine,monkeypatch):
+    e=engine;e.dispatch('stream.submit',request());e.tick();row=e.store.get('piece-1')
+    now=s.time.time()+8*86400;monkeypatch.setattr(s.time,'time',lambda:now)
+    e.store.update('piece-1',state='failed')
+    with e.store.connect() as db:db.execute('UPDATE work SET updated=? WHERE id=?',(now-8*86400,'piece-1'))
+    e.maintenance_at=0;e.tick()
+    assert not e.store.get('piece-1').get('archived') and row['container'] in e.containers
+    e.containers[row['container']]={'Running':False,'ExitCode':1};e.tick()
+    now+=8*86400;e.maintenance_at=0;e.tick()
+    assert e.store.get('piece-1')['archived']
+
+
+def test_elapsed_retry_budget_includes_waiting_for_resources(engine,monkeypatch):
+    e=engine;now=s.time.time();monkeypatch.setattr(s.time,'time',lambda:now)
+    e.dispatch('stream.submit',request(lifecycle={'retry_seconds':10}));e.tick();row=e.store.get('piece-1')
+    e.containers[row['container']]={'Running':False,'ExitCode':75};e.tick()
+    e.store.update('piece-1',state='admitting',container=None)
+    now+=11;e.tick()
+    assert e.store.get('piece-1')['state']=='failed'
+
+
+def test_explicit_retry_gets_new_queue_deadline(engine,monkeypatch):
+    e=engine;now=s.time.time();monkeypatch.setattr(s.time,'time',lambda:now)
+    e.dispatch('stream.submit',request(lifecycle={'queue_seconds':10}));e.store.update('piece-1',state='failed')
+    now+=20;e.dispatch('stream.retry',{'id':'piece-1'});e.tick()
+    assert e.store.get('piece-1')['state']=='running'
+
+
+def test_archival_keeps_timing_queries_available(engine):
+    e=engine;e.dispatch('stream.submit',request());e.tick();row=e.store.get('piece-1')
+    e.containers[row['container']]={'Running':False,'ExitCode':1};e.tick()
+    before=e.store.timings(['piece-1'])['piece-1'];e.dispatch('stream.remove',{'id':'piece-1'})
+    after=e.dispatch('stream.timings',{'ids':['piece-1']})['items']['piece-1']
+    assert before['elapsed_seconds']==after['elapsed_seconds'] and before['finished']==after['finished']
+
+
+def test_terminal_accounting_is_committed_before_container_cleanup(engine):
+    e=engine;e.dispatch('stream.submit',request());row=e.store.get('piece-1')
+    folder=e.root/'fixture';folder.mkdir();e.store.update('piece-1',state='running',container='worker',folder=str(folder),attempt=1)
+    row=e.store.get('piece-1');key=row['fingerprint']+':1'
+    s.atomic_json(folder/'.execution-accounting.json',{'schema':'swarm-execution-accounting.v1','attempt_key':key,'started':'2026-01-01T00:00:00Z','finished':'2026-01-01T00:00:02Z','elapsed_seconds':2,'cpu_core_seconds':3,'cpu_accounting_coverage':'final-pre-exit','exit_code':4})
+    state={'Running':False,'ExitCode':4,'StartedAt':'2026-01-01T00:00:00Z','FinishedAt':'2026-01-01T00:00:02Z'}
+    original=e.command
+    def command(args,**kw):
+        if args[:2]==['docker','rm']:
+            timing=e.store.timings(['piece-1'])['piece-1']
+            assert timing['cpu_core_seconds']==3
+            assert timing['elapsed_seconds']==2
+        return original(args,**kw)
+    e.command=command;e.reconcile(row,state)
+    assert e.store.get('piece-1')['state']=='failed'
+    assert s.Journal(e.store.path).timings(['piece-1'])['piece-1']['cpu_accounting_coverage']=='final-pre-exit'
+
+
+def test_forced_kill_without_receipt_does_not_fabricate_cpu_time(engine):
+    e=engine;e.dispatch('stream.submit',request());folder=e.root/'fixture';folder.mkdir();e.store.update('piece-1',state='running',container='worker',folder=str(folder),attempt=1)
+    e.reconcile(e.store.get('piece-1'),{'Running':False,'ExitCode':137,'OOMKilled':True,'StartedAt':'2026-01-01T00:00:00Z','FinishedAt':'2026-01-01T00:00:03Z'})
+    timing=e.store.timings(['piece-1'])['piece-1']
+    assert timing['elapsed_seconds']==3
+    assert timing['cpu_accounting_coverage']=='unavailable'
+    assert 'cpu_core_seconds' not in timing
+
+
+def test_queue_wait_is_separate_from_execution_and_prior_attempts(engine,monkeypatch):
+    e=engine;clock=[100.0];monkeypatch.setattr(s.time,'time',lambda:clock[0]);e.dispatch('stream.submit',request())
+    clock[0]=200;e.store.update('piece-1',state='running',attempt=1)
+    clock[0]=220;e.store.update('piece-1',state='retry_wait')
+    clock[0]=300;e.store.update('piece-1',state='admitting',attempt=2)
+    clock[0]=400;e.store.update('piece-1',state='running')
+    clock[0]=450;e.store.update('piece-1',state='failed')
+    value=e.store.timings(['piece-1'])['piece-1']
+    assert value['queue_seconds']==280
+    assert value['elapsed_seconds']==50
+    assert value['attempt']==2

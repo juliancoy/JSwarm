@@ -50,6 +50,17 @@ class TelemetryTests(unittest.TestCase):
         self.assertNotIn('logical_cpus',first['events'][0]['hosts'][0])
         self.assertEqual(sink.fleet({'worker'},second['revision'])['events'],[])
 
+    def test_fleet_rendering_does_not_hold_publisher_lock(self):
+        sink=self.telemetry();source=self.telemetry();now=time.time()
+        source.record('cpu',self.cpu(now),now)
+        sink.accept('worker',source.pending(set()))
+        original=sink.host
+        def render(*args):
+            self.assertFalse(sink.lock._is_owned())
+            return original(*args)
+        with patch.object(sink,'host',side_effect=render):
+            self.assertEqual(len(sink.fleet({'worker'})['events']),1)
+
     def test_buffers_are_bounded_and_old_samples_expire(self):
         source=self.telemetry();now=time.time()
         for i in range(500):source.record('cpu',self.cpu(now),now)
@@ -115,12 +126,31 @@ class TelemetryTests(unittest.TestCase):
             agent=Agent.__new__(Agent);agent.config=Path(folder)/'peers.json'
             key=bytes(range(32));cipher=AESGCM(key)
             agent.config.write_text(json.dumps({'name':'master','master':'master','peers':{'master':'a','worker':'b'},'key':key.hex()}))
-            agent.lock=threading.RLock();agent.nonces={};agent.telemetry=self.telemetry()
+            agent.lock=threading.RLock();agent.nonces={};agent.nonce_lock=threading.Lock();agent.telemetry=self.telemetry()
             now=time.time();value={'from':'worker','to':'master','time':now,'nonce':'a'*32,'op':'metrics.publish',
                 'args':{'session':'b'*32,'samples':[{'sequence':1,'kind':'cpu','sampled_at':now,'value':{**self.cpu(now),'host':'spoofed'}}]}}
             nonce=b'0'*12;raw=nonce+cipher.encrypt(nonce,json.dumps(value).encode(),VERSION.encode())
             asyncio.run(agent.process(raw))
             self.assertEqual(agent.telemetry.fleet({'worker'})['hosts'][0]['host'],'worker')
+
+    def test_replay_protection_accepts_fresh_requests_above_old_count_limit(self):
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        with tempfile.TemporaryDirectory() as folder:
+            agent=Agent.__new__(Agent);agent.config=Path(folder)/'peers.json'
+            key=bytes(range(32));cipher=AESGCM(key);now=time.time()
+            agent.config.write_text(json.dumps({'name':'master','peers':{'worker':'b'},'key':key.hex()}))
+            agent.nonce_lock=threading.Lock()
+            agent.nonces={format(i,'032x'):now+120 for i in range(5000)}
+            agent.nonces['expired']=now-1
+            agent.dispatch=Mock(return_value={'ready':True})
+            value={'from':'worker','to':'master','time':now,'nonce':'f'*32,'op':'status','args':{}}
+            nonce=b'0'*12;raw=nonce+cipher.encrypt(nonce,json.dumps(value).encode(),VERSION.encode())
+            asyncio.run(agent.process(raw))
+            self.assertIn('f'*32,agent.nonces)
+            self.assertNotIn('expired',agent.nonces)
+            with self.assertRaisesRegex(ValueError,'authentication rejected'):
+                asyncio.run(agent.process(raw))
+            self.assertEqual(agent.dispatch.call_count,1)
 
     def test_local_collectors_do_not_invoke_ssh(self):
         # Exercise the shipped scripts and deltas, not just mocked readers.
@@ -163,7 +193,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
             for name in ('master','worker'):
                 agent=Agent.__new__(Agent);agent.config=Path(folder)/(name+'.json')
                 agent.config.write_text(json.dumps({'name':name,'master':'master','peers':{'master':'a','worker':'b'},'key':key.hex()}))
-                agent.lock=threading.RLock();agent.nonces={};agent.telemetry=LauncherTelemetry(agent)
+                agent.lock=threading.RLock();agent.nonces={};agent.nonce_lock=threading.Lock();agent.telemetry=LauncherTelemetry(agent)
                 gateways[name]=JobGateway(agent)
             class Channel:
                 readyState='open';bufferedAmount=0
@@ -216,7 +246,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
             settings={'master':'master','peers':{'master':'127.0.0.1','worker':'127.0.0.1'},'key':key.hex()}
             receiver=Agent.__new__(Agent);receiver.config=Path(folder)/'master.json'
             receiver.config.write_text(json.dumps({**settings,'name':'master'}))
-            receiver.lock=threading.RLock();receiver.nonces={};receiver.telemetry=LauncherTelemetry(receiver)
+            receiver.lock=threading.RLock();receiver.nonces={};receiver.nonce_lock=threading.Lock();receiver.telemetry=LauncherTelemetry(receiver)
             sender=SimpleNamespace(config=Path(folder)/'worker.json')
             sender.config.write_text(json.dumps({**settings,'name':'worker'}))
             gateway=JobGateway(sender)

@@ -111,3 +111,10 @@ def test_identical_offer_reuses_manifest_but_changed_client_rewrites(tmp_path,mo
     assert bulk.offer(config,source,'a'*64,7,'worker','source')==first
     assert write.call_count==2
     assert json.loads((tmp_path/'objects'/(first['object']+'.json')).read_text())['clients']==['replacement']
+
+
+def test_workflow_batches_can_prefer_verified_bulk_below_general_threshold():
+    from scripts.swarm_bulk import preferred
+    assert preferred({'bytes':40*1024**2,'prefer_bulk':True},{'min_bytes':64*1024**2})
+    assert not preferred({'bytes':40*1024**2},{'min_bytes':64*1024**2})
+    assert not preferred({'bytes':40*1024**2,'prefer_bulk':'true'},{'min_bytes':64*1024**2})
