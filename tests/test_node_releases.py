@@ -51,7 +51,10 @@ def test_publication_retains_previous_and_idempotent_publish_preserves_it(tmp_pa
     assert (tmp_path/'previous').resolve()==first
     restored=LauncherUpdates.rollback(tmp_path)
     assert restored.supervisor_source!=source.supervisor_source
-    assert (tmp_path/'desired').resolve()==first
+    rolled_back=(tmp_path/'desired').resolve()
+    assert rolled_back!=first
+    assert restored.generation==3
+    assert json.loads(rolled_back.read_text())['generation']==3
     assert (tmp_path/'previous').resolve()==second
 
 

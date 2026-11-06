@@ -13,16 +13,57 @@ import time
 FILES=('launcher_peers.py','launcher_discovery.py','launcher_registration.py','launcher_agent.py','launcher_registry.py')
 
 
-def deployment_lock(wait=False):
-    """One rolling fleet update, shared by the existing deployment commands."""
-    folder=Path.home()/'.local/state/swarm-control'
+from contextlib import contextmanager
+import os
+import socket
+import threading
+
+_LOCK_STATE=threading.local()
+_UNSPECIFIED=object()
+
+
+@contextmanager
+def deployment_lock(wait=False,*,operation='deployment',folder=None):
+    """One process owns validation, publication or rollout; the kernel releases crashes."""
+    folder=Path(folder) if folder is not None else Path.home()/'.local/state/swarm-control'
     folder.mkdir(mode=0o700,parents=True,exist_ok=True)
-    lock=(folder/'input-deployment.lock').open('a+')
-    try:fcntl.flock(lock,fcntl.LOCK_EX|(0 if wait else fcntl.LOCK_NB))
-    except BlockingIOError:
-        lock.close()
-        raise RuntimeError('A rolling deployment is already running') from None
-    return lock
+    path=(folder/'input-deployment.lock').resolve()
+    held=getattr(_LOCK_STATE,'held',{})
+    if held.get(path)==os.getpid():
+        yield
+        return
+    lock=path.open('a+')
+    try:
+        try:fcntl.flock(lock,fcntl.LOCK_EX|(0 if wait else fcntl.LOCK_NB))
+        except BlockingIOError:
+            lock.seek(0)
+            try:owner=json.load(lock);detail=f"{owner['operation']} on {owner['host']} (PID {owner['pid']})"
+            except (ValueError,KeyError,TypeError):detail='another deployment process'
+            raise RuntimeError('Deployment locked by '+detail+'; retry after it finishes') from None
+        os.fchmod(lock.fileno(),0o600)
+        lock.seek(0);lock.truncate()
+        json.dump({'pid':os.getpid(),'host':socket.gethostname(),'operation':operation,'started_at':time.time()},lock)
+        lock.flush()
+        held[path]=os.getpid();_LOCK_STATE.held=held
+        try:yield
+        finally:held.pop(path,None)
+    finally:lock.close()
+
+
+def publication_token(folder):
+    """Capture the exact desired artifact, including its deployment generation."""
+    pointer=Path(folder)/'desired'
+    if not pointer.is_symlink():
+        if pointer.exists():raise ValueError('Desired release must be an atomic publication pointer')
+        return ''
+    target=pointer.resolve(strict=True)
+    if target.parent!=Path(folder).resolve():raise ValueError('Desired release escapes publication directory')
+    return target.name
+
+
+def check_publication(folder,expected):
+    if publication_token(folder)!=expected:
+        raise RuntimeError('Desired release advanced during preparation; validate and publish the current source again')
 
 
 INSTALL = '''import hashlib,json,os,pathlib,runpy,sys,tempfile,subprocess
@@ -190,9 +231,19 @@ class LauncherUpdates:
         instance=cls.__new__(cls);instance.stopped=stopped;instance.progress=progress
         instance.files=files;instance.revision=revision;instance.supervisor_source=supervisor;instance.capabilities=set()
         from deployment_components import validate
+        instance.generation=value.get('generation',0)
+        if type(instance.generation) is not int or instance.generation<0:raise ValueError('Invalid deployment generation')
+        instance.source_versions=value.get('source_versions',{instance.revision:instance.generation})
+        if (not isinstance(instance.source_versions,dict) or instance.revision not in instance.source_versions or any(not isinstance(key,str) or type(version) is not int or not 0<=version<=instance.generation for key,version in instance.source_versions.items())):
+            raise ValueError('Invalid source version history')
         instance.components=value.get('components',{})
         if set(instance.components)-{'public-pager'}:raise ValueError('Unknown deployment component')
         for component in instance.components.values():validate(component)
+        content={key:value.get(key,{}) if key=='components' else value[key] for key in ('schema','revision','files','supervisor_source','supervisor_sha256','components')}
+        content_id=hashlib.sha256(json.dumps(content,sort_keys=True).encode()).hexdigest()
+        instance.artifact_versions=value.get('artifact_versions',{content_id:instance.generation})
+        if (not isinstance(instance.artifact_versions,dict) or content_id not in instance.artifact_versions or any(type(version) is not int or not 0<=version<=instance.generation for version in instance.artifact_versions.values())):
+            raise ValueError('Invalid artifact version history')
         for node in ast.walk(ast.parse(files['launcher_agent.py'])):
             if isinstance(node,ast.Dict):
                 for key,entry in zip(node.keys,node.values):
@@ -200,16 +251,45 @@ class LauncherUpdates:
                         instance.capabilities.update(item.value for item in entry.elts if isinstance(item,ast.Constant) and isinstance(item.value,str))
         return instance
 
-    def publish(self,folder):
+    def publish(self,folder,*,expected=_UNSPECIFIED):
+        folder=Path(folder).resolve()
+        with deployment_lock(folder=folder.parent,operation='publish release'):
+            if expected is not _UNSPECIFIED:check_publication(folder,expected)
+            return self._publish(folder)
+
+    def _publish(self,folder,*,rollback=False):
         """Publish checksummed sources only; enrolled identities and keys stay separate."""
         import os,tempfile
         folder=Path(folder);folder.mkdir(parents=True,exist_ok=True,mode=0o700)
         value={'schema':'jswarm-agent-release.v1','revision':self.revision,'files':self.files,
                'supervisor_source':self.supervisor_source,'supervisor_sha256':hashlib.sha256(self.supervisor_source.encode()).hexdigest(),
                'components':getattr(self,'components',{})}
-        # Supervisor is included in the artifact name so it cannot silently change.
+        # Content identity stays stable; the immutable envelope orders deployments.
         artifact=hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest()
-        path=folder/(artifact+'.json');encoded=json.dumps(value,sort_keys=True)
+        token=publication_token(folder)
+        current=folder/token if token else None
+        versions={};artifacts={}
+        if current:
+            prior=self.published(current,self.stopped,self.progress)
+            prior_value=json.loads(current.read_text())
+            content={key:prior_value.get(key,{}) if key=='components' else prior_value[key] for key in value}
+            current_id=hashlib.sha256(json.dumps(content,sort_keys=True).encode()).hexdigest()
+            versions=dict(prior.source_versions);artifacts=dict(prior.artifact_versions)
+            if content==value:
+                self.generation=prior.generation
+                self.source_versions=versions
+                self.artifact_versions=artifacts
+                return current
+            if not rollback and self.revision in versions and versions[self.revision]<versions[prior.revision]:
+                raise RuntimeError('Older source version requires explicit rollback')
+        if not rollback and artifact in artifacts and artifacts[artifact]<artifacts[current_id]:
+            raise RuntimeError('Previously published release requires explicit rollback')
+        generations=[int(path.name.split('-',1)[0]) for path in folder.glob('*-*.json')
+                     if path.name.split('-',1)[0].isdigit()]
+        generation=max([prior.generation if current else 0,*generations])+1
+        versions.setdefault(self.revision,generation);artifacts.setdefault(artifact,generation)
+        value.update(generation=generation,predecessor=token,source_versions=versions,artifact_versions=artifacts)
+        path=folder/(f'{generation:020d}-'+artifact+'.json');encoded=json.dumps(value,sort_keys=True)
         with tempfile.NamedTemporaryFile(dir=folder,mode='w',delete=False) as handle:
             temp=Path(handle.name);handle.write(encoded);handle.flush();os.fsync(handle.fileno())
         try:
@@ -228,6 +308,9 @@ class LauncherUpdates:
         directory=os.open(folder,os.O_RDONLY)
         try:os.fsync(directory)
         finally:os.close(directory)
+        self.generation=generation
+        self.source_versions=versions
+        self.artifact_versions=artifacts
         return path
 
     @classmethod
@@ -237,24 +320,17 @@ class LauncherUpdates:
 
     @classmethod
     def rollback(cls,folder):
-        """Select a verified previous publication for the normal rolling updater."""
-        import os
-        folder=Path(folder);previous=folder/'previous';desired=folder/'desired'
-        target=previous.resolve(strict=True)
-        if target.parent!=folder.resolve() or not previous.is_symlink():
-            raise ValueError('Previous release must be a local published artifact')
-        release=cls.published(target,lambda:False,lambda *args:None)
-        current=desired.resolve(strict=True)
-        if current.parent!=folder.resolve():raise ValueError('Desired release escapes publication directory')
-        cls.published(current,lambda:False,lambda *args:None)
-        pending=folder/'desired.tmp';pending.unlink(missing_ok=True)
-        pending.symlink_to(target.name);pending.replace(desired)
-        pending=folder/'previous.tmp';pending.unlink(missing_ok=True)
-        pending.symlink_to(current.name);pending.replace(previous)
-        directory=os.open(folder,os.O_RDONLY)
-        try:os.fsync(directory)
-        finally:os.close(directory)
-        return release
+        """Restore verified older code as a new, strictly increasing generation."""
+        folder=Path(folder).resolve()
+        with deployment_lock(folder=folder.parent,operation='rollback release'):
+            previous=folder/'previous'
+            target=previous.resolve(strict=True)
+            if target.parent!=folder.resolve() or not previous.is_symlink():
+                raise ValueError('Previous release must be a local published artifact')
+            release=cls.published(target,lambda:False,lambda *args:None)
+            cls.published(folder/'desired',lambda:False,lambda *args:None)
+            release._publish(folder,rollback=True)
+            return release
 
     def owner_status(self,host):
         """Verify the enrolled node through its API; deployment never falls back to SSH."""

@@ -113,6 +113,20 @@ python JSwarm/scripts/deploy_swarm_inputs.py --publish
 python JSwarm/scripts/deploy_swarm_inputs.py --status
 ```
 
+Validation, publication, rollback and rolling deployment share the coordinator's
+`~/.local/state/swarm-control/input-deployment.lock`. A competing command fails
+with the holder's operation, host and PID; it does not queue an older publication.
+The OS releases the lock when its owner exits. Never delete the lock file to
+bypass a running deployment. Preparation also captures the desired artifact;
+publication refuses it if another release advanced while the source was frozen.
+
+Every changed publication has a strictly increasing deployment `generation`,
+reported by publication, status and rollout reports. Repeating the current
+publication is a no-op. Ordinary publication rejects previously superseded node
+code and artifacts; explicit rollback restores verified older code as a new,
+higher generation. Interrupted publications leave the selected release intact,
+and retries advance past any reserved generation.
+
 Publication runs the required release checks, verifies that bundled sources did not
 change during validation, and atomically selects the artifact. The existing
 `swarm-input-deployment.service` follows that publication and replaces one enrolled
