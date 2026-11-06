@@ -9,7 +9,21 @@ import uuid
 import pytest
 from scripts import swarm_cache_transfer as transfer
 from scripts.swarm_shared_cache import contract,SEAL,OWNER
-from scripts.genomics_followup_fleet import RECEIVE
+
+# A deliberately small consumer fixture; application-specific receivers are
+# tested by their owning applications. The production TLS runtime is unchanged.
+RECEIVE=r'''
+import hashlib,json,pathlib,sys,tarfile
+root=pathlib.Path(sys.argv[1]);expected=json.loads(sys.argv[2]);seen=set()
+with tarfile.open(fileobj=sys.stdin.buffer,mode='r|') as stream:
+ for member in stream:
+  assert member.isfile() and member.name in expected and member.name not in seen
+  record=expected[member.name];assert member.size==record['bytes']
+  payload=stream.extractfile(member).read(record['bytes']+1)
+  assert len(payload)==record['bytes'] and hashlib.sha256(payload).hexdigest()==record['sha256']
+  (root/member.name).write_bytes(payload);seen.add(member.name)
+assert seen==set(expected)
+'''
 
 
 def test_direct_cache_transfer_stays_in_ram_and_verifies_contents(tmp_path,monkeypatch):
