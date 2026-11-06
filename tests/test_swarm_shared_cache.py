@@ -160,7 +160,7 @@ def test_stopped_ram_cache_is_reloaded_instead_of_restarted_empty(tmp_path,admit
         binding=cache.ensure(host,tool_image,files,load)
         first=cache.inspect(host,'container',binding['container'])
         assert first['HostConfig']['RestartPolicy']['Name']=='no'
-        assert docker('stop','--timeout','1',binding['container'],timeout=60).returncode==0
+        assert docker('stop','-t','1',binding['container'],timeout=60).returncode==0
         rebuilt=cache.ensure(host,tool_image,files,load)
         second=cache.inspect(host,'container',rebuilt['container'])
         assert second['Id']!=first['Id'] and len(loads)==2

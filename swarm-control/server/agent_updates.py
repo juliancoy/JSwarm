@@ -139,7 +139,7 @@ if replacement_containers:
   probe="import json,pathlib; p=pathlib.Path('/tmp/launcher-agent-update.json'); phase=json.loads(p.read_text()).get('phase','') if p.exists() else ''; print('draining' if phase=='starting' and pathlib.Path('/tmp/launcher-agent-draining').exists() else phase)"
   state=subprocess.run(docker_command+['exec',container_name,'python3','-c',probe],capture_output=True,text=True,timeout=15)
   if state.returncode==0 and state.stdout.strip()=='draining':
-   subprocess.run(docker_command+['restart','--timeout','30',container_name],check=True,stdout=subprocess.DEVNULL,timeout=90)
+   subprocess.run(docker_command+['restart','-t','30',container_name],check=True,stdout=subprocess.DEVNULL,timeout=90)
 else:
  subprocess.Popen([sys.executable,'-c',replacement_code],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
 '''
