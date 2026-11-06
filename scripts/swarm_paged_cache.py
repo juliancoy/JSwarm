@@ -29,6 +29,7 @@ def validate(plan):
     if not root.is_absolute() or '..' in root.parts or len(root.parts)<4:
         raise ValueError('Use a dedicated immutable artifact directory')
     for name,row in plan['files'].items():
+        if Path(name).name!=name or name in ('.','..'):raise ValueError('Invalid public artifact name')
         if Path(row['path'])!=root/name:raise ValueError('Only one dedicated artifact directory may be exported')
     if type(plan['port']) is not int or not 1024<=plan['port']<=65535:raise ValueError('Invalid NFS port')
     ipaddress.IPv4Address(plan['address'])
@@ -94,6 +95,34 @@ touch /work/ready
 while [ ! -f /work/stop ]; do sleep 2; done
 '''
 
+# Run through the Docker daemon's host bind, never through the API owner's
+# private mount namespace. Only the explicitly published directory is exposed.
+PUBLIC_FILES=r'''
+import hashlib,json,pathlib,sys
+files=json.loads(sys.argv[1]);mode=sys.argv[2];prior=json.loads(sys.argv[3]);out={}
+for name,record in files.items():
+ if pathlib.Path(name).name!=name or name in ('.','..'):raise ValueError('Invalid public artifact name')
+ path=pathlib.Path('/export')/name;st=path.stat()
+ identity=[st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_ctime_ns]
+ if st.st_size!=record['bytes']:raise ValueError('Public source size differs')
+ if mode=='verify':
+  if prior.get(name)!=identity:
+   with path.open('rb') as stream:digest=hashlib.file_digest(stream,'sha256').hexdigest()
+   if digest!=record['sha256']:raise ValueError('Public source checksum mismatch')
+  out[name]=identity
+ elif mode=='pages':
+  rows=[]
+  with path.open('rb') as stream:
+   for offset in sorted({0,max(0,st.st_size-4096)}):
+    stream.seek(offset);data=stream.read(min(4096,st.st_size-offset))
+    rows.append([offset,len(data),hashlib.sha256(data).hexdigest()])
+  out[name]=rows
+ else:raise ValueError('Invalid public source probe')
+ after=path.stat()
+ if [after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns]!=identity:raise ValueError('Public source changed during verification')
+print(json.dumps(out))
+'''
+
 # Deployment uses the enrolled host's system daemon even when compute Docker is
 # rootless. Mount propagation exposes this one dedicated read-only mount to both.
 BOOTSTRAP=r'''
@@ -119,15 +148,14 @@ root=pathlib.Path.home()/'.local/state/swarm-control/paged-cache'/plan['key'];ro
 name='swarm-paged-'+('source-' if p['node']==plan['source'] else 'cache-')+plan['key'][:16]
 common=['--restart','unless-stopped','--read-only','--memory','256m','--memory-swap','256m','--pids-limit','64','--network','host','--label','org.lifetech.service=paged-reference','--label','org.jswarm.paged-cache='+plan['key'],'--log-opt','max-size=2m','--log-opt','max-file=2']
 if p['node']==plan['source']:
- proof=root/'source-verified.json';identities={}
- for n,record in plan['files'].items():
-  path=pathlib.Path(record['path']);st=path.stat();identities[n]=[st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_ctime_ns]
+ proof=root/'source-verified.json'
  previous=json.loads(proof.read_text()) if proof.exists() else {}
+ identities=json.loads(run('run','--rm','--pull=never','--network','none','--read-only','--cap-drop','ALL',
+  '--security-opt','no-new-privileges','--user','1000:1000','--cpus','1','--memory','128m','--memory-swap','128m','--pids-limit','16',
+  '--mount','type=bind,src='+plan['export']+',dst=/export,readonly',image,'python3','-c',p['public_files'],
+  json.dumps(plan['files']),'verify',json.dumps(previous.get('identities',{})),
+  timeout=max(120,60+sum(r['bytes'] for r in plan['files'].values())//(4*1024**2))))
  if previous.get('identities')!=identities:
-  for n,record in plan['files'].items():
-   path=pathlib.Path(record['path'])
-   with path.open('rb') as f:digest=hashlib.file_digest(f,'sha256').hexdigest()
-   if digest!=record['sha256'] or path.stat().st_size!=record['bytes']:raise ValueError('Public source checksum mismatch')
   proof.write_text(json.dumps({'identities':identities,'verified':time.time()}))
  conf=root/'ganesha.conf'
  if not conf.exists():conf.write_text(p['server_config'])
@@ -163,16 +191,20 @@ else:
  else:raise RuntimeError('Pager mount not ready')
  paths={n:str(state/'reference'/n) for n in plan['files']}
  # Metadata queries must not read payload pages.
- for n,record in plan['files'].items():
-  if pathlib.Path(paths[n]).stat().st_size!=record['bytes']:raise ValueError('Mounted object size differs')
+ metadata="import json,pathlib;print(json.dumps({n:(pathlib.Path('/state/reference')/n).stat().st_size for n in json.loads(__import__('sys').argv[1])}))"
+ sizes=json.loads(run('exec',name,'python3','-c',metadata,json.dumps(list(plan['files']))))
+ if any(sizes[n]!=r['bytes'] for n,r in plan['files'].items()):raise ValueError('Mounted object size differs')
 mode='local-mmap' if p['node']==plan['source'] else 'nfs-demand-paged'
 policy_path=pathlib.Path.home()/'.config/lifetech-launcher/public-cache-policy.json'
 policy=json.loads(policy_path.read_text()) if policy_path.exists() else {}
 if p['node']!=plan['source'] and policy.get('storage')=='verified-local-ssd':
  import shutil
  local=root/'verified-ssd';local.mkdir(exist_ok=True,mode=0o700)
- device=subprocess.check_output(['findmnt','-n','-o','SOURCE','-T',str(local)],text=True).strip()
- rotating=subprocess.check_output(['lsblk','-dn','-o','ROTA',device],text=True).strip()
+ # Policy concerns the physical destination filesystem, not the API owner's
+ # overlay or private mount view. This helper only inspects host mount metadata.
+ rotating=run('run','--rm','--network','none','--pid','host','--privileged',image,'sh','-c',
+  'device=$(nsenter -t 1 -m -- findmnt -n -o SOURCE -T "$1"); nsenter -t 1 -m -- lsblk -dn -o ROTA "$device"',
+  'pager',str(local)).strip()
  if rotating!='0':raise ValueError('Public cache SSD policy requires verified nonrotating storage')
  for n,expected in plan['files'].items():
   target=local/n;proof=local/(n+'.verified.json')
@@ -184,9 +216,15 @@ if p['node']!=plan['source'] and policy.get('storage')=='verified-local-ssd':
    raise ValueError('Existing immutable SSD cache identity differs; refusing replacement')
   if shutil.disk_usage(local).free<expected['bytes']+64*1024**2:raise ValueError('Insufficient SSD headroom for public cache')
   temporary=local/(n+'.partial');digest=hashlib.sha256();size=0
-  with open(paths[n],'rb') as source,temporary.open('wb') as output:
-   while block:=source.read(4*1024**2):output.write(block);digest.update(block);size+=len(block)
-   output.flush();os.fsync(output.fileno())
+  reader=subprocess.Popen(docker+['exec',name,'cat','/state/reference/'+n],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+  try:
+   with temporary.open('wb') as output:
+    while block:=reader.stdout.read(4*1024**2):output.write(block);digest.update(block);size+=len(block)
+    output.flush();os.fsync(output.fileno())
+   if reader.wait(timeout=30):raise RuntimeError('Public cache reader failed')
+  finally:
+   if reader.poll() is None:reader.kill();reader.wait()
+   reader.stdout.close()
   if size!=expected['bytes'] or digest.hexdigest()!=expected['sha256']:
    temporary.unlink(missing_ok=True);raise ValueError('Public SSD cache checksum differs')
   temporary.chmod(0o444);temporary.replace(target)
@@ -235,7 +273,7 @@ def deploy_node(host,plan=None):
     finally:client.close()
     host={**host,'machine':status['machine']}
     execution_image=ensure_image(host,plan['image'])
-    payload={'plan':plan,'execution_image':execution_image,'node':host['host'],'machine':host['machine'],'guard':GUARD,'client':CLIENT,'server_config':server_config(plan)}
+    payload={'plan':plan,'execution_image':execution_image,'node':host['host'],'machine':host['machine'],'guard':GUARD,'client':CLIENT,'public_files':PUBLIC_FILES,'server_config':server_config(plan)}
     result=subprocess.run(host_command(host,BOOTSTRAP),input=json.dumps(payload),capture_output=True,text=True,timeout=max(180,60+sum(r['bytes'] for r in plan['files'].values())//(4*1024**2)))
     if result.returncode:raise RuntimeError('Paged deployment failed on '+host['host']+': '+result.stderr[-500:])
     record=json.loads(result.stdout)
@@ -284,7 +322,7 @@ def deploy_fleet(plan=None,names=None):
 
 def runtime_revision():
     import inspect
-    return hashlib.sha256((GUARD+CLIENT+BOOTSTRAP+inspect.getsource(server_config)).encode()).hexdigest()
+    return hashlib.sha256((GUARD+CLIENT+PUBLIC_FILES+BOOTSTRAP+inspect.getsource(server_config)).encode()).hexdigest()
 
 
 def current_plan():
@@ -343,7 +381,13 @@ def verify_node(host,record,plan):
     """Real mmap/read-only checks in both system and existing rootless engines."""
     cfg=json.loads(CONFIG.read_text())
     source={'host':plan['source'],'local':plan['source']==cfg['name'],'lan_address':cfg['peers'][plan['source']]}
-    source_code="import hashlib,json,pathlib;files="+repr(plan['files'])+";out={}\nfor n,r in files.items():\n p=pathlib.Path(r['path']);size=p.stat().st_size;rows=[]\n with p.open('rb') as f:\n  for offset in sorted({0,max(0,size-4096)}):\n   f.seek(offset);b=f.read(min(4096,size-offset));rows.append([offset,len(b),hashlib.sha256(b).hexdigest()])\n out[n]=rows\nprint(json.dumps(out))"
+    source_image=ensure_image(source,plan['image'])
+    argv=['docker','--host','unix:///var/run/docker.sock','run','--rm','--pull=never','--network','none','--read-only',
+          '--cap-drop','ALL','--security-opt','no-new-privileges','--user','1000:1000','--cpus','0.25',
+          '--memory','128m','--memory-swap','128m','--pids-limit','16',
+          '--mount','type=bind,src='+plan['export']+',dst=/export,readonly',source_image,
+          'python3','-c',PUBLIC_FILES,json.dumps(plan['files']),'pages','{}']
+    source_code='import os;os.execvp('+repr(argv[0])+','+repr(argv)+')'
     expected=json.loads(subprocess.check_output(host_command(source,source_code),text=True,timeout=30))
     sockets=json.loads(subprocess.check_output(host_command(host,"import json,os,pathlib;print(json.dumps(['unix:///var/run/docker.sock']+(['unix:///run/user/'+str(os.getuid())+'/docker.sock'] if pathlib.Path('/run/user/'+str(os.getuid())+'/docker.sock').exists() else [])))"),text=True,timeout=20))
     checks=[]

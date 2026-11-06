@@ -87,6 +87,27 @@ def test_docker_mmap_checks_pages_readonly_and_rejects_bad_checksum(tmp_path):
     assert bad.returncode!=0 and 'checksum mismatch' in bad.stderr
 
 
+def test_public_source_is_verified_through_host_bind_not_owner_namespace(tmp_path):
+    import hashlib,subprocess
+    result=subprocess.run(['docker','image','inspect','python:3.12-bookworm','--format','{{.Id}}'],capture_output=True,text=True,timeout=20)
+    if result.returncode:pytest.skip('Local Python fixture image unavailable')
+    root=tmp_path/'export';root.mkdir(mode=0o755);blob=root/'index'
+    payload=b'public reference fixture\n'*512;blob.write_bytes(payload);blob.chmod(0o444)
+    files={'index':{'path':'/host-only/not-mounted/index','bytes':len(payload),'sha256':hashlib.sha256(payload).hexdigest()}}
+    argv=['docker','run','--rm','--network','none','--read-only','--cap-drop','ALL',
+          '--memory','128m','--memory-swap','128m','--mount','type=bind,src='+str(root)+',dst=/export,readonly',
+          result.stdout.strip(),'python3','-c',pager.PUBLIC_FILES,json.dumps(files)]
+    proof=subprocess.run([*argv,'verify','{}'],capture_output=True,text=True,timeout=30)
+    assert proof.returncode==0,proof.stderr
+    identities=json.loads(proof.stdout);assert identities['index'][2]==len(payload)
+    pages=subprocess.run([*argv,'pages','{}'],capture_output=True,text=True,timeout=30)
+    assert pages.returncode==0,pages.stderr
+    assert json.loads(pages.stdout)['index'][0]==[0,4096,hashlib.sha256(payload[:4096]).hexdigest()]
+    blob.chmod(0o644);blob.write_bytes(b'changed'.ljust(len(payload),b'.'))
+    changed=subprocess.run([*argv,'verify',proof.stdout],capture_output=True,text=True,timeout=30)
+    assert changed.returncode!=0 and 'checksum mismatch' in changed.stderr
+
+
 def test_cache_warm_is_an_immutable_owner_installed_readonly_node_recipe():
     from scripts.launcher_streams import validate
     p=plan();record={'image':p['image'],'paths':{'index':'/mounted/reference/index'}}
@@ -146,14 +167,22 @@ def test_opt_in_ssd_cache_verifies_bytes_and_reuses_same_inode(tmp_path,monkeypa
     home=tmp_path/'owner';(home/'.config/lifetech-launcher').mkdir(parents=True)
     (home/'.config/lifetech-launcher/public-cache-policy.json').write_text(json.dumps({'storage':'verified-local-ssd'}))
     monkeypatch.setattr(Path,'home',lambda:home)
-    monkeypatch.setattr(subprocess,'check_output',lambda argv,**kw:'/dev/nvme0n1p1\n' if argv[0]=='findmnt' else '0\n')
     source=tmp_path/'source';source.write_bytes(b'verified public reference'*100)
+    popen=subprocess.Popen
+    def reader(argv,**kw):
+        assert argv==['docker','exec','fixture','cat','/state/reference/index']
+        return popen(['cat',str(source)],**kw)
+    monkeypatch.setattr(subprocess,'Popen',reader)
+    def host_metadata(*args):
+        assert args[:8]==('run','--rm','--network','none','--pid','host','--privileged','image')
+        assert 'nsenter -t 1 -m' in args[10]
+        return '0\n'
     root=home/'cache';root.mkdir()
     p={'node':'node'};pl={'source':'other','files':{'index':{'bytes':source.stat().st_size,'sha256':hashlib.sha256(source.read_bytes()).hexdigest()}}}
     code=pager.BOOTSTRAP.split("mode='local-mmap'",1)[1].split("record={'schema'",1)[0]
     code="mode='local-mmap'"+code
     def run():
-        values={'p':p,'plan':pl,'paths':{'index':str(source)},'root':root,'pathlib':__import__('pathlib'),'json':json,'subprocess':subprocess,'hashlib':hashlib,'os':os}
+        values={'p':p,'plan':pl,'paths':{'index':'/owner-cannot-see-this'},'root':root,'pathlib':__import__('pathlib'),'json':json,'subprocess':subprocess,'hashlib':hashlib,'os':os,'run':host_metadata,'docker':['docker'],'name':'fixture','image':'image'}
         exec(code,values);return Path(values['paths']['index'])
     target=run();inode=target.stat().st_ino
     assert target.read_bytes()==source.read_bytes()
