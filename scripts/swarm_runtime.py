@@ -317,18 +317,27 @@ def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_fo
                 raise GpuUnavailable('GPU readiness changed before launch') from error
             if free.get(gpu['uuid'],0)<gpu['minimum_free_mib']:raise GpuUnavailable('GPU VRAM headroom changed before launch')
             locks=str(Path('/dev/shm/jswarm-gpu-locks')/host['machine']) if ram_only else str(Path(host['cache']).parent/'gpu-alignment-locks')
-            prepare="import pathlib,os,sys;p=pathlib.Path(sys.argv[1]);p.mkdir(mode=0o700,parents=True,exist_ok=True);assert p.stat().st_uid==os.getuid() and not p.stat().st_mode & 0o077"
-            subprocess.run(shell_command(host,['python3','-c',prepare,locks]),check=True,timeout=15)
+            # Owner command capsules can expose host RAM read-only. Provision
+            # through the same Docker daemon that will bind the worker path,
+            # within this worker's already acquired CPU/RAM reservation.
+            parent='/dev/shm' if ram_only else str(Path(locks).parent)
+            relative=str(Path(locks).relative_to(parent))
+            prepare="import pathlib,os,sys\np=pathlib.Path('/gpu-parent')\nfor part in pathlib.Path(sys.argv[1]).parts:\n p=p/part\n assert not p.is_symlink()\n p.mkdir(mode=0o700,exist_ok=True)\n assert p.stat().st_uid==os.getuid() and not p.stat().st_mode & 0o077"
+            setup=name+'-gpu-setup'
+            helper=['docker','run','--rm','--pull=never','--name',setup,'--network','none','--read-only',
+                    '--cap-drop','ALL','--security-opt','no-new-privileges','--cpus',str(min(cpus,.25)),
+                    '--memory',str(min(reservation,64))+'m','--memory-swap',str(min(reservation,64))+'m',
+                    '--pids-limit','32','--user',host.get('container_user','1000:1000'),
+                    '--mount','type=bind,src='+parent+',dst=/gpu-parent','--entrypoint','python3',image,'-c',prepare,relative]
+            try:subprocess.run(shell_command(host,helper),check=True,timeout=30)
+            except BaseException:
+                subprocess.run(shell_command(host,['docker','rm','-f',setup]),capture_output=True,timeout=30)
+                raise
             from scripts.launcher_streams import gpu_container_args
             argv+=gpu_container_args(gpu)+['--mount','type=bind,src='+locks+',dst=/gpu-locks',
                    '--label','org.lifetech.accelerator='+gpu['uuid'],'--label','org.lifetech.gpu-memory-domain='+gpu.get('memory_domain','driver-reserved-vram'),'--label','org.lifetech.gpu-admission=pressure','--label','org.lifetech.gpu-private-mib='+str(gpu.get('vram_mb',gpu['minimum_free_mib']))]
-            import base64
             from scripts.launcher_streams import GPU_ADMISSION_SOURCE
-            revision=hashlib.sha256(GPU_ADMISSION_SOURCE.encode()).hexdigest()
-            script='gpu-admission-'+revision+'.py'
-            install="import base64,hashlib,os,pathlib,sys,tempfile; p=pathlib.Path(sys.argv[1]); data=base64.b64decode(sys.argv[2]); assert hashlib.sha256(data).hexdigest()==sys.argv[3]; f=tempfile.NamedTemporaryFile(dir=p.parent,delete=False); f.write(data); f.close(); os.replace(f.name,p) if not p.exists() else os.unlink(f.name); assert p.read_bytes()==data"
-            subprocess.run(shell_command(host,['python3','-c',install,locks+'/'+script,base64.b64encode(GPU_ADMISSION_SOURCE.encode()).decode(),revision]),check=True,timeout=30)
-            command=shlex.join(['python3','/gpu-locks/'+script,json.dumps({**gpu,'lock_directory':'/gpu-locks',**({'compute_complete_file':gpu_compute_complete_file} if gpu_compute_complete_file else {})}),'bash','-o','pipefail','-c',command])
+            command=shlex.join(['python3','-c',GPU_ADMISSION_SOURCE,json.dumps({**gpu,'lock_directory':'/gpu-locks',**({'compute_complete_file':gpu_compute_complete_file} if gpu_compute_complete_file else {})}),'bash','-o','pipefail','-c',command])
         for key,value in (labels or {}).items():argv+=['--label',key+'='+value]
         for target,size_mb in (tmpfs or {}).items():
             argv+=['--tmpfs',target+':rw,nosuid,nodev,noexec,size='+str(size_mb)+'m,mode=1777']

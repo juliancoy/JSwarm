@@ -85,8 +85,21 @@ External shared volumes remain owned by their coordinator queue; the node's
 stream journal cleans only its own streamed input entries. Cache preparation
 honors the node's worker policy and live capacity. There is no cache-wide or
 derived-object file lock: Docker's unique container name elects the loader;
-competing requests retry until its verified seal is available. Terminal cleanup
-sweeps all eligible entries rather than stopping at a pressure budget.
+competing requests retry until its verified seal is available. Background terminal
+cleanup sweeps all eligible entries. Pressure-driven cleanup treats `required_mb`
+as the desired admission headroom, checks the node's capacity before and after
+successful deletions, and stops once that target is met. It prefers entries with
+fewer recorded consumers, preserving heavily reused objects when possible.
+Configured memory limits are never counted as proof of freed physical RAM.
+
+Ownership lookups share a bounded, in-process read model of the existing queue.
+SQLite commit notifications (`PRAGMA data_version`) invalidate eligibility;
+unchanged request contents reuse their parsed bindings. A snapshot serves every
+physical node and namespace, while changed requests, state transitions, deletions
+and database replacement refresh the result. No read transaction stays open
+between calls. Eligibility is checked again after Docker inspection, immediately
+before removal; unreadable queue data prevents reclamation. No new durable
+ownership records or time-based eligibility cache are introduced.
 
 Applications choose cache contents, transfer method, private memory budget and
 fallback policy. GenomeHarbor's BWA adapter uses this interface; BWA formats,
@@ -255,3 +268,71 @@ For a node whose jobs use rootless Docker, the existing node service runs a
 short-lived host network helper before startup. Its only capability is
 `NET_ADMIN`; it maintains the same port 80 rules without exposing the system
 Docker socket to the node or running another HTTP process.
+
+### Browser sign-in and WAN node enrollment
+
+On a new Linux machine with JSwarm and its runtime dependencies installed, run:
+
+```sh
+./swarm-node join --origin https://compai.lifetech.fyi
+```
+
+The command opens the owner's browser sign-in, which already uses PIdP
+Authorization Code with S256 PKCE. After sign-in, compare the node name and
+machine fingerprint shown by the command and approve that computer. A second
+S256 grant binds provisioning delivery to the native node process; the browser
+never receives fleet keys or node registration credentials. Grants expire after
+ten minutes, and revoked or disallowed browser sessions cannot finish them.
+Provisioning delivery can safely retry after an interrupted response. Existing
+fleet membership is never overwritten by `join`.
+
+The node stores enrollment material with owner-only permissions, registers with
+the existing signaling service, and starts JSwarm. Approved WAN nodes use WebRTC
+explicitly, including when their private address overlaps the coordinator's LAN.
+The scheduler checks the approved machine fingerprint before accepting them.
+Enrollment and channel readiness are separate; check launcher status to confirm
+an open connection. TURN configuration is intentionally deferred.
+
+The HTTPS console serves `/pipeline.html` and its read/control endpoints behind
+the existing PIdP session checks. LAN `map.local` retains its existing network
+access policy. Both use the same pipeline backend: queue definitions and verified
+acceptance receipts belong to the coordinator, while each worker supplies its
+execution journal, timing receipts, resource measurements, and cache-worker
+status through authenticated JSwarm RPC. Unreachable nodes are marked unavailable;
+retained measurements are marked stale rather than replaced by coordinator
+telemetry. Historical node journals warm up in bounded pages.
+
+Deploy the web integration with `./run.py --pipeline-view authenticated-nodes`
+on the coordinator. It backs up replaced files, rolls back on service restart
+failure, and restarts only the task feed and authenticated web API. Build the
+updated node package with `./build.sh`.
+
+## Fast prerelease swarm experiments
+
+[The five-machine simulator](docs/prerelease-simulation.md) calibrates node resources
+and execution stages from each machine's authenticated API history, then runs
+seeded cache-pressure and scheduling experiments with a virtual clock. Offline
+runs need only a saved calibration. Reports compare round-robin and cache-aware
+scheduling, expose cache accumulation/admission stalls, and include reproducible
+seeds plus deliberate fault controls. No live jobs or cache changes are made.
+
+## Audit caches across enrolled machines
+
+Use the [read-only cache audit](docs/cache-audit.md) to check every machine's
+JSwarm APIs for shared-cache counts, measured RAM, admission headroom, pending
+cache preparation, and retained package/workspace data. Repeat samples or a saved
+previous report expose growth without assuming that retained data is unowned.
+
+## Clean terminal shared RAM caches
+
+The [cache cleanup API and script](docs/cache-cleanup.md) provide signed
+`resource.caches.inspect` and `resource.caches.cleanup` operations. The script
+checks controller queue ownership, defaults to a preview, and supports `--apply`
+and an optional admission-headroom target. Nodes preserve attached consumers and
+active transfers and refuse stale owner identities. Updated nodes advertise
+`cache-cleanup-v1`; standard publication and node update are required.
+
+Node source is volume-mounted; code-only updates reuse the dependency image.
+The standard publisher pins Git commits and the fleet updater fetches them through
+its signed node API before activating the verified runtime. See
+[Git source deployment](docs/node-source-deployment.md) for the update and migration steps.

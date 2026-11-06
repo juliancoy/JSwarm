@@ -650,7 +650,7 @@ class JobGateway:
         raw=await request.read()
         try:
             timeout=max(1,min(180,float(request.headers.get('X-Lifetech-RPC-Timeout','180'))))
-            if request.headers.get('X-Lifetech-Transport')!='webrtc':
+            if request.headers.get('X-Lifetech-Transport')!='webrtc' and node not in config.get('wan_only',[]):
                 try:
                     async with ClientSession(timeout=ClientTimeout(total=timeout,connect=min(3,timeout)),trust_env=False,connector=TCPConnector(socket_factory=transport_socket)) as session:
                         async with session.post('http://'+config['peers'][node]+':8790/agent/v1',data=raw,allow_redirects=False) as response:
@@ -676,6 +676,7 @@ class JobGateway:
         from aiohttp import ClientSession,ClientTimeout
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
         config=json.loads(self.agent.config.read_text());node=config.get('master','compai.local')
+        if node in config.get('wan_only',[]):transport='webrtc'
         cipher=AESGCM(bytes.fromhex(config['key']));ident=secrets.token_hex(16);nonce=secrets.token_bytes(12)
         value={'from':config['name'],'to':node,'time':time.time(),'nonce':ident,'op':op,'args':args}
         raw=nonce+cipher.encrypt(nonce,json.dumps(value).encode(),b'lifetech-agent.v1')
@@ -838,7 +839,8 @@ class JobGateway:
         app.router.add_get('/launcher/status',self.browser)
         for route in ('policy','request','master','enroll','reconnect','phone-pair','owner-unlock','jobs-stop'):app.router.add_post('/launcher/'+route,self.browser)
         app.router.add_route('*','/{path:.*}',NodePipelineWeb(self.agent).handle)
-        self.runner=web.AppRunner(app,access_log=None);await self.runner.setup()
+        self.runner=web.AppRunner(app,access_log=None)
+        await self.runner.setup()
         await web.TCPSite(self.runner,'127.0.0.1',8791).start()
         import socket
         if socket.has_ipv6:

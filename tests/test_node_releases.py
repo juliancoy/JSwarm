@@ -7,8 +7,15 @@ from agent_updates import LauncherUpdates
 from scripts import launcher_update
 
 
-def test_publication_is_immutable_and_uses_existing_agent_revision(tmp_path):
+def release_source():
     source=LauncherUpdates(Path(__file__).parents[1],lambda:False,Mock())
+    source.git_source={'repositories':{name:{'origin':'https://example.com/'+name+'.git','commit':'a'*40}
+                       for name in ('Organization','JSwarm','GenomeHarbor')},'installer':'# test Git installer\n'}
+    return source
+
+
+def test_publication_is_immutable_and_uses_existing_agent_revision(tmp_path):
+    source=release_source()
     path=source.publish(tmp_path)
     loaded=LauncherUpdates.published(tmp_path/'desired',lambda:False,Mock())
     assert loaded.revision==source.revision
@@ -19,7 +26,7 @@ def test_publication_is_immutable_and_uses_existing_agent_revision(tmp_path):
 
 
 def test_corrupt_publication_is_rejected(tmp_path):
-    source=LauncherUpdates(Path(__file__).parents[1],lambda:False,Mock())
+    source=release_source()
     path=source.publish(tmp_path);value=json.loads(path.read_text())
     value['files']['launcher_agent.py']+='\n# changed\n'
     bad=tmp_path/'bad.json';bad.write_text(json.dumps(value))
@@ -41,7 +48,7 @@ def test_corrupt_installed_release_cannot_be_activated(tmp_path,monkeypatch):
 
 
 def test_publication_retains_previous_and_idempotent_publish_preserves_it(tmp_path):
-    source=LauncherUpdates(Path(__file__).parents[1],lambda:False,Mock())
+    source=release_source()
     first=source.publish(tmp_path)
     source.supervisor_source+='\n# next supervisor\n'
     second=source.publish(tmp_path)
@@ -59,7 +66,7 @@ def test_publication_retains_previous_and_idempotent_publish_preserves_it(tmp_pa
 
 
 def test_rollback_rejects_corrupt_previous_without_changing_desired(tmp_path):
-    source=LauncherUpdates(Path(__file__).parents[1],lambda:False,Mock())
+    source=release_source()
     current=source.publish(tmp_path)
     bad=tmp_path/'bad.json';bad.write_text('{}')
     (tmp_path/'previous').symlink_to(bad.name)
@@ -68,7 +75,7 @@ def test_rollback_rejects_corrupt_previous_without_changing_desired(tmp_path):
 
 
 def test_pager_component_sources_are_pinned_and_tampering_is_rejected(tmp_path):
-    source=LauncherUpdates(Path(__file__).parents[1],lambda:False,Mock())
+    source=release_source()
     path=source.publish(tmp_path)
     loaded=LauncherUpdates.published(path,lambda:False,Mock())
     assert loaded.components['public-pager']==source.components['public-pager']
@@ -87,6 +94,7 @@ def test_source_snapshot_uses_commits_without_dirty_or_untracked_runtime_data(tm
         subprocess.run(['git','init','-q',str(repo)],check=True)
         subprocess.run(['git','-C',str(repo),'config','user.name','Test'],check=True)
         subprocess.run(['git','-C',str(repo),'config','user.email','test@localhost'],check=True)
+        subprocess.run(['git','-C',str(repo),'remote','add','origin',str(repo)],check=True)
         (repo/'README').write_text('committed source')
         subprocess.run(['git','-C',str(repo),'add','README'],check=True)
         subprocess.run(['git','-C',str(repo),'commit','-qm','source'],check=True)
@@ -115,3 +123,40 @@ def test_local_update_bundles_stream_runtime_in_installed_agent(tmp_path,monkeyp
     assert namespace['STREAM_RUNTIME_SOURCE']==(sources/'launcher_streams.py').read_text()
 
     assert namespace['COMMAND_RUNTIME_SOURCE']==(sources/'launcher_commands.py').read_text()
+
+
+def test_git_provenance_is_covered_by_publication_integrity(tmp_path):
+    source=release_source()
+    source.git_source={'repositories':{name:{'origin':'https://example.com/'+name+'.git','commit':'a'*40}
+                       for name in ('Organization','JSwarm','GenomeHarbor')},'installer':'# verified installer\n'}
+    path=source.publish(tmp_path)
+    assert LauncherUpdates.published(path,lambda:False,Mock()).git_source==source.git_source
+    value=json.loads(path.read_text());value['git_source']['repositories']['JSwarm']['commit']='b'*40
+    corrupt=tmp_path/'corrupt.json';corrupt.write_text(json.dumps(value))
+    with pytest.raises(ValueError,match='artifact version history'):
+        LauncherUpdates.published(corrupt,lambda:False,Mock())
+
+
+def test_publication_and_staging_reject_missing_git_provenance(tmp_path):
+    source=release_source();source.git_source=None
+    with pytest.raises(ValueError,match='Git source provenance required'):source.publish(tmp_path)
+    with pytest.raises(ValueError,match='Git source provenance required'):source.stage({}, {})
+    assert not (tmp_path/'desired').exists()
+
+
+def test_pre_git_history_can_be_replaced_but_never_deployed_or_rolled_back(tmp_path):
+    source=release_source()
+    path=source.publish(tmp_path)
+    value=json.loads(path.read_text());value.pop('git_source')
+    # Model a valid historical pre-Git publication with its original content hash.
+    content={key:value[key] for key in ('schema','revision','files','supervisor_source','supervisor_sha256','components')}
+    identity=hashlib.sha256(json.dumps(content,sort_keys=True).encode()).hexdigest()
+    value['artifact_versions']={identity:1}
+    path.write_text(json.dumps(value))
+    with pytest.raises(ValueError,match='Git source provenance required'):
+        LauncherUpdates.published(path,lambda:False,Mock())
+    updated=source.publish(tmp_path)
+    assert updated!=path
+    assert source.generation==2
+    with pytest.raises(ValueError,match='Git source provenance required'):LauncherUpdates.rollback(tmp_path)
+    assert (tmp_path/'desired').resolve()==updated

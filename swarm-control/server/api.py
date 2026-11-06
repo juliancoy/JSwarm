@@ -4,12 +4,14 @@ Bind only to loopback. The tunnel publishes this service, never the test master.
 A fixed test APK can be delivered; no shell, proxy, or arbitrary-file endpoints are exposed.
 """
 import json
+import gzip
 import logging
 from http.cookies import SimpleCookie
 import devices
 import identity
 import mimetypes
 import os
+import re
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from urllib.parse import urlsplit,parse_qs
@@ -31,6 +33,10 @@ ASSETS.update({'/'+name:name for name in ('message-markdown.js','marked-vendor.j
 ASSETS['/wgs-progress.js']='wgs-progress.js'
 ASSETS.update({'/'+name: name for name in ('genome-explorer.html','genome-explorer.js','genome-explorer.css','genome-data.js','genome-comparison.js')})
 ASSETS.update({'/'+name:name for name in ('codex-voice.js','codex-queue.js')})
+ASSETS.update({'/'+name:name for name in ('machine-controls.js','node-web.js')})
+ASSETS['/pipeline']='pipeline.html'
+ASSETS.update({'/join-node':'join-node.html','/join-node.js':'join-node.js'})
+PIPELINE_MAX_BYTES=64*1024*1024
 API='/api/v1/master/codex/'
 
 def audit_auth_failure(error,phase):
@@ -57,7 +63,10 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:return None
     def reply(self,status,value,kind='application/json',cookie=None,location=None):
         raw=value if isinstance(value,bytes) else json.dumps(value).encode()
+        compressed=kind=='application/json' and len(raw)>=1024 and 'gzip' in self.headers.get('Accept-Encoding','').replace(' ','').split(',')
+        if compressed:raw=gzip.compress(raw,compresslevel=3)
         self.send_response(status)
+        if compressed:self.send_header('Content-Encoding','gzip');self.send_header('Vary','Accept-Encoding')
         for k,v in {'Content-Type':kind,'Content-Length':str(len(raw)),'Cache-Control':'no-store',
                     'X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Frame-Options':'DENY',
                     'Content-Security-Policy':"default-src 'self'; script-src 'self'; connect-src 'self'; style-src 'self'; img-src 'self' data: blob: https:; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'self'",'Strict-Transport-Security':'max-age=31536000'}.items():self.send_header(k,v)
@@ -79,24 +88,44 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 if path=='/auth/login':
                     query=parse_qs(urlsplit(self.path).query,keep_blank_values=True)
-                    if set(query)-{'device_label'} or any(len(v)!=1 for v in query.values()):raise ValueError('Invalid sign-in parameters')
+                    if set(query)-{'device_label','node_request'} or any(len(v)!=1 for v in query.values()):raise ValueError('Invalid sign-in parameters')
+                    node_request=query.get('node_request',[None])[0]
+                    if node_request is not None and not re.fullmatch('[A-Za-z0-9_-]{43}',node_request):raise ValueError('Invalid node request')
                     target,cookie=identity.start(origin,self.device(),query.get('device_label',['Browser'])[0])
-                    return self.reply(303,{},cookie=cookie,location=target)
+                    extra='__Host-compai_node='+node_request+'; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=600' if node_request else '__Host-compai_node=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0'
+                    return self.reply(303,{},cookie=[cookie,extra],location=target)
                 cookies=SimpleCookie(self.headers.get('Cookie',''))
                 browser=cookies[identity.LOGIN_COOKIE].value if identity.LOGIN_COOKIE in cookies else None
                 token=identity.complete(origin,parse_qs(urlsplit(self.path).query,keep_blank_values=True),browser)
+                node_request=cookies['__Host-compai_node'].value if '__Host-compai_node' in cookies else ''
+                destination='/join-node?request='+node_request if re.fullmatch('[A-Za-z0-9_-]{43}',node_request) else '/'
                 return self.reply(303,{},cookie=[
                     '__Host-compai_device='+token+'; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age='+str(devices.LIFETIME),
-                    identity.LOGIN_COOKIE+'=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0'],location='/')
+                    identity.LOGIN_COOKIE+'=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0',
+                    '__Host-compai_node=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0'],location=destination)
             except Exception as error:
                 audit_auth_failure(error,'login' if path=='/auth/login' else 'callback')
                 return self.reply(403,{'error':{'message':'PIdP sign-in failed. Use the CompAI owner account and restart at /auth/login.'}})
+        if self.command=='POST' and path in ('/api/node-enrollment/start','/api/node-enrollment/exchange'):
+            if self.headers.get('Origin') is not None:return self.reply(403,{'error':{'message':'Native node client required'}})
+            try:
+                if self.headers.get('Transfer-Encoding') or len(self.headers.get_all('Content-Length',[]))!=1 or self.headers.get('Content-Type')!='application/json':raise ValueError()
+                size=int(self.headers['Content-Length'])
+                if not 0<size<=4096:raise ValueError()
+                self.connection.settimeout(10);raw=self.rfile.read(size)
+                if len(raw)!=size:raise ValueError()
+                body=json.loads(raw)
+                from node_enrollment import start,exchange
+                return self.reply(200,(start if path.endswith('/start') else exchange)(origin,body))
+            except PermissionError:return self.reply(403,{'error':{'message':'Enrollment proof or approval denied'}})
+            except (ValueError,KeyError,TypeError):return self.reply(400,{'error':{'message':'Invalid or expired enrollment request'}})
+            except (OSError,RuntimeError):return self.reply(503,{'error':{'message':'Node enrollment unavailable'}})
         if self.command=='GET' and path in ASSETS:
             name=ASSETS[path];return self.reply(200,(VIEW/name).read_bytes(),mimetypes.guess_type(name)[0] or 'application/octet-stream')
         pairing=self.command=='POST' and path=='/logout'
         deployment=path in ('/api/v1/test-app/status','/api/v1/test-app/download')
-        valid_read=self.command=='GET' and (path in ('/api/tasks/pipeline','/api/tasks/machine','/api/devices','/api/v1/swarm/wgs','/api/v1/swarm/history','/api/v1/swarm/connections','/api/v1/swarm/task-manager','/api/v1/swarm/status','/api/v1/swarm/session','/api/v1/swarm/research','/api/v1/swarm/research/jobs') or path==API+'queue' or path==API+'threads' or path.startswith(API+'threads/') or path in ('/api/v1/test-app/status','/api/v1/test-app/download'))
-        valid_write=self.command=='POST' and path in (API+'commands',API+'queue',API+'queue/cancel',API+'queue/send-now',API+'transcribe','/api/v1/swarm/research/jobs','/api/v1/swarm/tests/request')
+        valid_read=self.command=='GET' and (path in ('/api/tasks/pipeline','/api/tasks/machine','/api/devices','/api/v1/swarm/wgs','/api/v1/swarm/history','/api/v1/swarm/connections','/api/v1/swarm/task-manager','/api/v1/swarm/status','/api/v1/swarm/session','/api/v1/swarm/research','/api/v1/swarm/research/jobs') or path=='/api/v1/swarm/node-enrollment' or path==API+'queue' or path==API+'threads' or path.startswith(API+'threads/') or path in ('/api/v1/test-app/status','/api/v1/test-app/download'))
+        valid_write=self.command=='POST' and path in ('/api/v1/swarm/node-enrollment','/api/tasks/machine/control',API+'commands',API+'queue',API+'queue/cancel',API+'queue/send-now',API+'transcribe','/api/v1/swarm/research/jobs','/api/v1/swarm/tests/request')
         if not (valid_read or valid_write or pairing):return self.reply(404,{'error':{'message':'Not found'}})
         if path!='/logout' and not identity.valid_session(origin,self.device()):return self.reply(401,{'error':{'message':'Sign in with PIdP to reconnect to CompAI'}})
         if path==API+'transcribe':
@@ -142,11 +171,30 @@ class Handler(BaseHTTPRequestHandler):
                     if path == '/api/devices':return self.reply(200,read_coordinator(target))
                     from urllib.request import urlopen
                     from status import MAX_COORDINATOR_SNAPSHOT_BYTES
-                    with urlopen('http://127.0.0.1:8792'+target,timeout=4) as response:
-                        raw=response.read(MAX_COORDINATOR_SNAPSHOT_BYTES+1)
-                    if len(raw)>MAX_COORDINATOR_SNAPSHOT_BYTES:raise ValueError('Pipeline snapshot too large')
+                    with urlopen('http://127.0.0.1:8792'+target,timeout=12) as response:
+                        raw=response.read(PIPELINE_MAX_BYTES+1)
+                    if len(raw)>PIPELINE_MAX_BYTES:raise ValueError('Pipeline snapshot too large')
                     return self.reply(200,json.loads(raw))
                 except (OSError,ValueError):return self.reply(503,{'error':{'message':'Pipeline observations unavailable'}})
+            if path=='/api/v1/swarm/node-enrollment':
+                from node_enrollment import approve,details
+                if self.command=='POST':
+                    if not isinstance(body,dict) or set(body)!={'request_id'} or not isinstance(body['request_id'],str):raise ValueError('Expected enrollment request')
+                    return self.reply(200,approve(body['request_id'],self.device(),origin))
+                query=parse_qs(urlsplit(self.path).query,keep_blank_values=True)
+                if set(query)!={'request'} or len(query['request'])!=1:raise ValueError('Expected enrollment request')
+                return self.reply(200,details(query['request'][0]))
+            if path=='/api/tasks/machine/control':
+                if not isinstance(body,dict) or set(body)!={'host','action'} or not all(isinstance(v,str) for v in body.values()):raise ValueError('Expected node/action')
+                import http.client
+                client=http.client.HTTPConnection('127.0.0.1',8792,timeout=8)
+                try:
+                    client.request('POST','/api/tasks/machine/control',json.dumps(body),{'Content-Type':'application/json','Origin':'http://map.local','X-JSwarm-Control':'1'})
+                    response=client.getresponse();raw=response.read(65537)
+                    if len(raw)>65536:raise ValueError('Control response exceeded limit')
+                    return self.reply(response.status,json.loads(raw))
+                except OSError:return self.reply(503,{'error':{'message':'Node control unavailable'}})
+                finally:client.close()
             if path=='/api/v1/swarm/wgs':
                 from wgs_progress import snapshot
                 return self.reply(200,snapshot())

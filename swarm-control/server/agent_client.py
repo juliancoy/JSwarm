@@ -44,7 +44,9 @@ class AgentClient:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
         config=json.loads(CONFIG.read_text())
         self.node,self.sender=host['host'],config['name']
-        self.endpoint=host['agent_endpoint']
+        self.gateway=host.get('agent_route') in ('auto','webrtc') or self.node in config.get('wan_only',[])
+        self.transport='webrtc' if host.get('agent_route')=='webrtc' or self.node in config.get('wan_only',[]) else 'auto'
+        self.endpoint='http://127.0.0.1:8791' if self.gateway else host['agent_endpoint']
         if self.node not in config['peers']:raise ValueError('Agent is not enrolled')
         self.cipher=AESGCM(bytes.fromhex(config['key']))
         endpoint=urlsplit(self.endpoint)
@@ -80,7 +82,9 @@ class AgentClient:
             try:
                 self.connection.timeout=timeout
                 if self.connection.sock:self.connection.sock.settimeout(timeout)
-                self.connection.request('POST','/agent/v1',body=data,headers={'Content-Type':'application/octet-stream','X-Lifetech-Peer':self.node})
+                headers={'Content-Type':'application/octet-stream','X-Lifetech-Peer':self.node}
+                if self.gateway:headers.update({'X-Lifetech-Transport':self.transport,'X-Lifetech-RPC-Timeout':str(min(timeout,180))})
+                self.connection.request('POST','/agent/v1',body=data,headers=headers)
                 response=self.connection.getresponse()
                 raw=response.read(8*1024**2+1)
                 if response.status!=200:raise RuntimeError('Agent HTTP status '+str(response.status))
@@ -171,6 +175,12 @@ class AgentSessions:
         reachable=[]
         for host in self.hosts:
             enrolled=config['peers'][host['host']]
+            if host['host'] in config.get('wan_only',[]):
+                if not config.get('internet_nodes',{}).get(host['host']) or not config.get('enrolled_machines',{}).get(host['host']):
+                    self.reject(host,'WAN node lacks approved enrollment identity');continue
+                host.update(agent_endpoint='http://127.0.0.1:8791',agent_route='webrtc',transport='webrtc',
+                            lan_address=enrolled,expected_machine=config['enrolled_machines'][host['host']],discovery='Approved WAN enrollment')
+                reachable.append(host);continue
             if not any(ipaddress.ip_address(enrolled) in network for network in networks):
                 self.reject(host,'Enrolled agent endpoint is outside the coordinator Ethernet LAN');continue
             host['discovery']='DNS-SD' if host['host'] in endpoints else 'Enrolled endpoint; DNS-SD announcement absent'
@@ -197,6 +207,7 @@ class AgentSessions:
                     host['agent_endpoint']='http://127.0.0.1:8791'
                     host['transport']='webrtc'
                     client=AgentClient(host);value=client.call('status',timeout=30)
+                if host.get('expected_machine') and value.get('machine')!=host['expected_machine']:raise RuntimeError('Approved WAN machine identity differs')
                 if value.get('protocol')!=PROTOCOL:raise RuntimeError('Agent protocol mismatch')
                 if host.get('transport')!='webrtc' and host['lan_address'] not in value.get('addresses',[]):raise RuntimeError('Agent address is not on an attested physical interface')
                 if value.get('worker_policy',{}).get('accepting_jobs') is False:

@@ -283,11 +283,17 @@ def validate_drm_gpu(gpu):
 def resolve_gpu_allocation(gpu,inventory,machine):
     """Resolve only a qualified identity, using the node's actual allocations."""
     if inventory.get('machine')!=machine:raise RuntimeError('GPU inventory machine identity changed')
-    sampled=inventory.get('sampled_at')
-    if not isinstance(sampled,(int,float)) or not -5<=time.time()-sampled<=10:raise RuntimeError('GPU inventory is stale')
     matches=[row for row in inventory.get('gpus',[]) if row.get('uuid')==gpu['uuid']]
     if len(matches)!=1:raise RuntimeError('Qualified physical GPU is absent or ambiguous')
     row=matches[0]
+    # Device allocations and worker ownership may be sampled independently.
+    # An unrelated GPU's slow probe must not age a fresh selected device;
+    # conversely a fresh envelope must not renew stale device allocations.
+    samples=[inventory.get('sampled_at'),row.get('sampled_at',inventory.get('sampled_at'))]
+    if gpu.get('memory_domain')=='shared-system-memory':
+        samples.append(inventory.get('host_memory',{}).get('sampled_at',inventory.get('sampled_at')))
+    now=time.time()
+    if any(type(sample) not in (int,float) or not -5<=now-sample<=10 for sample in samples):raise RuntimeError('GPU inventory is stale')
     if row.get('workers_known') is False:raise RuntimeError('GPU worker ownership is unknown')
     shared=gpu.get('memory_domain')=='shared-system-memory'
     if shared:

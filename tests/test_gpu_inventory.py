@@ -43,7 +43,7 @@ def test_gpu_node_identity_changes_when_physical_model_changes(tmp_path,monkeypa
 
 def test_host_render_group_probe_is_readonly_and_cached(tmp_path,monkeypatch):
     a=agent.Agent.__new__(agent.Agent);a.root=tmp_path;calls=[]
-    def run(args,**kw):calls.append(args);return SimpleNamespace(stdout='{"renderD128":992}')
+    def run(args,**kw):calls.append(args);return SimpleNamespace(returncode=0,stderr='',stdout='{"renderD128":992}')
     monkeypatch.setattr(agent.subprocess,'run',run)
     assert a.host_render_groups()=={'renderD128':992}
     assert a.host_render_groups()=={'renderD128':992} and len(calls)==1
@@ -66,7 +66,7 @@ def test_binding_resolves_node_render_changes_but_never_guesses_vram():
 
 def test_node_worker_inventory_recognizes_legacy_exclusive_jobs(monkeypatch):
     labels=[{'org.lifetech.accelerator':'GPU-one'}, {'org.lifetech.accelerator':'GPU-two','org.lifetech.gpu-concurrency':'4','org.lifetech.gpu-private-mib':'512'}]
-    monkeypatch.setattr(agent.subprocess,'run',lambda *a,**k:SimpleNamespace(stdout='\n'.join(json.dumps(x) for x in labels)))
+    monkeypatch.setattr(agent.subprocess,'run',lambda *a,**k:SimpleNamespace(returncode=0,stderr='',stdout='\n'.join(json.dumps(x) for x in labels)))
     rows=agent.gpu_worker_commitments()['devices']
     assert rows['GPU-one']['exclusive_worker_present']
     assert not rows['GPU-two']['exclusive_worker_present'] and rows['GPU-two']['private_commitment_mib']==512
@@ -83,20 +83,51 @@ def test_nvidia_probe_timestamps_measurement_after_container_startup(tmp_path,mo
     a=agent.Agent.__new__(agent.Agent);a.root=tmp_path
     clock=[100.0];calls=[]
     monkeypatch.setattr(agent.time,'time',lambda:clock[0])
-    monkeypatch.setattr(agent,'hardware_sample',lambda **kw:{'gpus':[{'vendor':'NVIDIA'}]})
+    monkeypatch.setattr(agent,'hardware_sample',lambda **kw:{'gpus':[{'vendor':'NVIDIA'},{'vendor':'Unknown','uuid':'other-device'}]})
     monkeypatch.setattr(agent,'gpu_worker_commitments',lambda:{'known':True,'devices':{}})
     def run(args,**kwargs):
         calls.append(args)
         clock[0]=115.0
-        return SimpleNamespace(stdout=json.dumps({'sampled_at':114.0,'output':'GPU-11111111-1111-1111-1111-111111111111, 00000000:04:00.0, RTX, 12288, 8192, 0, 40'}))
+        return SimpleNamespace(returncode=0,stderr='',stdout=json.dumps({'sampled_at':114.0,'output':'GPU-11111111-1111-1111-1111-111111111111, 00000000:04:00.0, RTX, 12288, 8192, 0, 40'}))
     monkeypatch.setattr(agent.subprocess,'run',run)
     data=a.gpu_resources()
-    assert data['sampled_at']==114.0
-    gpu={'uuid':data['gpus'][0]['uuid'],'minimum_free_mib':512}
+    assert data['sampled_at']==115.0
+    assert data['gpus'][0]['sampled_at']==100.0  # Unrelated older observation.
+    assert data['gpus'][1]['sampled_at']==114.0
+    gpu={'uuid':data['gpus'][1]['uuid'],'minimum_free_mib':512}
     assert streams.resolve_gpu_allocation(gpu,data,data['machine'])==gpu
     clock[0]=125.0
     with pytest.raises(RuntimeError,match='stale'):streams.resolve_gpu_allocation(gpu,data,data['machine'])
     assert calls[0][-3:-1]==['python3','-c']
+
+
+def test_selected_device_freshness_is_independent_of_other_devices(monkeypatch):
+    monkeypatch.setattr(streams.time,'time',lambda:100.0)
+    gpu={'uuid':'GPU-selected','minimum_free_mib':512}
+    selected={'uuid':gpu['uuid'],'sampled_at':99.0,'allocation_known':True,
+              'memory_free_mib':8192,'workers_known':True}
+    data={'machine':'machine','sampled_at':99.5,'gpus':[
+        {'uuid':'DRM-unrelated','sampled_at':70.0},selected]}
+    assert streams.resolve_gpu_allocation(gpu,data,'machine')==gpu
+    for changes in ({'sampled_at':89.0},{'sampled_at':106.0},{'sampled_at':float('nan')},
+                    {'workers_known':False},{'memory_free_mib':0}):
+        with pytest.raises(RuntimeError):
+            streams.resolve_gpu_allocation(gpu,{**data,'gpus':[{**selected,**changes}]},'machine')
+    with pytest.raises(RuntimeError,match='stale'):
+        streams.resolve_gpu_allocation(gpu,{**data,'sampled_at':89.0},'machine')
+
+
+def test_shared_memory_freshness_is_required_even_with_fresh_device(monkeypatch):
+    monkeypatch.setattr(streams.time,'time',lambda:100.0)
+    gpu={'uuid':'DRM-selected','minimum_free_mib':512,'memory_domain':'shared-system-memory'}
+    row={'uuid':gpu['uuid'],'sampled_at':99.0,'vendor':'Intel','device_type':'integrated',
+         'memory_domain':'shared-system-memory','workers_known':True}
+    data={'machine':'machine','sampled_at':99.0,'gpus':[row],
+          'host_memory':{'available_mib':8192,'sampled_at':89.0}}
+    with pytest.raises(RuntimeError,match='stale'):
+        streams.resolve_gpu_allocation(gpu,data,'machine')
+    assert streams.resolve_gpu_allocation(gpu,{**data,'host_memory':{
+        'available_mib':8192,'sampled_at':99.0}},'machine')==gpu
 
 
 def test_timed_out_nvidia_probe_removes_its_container(tmp_path,monkeypatch):
@@ -104,7 +135,7 @@ def test_timed_out_nvidia_probe_removes_its_container(tmp_path,monkeypatch):
     def run(args,**kwargs):
         calls.append(args)
         if args[1]=='run':raise agent.subprocess.TimeoutExpired(args,15)
-        return SimpleNamespace(stdout='')
+        return SimpleNamespace(returncode=0,stderr='',stdout='')
     monkeypatch.setattr(agent.subprocess,'run',run)
     assert a.host_nvidia_allocations()==[]
     name=calls[0][calls[0].index('--name')+1]
@@ -175,13 +206,13 @@ def test_nvidia_probe_timeout_cleans_up_its_unique_container(monkeypatch):
     def run(args,**kwargs):
         calls.append(args)
         if args[:2]==['docker','run']:raise subprocess.TimeoutExpired(args,10)
-        return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode=0,stderr='')
     monkeypatch.setattr(agent.subprocess,'run',run)
     a=object.__new__(agent.Agent)
     assert a.host_nvidia_allocations()==[]
     assert a.host_nvidia_allocations()==[]
     names=[args[args.index('--name')+1] for args in calls if args[:2]==['docker','run']]
-    assert len(set(names))==2
+    assert len(set(names))==1
     for name in names:assert ['docker','rm','-f',name] in calls
 
 
@@ -221,10 +252,10 @@ def test_intel_physical_probe_is_bounded_cached_and_reaps_helper(monkeypatch):
     a=agent.Agent.__new__(agent.Agent);calls=[]
     def run(args,**kw):
         calls.append(args)
-        return SimpleNamespace(stdout='[{"vendor_id":"0x8086","device_id":"0x5917","integrated":true,"name":"Intel"}]')
+        return SimpleNamespace(returncode=0,stderr='',stdout='[{"vendor_id":"0x8086","device_id":"0x5917","integrated":true,"name":"Intel"}]')
     monkeypatch.setattr(agent.subprocess,'run',run)
     for _ in range(2):assert a.host_intel_devices('/dev/dri/renderD128',110,'/usr/share/vulkan/icd.d/intel_icd.x86_64.json')[0]['integrated']
-    assert len(calls)==2 and calls[1][:3]==['docker','rm','-f']
+    assert len(calls)==1 and '--rm' in calls[0]
     assert '--read-only' in calls[0] and '--device' in calls[0] and '--memory' in calls[0]
 
 
@@ -246,3 +277,39 @@ def test_intel_guard_reads_live_host_headroom_and_preserves_atomic_commitments(t
         with pytest.raises(BlockingIOError,match='Host-backed'):namespace['acquire_gpu'](gpu)
     finally:first.close()
     namespace['acquire_gpu'](gpu).close()
+
+
+def test_unsupported_nvidia_runtime_never_creates_helpers(monkeypatch):
+    a=agent.Agent.__new__(agent.Agent);a.cuda_runtime=False
+    monkeypatch.setattr(agent.subprocess,'run',lambda *a,**k:pytest.fail('unsupported runtime launched a helper'))
+    assert a.host_nvidia_allocations()==[]
+
+
+def test_failed_probe_cleanup_blocks_further_container_creation(monkeypatch):
+    a=agent.Agent.__new__(agent.Agent);calls=[]
+    def run(args,**kwargs):
+        calls.append(args)
+        if args[1]=='run':raise agent.subprocess.TimeoutExpired(args,15)
+        raise agent.subprocess.TimeoutExpired(args,30)
+    monkeypatch.setattr(agent.subprocess,'run',run)
+    for _ in range(3):
+        a.nvidia_probe_retry_at=0
+        assert a.host_nvidia_allocations()==[]
+    assert len([args for args in calls if args[1]=='run'])==1
+    assert len([args for args in calls if args[1]=='rm'])==3
+    assert a.gpu_probe_pending==calls[0][3]
+
+
+def test_failed_nvidia_probe_retries_after_backoff(monkeypatch):
+    a=agent.Agent.__new__(agent.Agent);clock=[100.];calls=[]
+    monkeypatch.setattr(agent.time,'monotonic',lambda:clock[0])
+    def run(args,**kw):
+        calls.append(args)
+        if args[1]=='run':raise agent.subprocess.CalledProcessError(1,args)
+        return SimpleNamespace(returncode=0,stderr='')
+    monkeypatch.setattr(agent.subprocess,'run',run)
+    assert a.host_nvidia_allocations()==[]
+    clock[0]=159.;assert a.host_nvidia_allocations()==[]
+    assert len(calls)==2
+    clock[0]=161.;assert a.host_nvidia_allocations()==[]
+    assert len(calls)==4

@@ -11,7 +11,10 @@ import agent_updates as updates
 
 @pytest.fixture
 def source():
-    return updates.LauncherUpdates(Path(__file__).parents[1],lambda:False,Mock())
+    value=updates.LauncherUpdates(Path(__file__).parents[1],lambda:False,Mock())
+    value.git_source={'repositories':{name:{'origin':'https://example.com/'+name+'.git','commit':'a'*40}
+                       for name in ('Organization','JSwarm','GenomeHarbor')},'installer':'# test Git installer\n'}
+    return value
 
 
 def test_process_lock_reports_owner_and_releases_after_crash(tmp_path):

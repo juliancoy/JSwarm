@@ -24,7 +24,10 @@ def test_terminal_cleanup_reclaims_all_safe_candidates(monkeypatch,tmp_path):
     monkeypatch.setattr(cache,'command',lambda host,args:'\n'.join(str(i) for i in range(20)) if args[1]=='ps' else json.dumps(rows))
     monkeypatch.setattr(cache,'inspect',lambda host,kind,name:{'Driver':'local','Labels':{cache.OWNER:rows[int(name[-32:],16)]['Config']['Labels'][cache.OWNER]},'Options':{'type':'tmpfs','o':'size=64m,mode=1777'}})
     removed=[];monkeypatch.setattr(cache,'_remove_unreferenced',lambda host,row:(removed.append(row['key']) or True))
-    monkeypatch.setattr(cache,'finished_cache_keys',lambda host:{r['Config']['Labels'][cache.OWNER] for r in rows})
-    assert cache.evict_unused({},required_mb=128,keys={r['Config']['Labels'][cache.OWNER] for r in rows})==20
+    candidates={r['Config']['Labels'][cache.OWNER] for r in rows}
+    monkeypatch.setattr(cache,'_ownership_for',lambda host:(set(candidates),{}))
+    monkeypatch.setattr(cache,'finished_cache_keys',lambda host:set(candidates))
+    # A background sweep has no admission target and reclaims every safe owner.
+    assert cache.evict_unused({'host':'fixture'},keys=candidates)==20
     assert len(removed)==20
     with pytest.raises(ValueError):cache.evict_unused({},required_mb=0)

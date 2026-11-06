@@ -69,15 +69,18 @@ def freeze_source(root,target):
     if root.name=='JSwarm':root=root.parent
     if not all((root/name).is_dir() for name in ('JSwarm','GenomeHarbor')):
         raise RuntimeError('Expected the enrolled workspace source layout')
+    from scripts.node_git_source import snapshot
+    manifest=snapshot(root)
     with tempfile.TemporaryDirectory(prefix='swarm-git-archives-') as temporary:
         for name in ('Organization','JSwarm','GenomeHarbor'):
             project=root if name=='Organization' else root/name
             destination=target if name=='Organization' else target/name
             destination.mkdir(exist_ok=True)
             archive=Path(temporary)/(name+'.tar')
-            subprocess.run(['git','-C',str(project),'archive','--format=tar','--output='+str(archive),'HEAD'],check=True)
+            subprocess.run(['git','-C',str(project),'archive','--format=tar','--output='+str(archive),manifest[name]['commit']],check=True)
             # Trusted local git archives preserve the versioned sibling aliases.
             with tarfile.open(archive) as bundle:bundle.extractall(destination,filter='fully_trusted')
+    (target/'JSwarm/.node-git-source.json').write_text(json.dumps(manifest,sort_keys=True))
 
 
 def main():
@@ -86,7 +89,6 @@ def main():
     parser.add_argument('--expected-publication',help=argparse.SUPPRESS)
     parser.add_argument('--watch',action='store_true')
     parser.add_argument('--continuous',action='store_true',help='Keep following validated publications after fleet convergence')
-    parser.add_argument('--published',action='store_true',help='Deploy only the immutable validated publication')
     actions=parser.add_mutually_exclusive_group()
     actions.add_argument('--status',action='store_true',help='Verify selected nodes against the published release without changes')
     actions.add_argument('--rollback',action='store_true',help='Restore the previous verified fleet publication')
@@ -139,24 +141,23 @@ def main():
             check_publication(RELEASES,expected)
             import subprocess
             updater=LauncherUpdates(ROOT,lambda:False,lambda *args:None)
-            suites=['scripts/tests/test_launcher_routing.py','tests/test_launcher_routing_cleanup.py','tests/test_node_web.py','tests/test_worker_storage.py','tests/test_cache_lifetime.py','tests/test_cache_pressure_reclamation.py','tests/test_execution_accounting.py','tests/test_launcher_streams.py','tests/test_swarm_stream_work.py','scripts/tests/test_launcher_telemetry.py','tests/test_swarm_paged_cache.py','tests/test_swarm_shared_cache.py','tests/test_agent_cpu_overhead.py','tests/test_deployment_lock.py','tests/test_node_releases.py','tests/test_worker_journal.py','tests/test_ram_cache_inventory.py','tests/test_swarm_pressure_guard.py','tests/test_launcher_commands.py','tests/test_launcher_peer_supervisor.py','tests/test_resource_renewal.py','tests/test_swarm_runtime.py','tests/test_gpu_inventory.py','tests/test_node_execution.py','tests/test_swarm_gpu_runtime.py','tests/test_rolling_deployment.py','tests/test_docker_worker_restart.py','swarm-control/server/tests/test_agent_updates.py','swarm-control/server/tests/test_agent_sessions.py','swarm-control/server/tests/test_fleet_backups.py','tests/test_worker_maintenance.py']
+            suites=['scripts/tests/test_launcher_routing.py','tests/test_launcher_routing_cleanup.py','tests/test_node_web.py','tests/test_worker_storage.py','tests/test_cache_lifetime.py','tests/test_cache_pressure_reclamation.py','tests/test_execution_accounting.py','tests/test_launcher_streams.py','tests/test_swarm_stream_work.py','scripts/tests/test_launcher_telemetry.py','tests/test_swarm_paged_cache.py','tests/test_swarm_shared_cache.py','tests/test_agent_cpu_overhead.py','tests/test_deployment_lock.py','tests/test_node_releases.py','tests/test_node_git_source.py','tests/test_swarm_node.py','tests/test_worker_journal.py','tests/test_ram_cache_inventory.py','tests/test_ram_cache_cleanup_api.py','tests/test_swarm_cache_cleanup.py','tests/test_swarm_pressure_guard.py','tests/test_launcher_commands.py','tests/test_launcher_peer_supervisor.py','tests/test_resource_renewal.py','tests/test_swarm_runtime.py','tests/test_gpu_inventory.py','tests/test_node_execution.py','tests/test_swarm_gpu_runtime.py','tests/test_rolling_deployment.py','tests/test_docker_worker_restart.py','swarm-control/server/tests/test_agent_updates.py','swarm-control/server/tests/test_agent_sessions.py','swarm-control/server/tests/test_fleet_backups.py','tests/test_worker_maintenance.py']
             project=Path(__file__).resolve().parents[1]
             env={**os.environ,'PYTHONPATH':os.pathsep.join(map(str,(project/'swarm-control/server',ROOT,project.parent/'GenomeHarbor/tests')))}
             subprocess.run([sys.executable,'-m','pytest','-q',*suites],cwd=project,env=env,check=True)
             checked=LauncherUpdates(ROOT,lambda:False,lambda *args:None)
-            if updater.files!=checked.files or updater.supervisor_source!=checked.supervisor_source or updater.components!=checked.components:
+            if updater.files!=checked.files or updater.supervisor_source!=checked.supervisor_source or updater.components!=checked.components or updater.git_source!=checked.git_source:
                 raise RuntimeError('Sources changed during validation; publish again after edits finish')
             published=updater.publish(RELEASES,expected=expected)
             print(json.dumps({'published':str(published),'revision':updater.revision,'generation':updater.generation}),flush=True)
             return
     # Every operational deployment follows the immutable publication.
-    args.published=True
     while True:
-        if args.published and not (RELEASES/'desired').exists():
+        if not (RELEASES/'desired').exists():
             if not args.continuous:raise SystemExit('No validated agent release has been published')
             time.sleep(30);continue
         try:
-            with deployment_lock(operation='fleet rollout',folder=RELEASES.resolve().parent):done=sweep(args.node,args.wait_timeout,RELEASES/'desired' if args.published else None)
+            with deployment_lock(operation='fleet rollout',folder=RELEASES.resolve().parent):done=sweep(args.node,args.wait_timeout,RELEASES/'desired')
         except RuntimeError:
             if not args.continuous:raise
             time.sleep(30);continue

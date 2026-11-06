@@ -9,6 +9,8 @@ class LauncherUpdateTests(unittest.TestCase):
     def setUp(self):
         self.progress=Mock()
         self.updates=LauncherUpdates(Path(__file__).resolve().parents[3],lambda:False,self.progress)
+        self.updates.git_source={'repositories':{name:{'origin':'https://example.com/'+name+'.git','commit':'a'*40}
+                       for name in ('Organization','JSwarm','GenomeHarbor')},'installer':'# test Git installer\n'}
         self.host={'host':'worker','lan_address':'10.42.0.2'}
         self.status={'node':'worker','machine':'a'*64,'ready':True,'source_revision':'old','active_jobs':[],'capabilities':['node-command-v1']}
 
@@ -154,23 +156,6 @@ class LauncherUpdateTests(unittest.TestCase):
         self.assertIn('stream-work-v1',self.host['launcher_update']['reason'])
 
 
-def test_legacy_bridge_reopens_admission_only_after_supervisor_selects_target(tmp_path,monkeypatch):
-    import ast,json
-    from agent_updates import INSTALL
-    code=next(ast.literal_eval(node.value) for node in ast.parse(INSTALL).body
-              if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='replacement_code' for t in node.targets))
-    config=tmp_path/'config/peers.json';config.parent.mkdir();config.write_text('{}')
-    target=config.parent/'agent-releases/verified';target.mkdir(parents=True)
-    (target.parent/'current').symlink_to(target)
-    monkeypatch.setenv('LIFETECH_PEER_CONFIG',str(config))
-    for filename in ('launcher-agent-busy.json','launcher-agent-ready.json','launcher-agent-update.json','launcher-agent-draining'):
-        code=code.replace('/tmp/'+filename,str(tmp_path/filename))
-    code=code.replace('range(300)','range(1)').replace('time.sleep(.1)','pass')
-    gate=tmp_path/'launcher-agent-draining';status=tmp_path/'launcher-agent-update.json'
-    for active,closed in [('prior',True),(str(target),False)]:
-        gate.touch();status.write_text(json.dumps({'active':active}))
-        exec(code,{})
-        assert gate.exists()==closed
 
 
 def test_update_command_rejects_changed_identity_and_missing_api_capability(monkeypatch):

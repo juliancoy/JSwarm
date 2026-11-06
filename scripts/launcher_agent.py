@@ -1450,6 +1450,137 @@ def verified_ram_caches():
     return {'memory_domain':'host-ram','caches':caches,'pending_caches':pending}
 
 
+def cache_cleanup_inventory():
+    """Executed inside the existing command API; no filesystem payload reads."""
+    import json
+    import re
+    import subprocess
+    from collections import defaultdict
+    owner_label = 'org.lifetech.cache-owner'
+
+    def docker(*args):
+        result = subprocess.run(['docker', *args], capture_output=True, text=True, timeout=30)
+        if result.returncode:
+            raise RuntimeError('Docker cache inventory failed: ' + result.stderr[-200:])
+        return result.stdout
+
+    def inspect(kind, ids):
+        rows = []
+        for start in range(0, len(ids), 100):
+            rows.extend(json.loads(docker(*kind, *ids[start:start + 100])))
+        return rows
+
+    ids = docker('ps', '-aq').split()
+    if len(ids) > 4096:
+        raise ValueError('Container inventory exceeds bounded cleanup limit')
+    containers = inspect(['inspect'], ids)
+    consumers = defaultdict(list)
+    owners = {}
+    for row in containers:
+        for mount in row.get('Mounts', []):
+            if mount.get('Type') == 'volume':
+                consumers[mount['Name']].append(row['Name'].lstrip('/'))
+        labels = row.get('Config', {}).get('Labels') or {}
+        key = labels.get(owner_label, '')
+        if (re.fullmatch(r'[a-f0-9]{64}', key) and row['Name'].lstrip('/') == 'swarm-job-' + key[:32]
+                and labels.get('org.lifetech.group') == 'shared-cache'):
+            owners[key] = row
+    names = docker('volume', 'ls', '-q', '--filter', 'label=' + owner_label).split()
+    if len(names) > 4096:
+        raise ValueError('Volume inventory exceeds bounded cleanup limit')
+    volumes = {}
+    for volume in inspect(['volume', 'inspect'], names):
+        key = (volume.get('Labels') or {}).get(owner_label, '')
+        options = volume.get('Options') or {}
+        if (re.fullmatch(r'[a-f0-9]{64}', key) and volume['Name'] == 'swarm-cache-' + key[:32]
+                and volume.get('Driver') == 'local' and options.get('type') == 'tmpfs' and options.get('device') == 'tmpfs'):
+            volumes[key] = volume
+    result = []
+    for key in sorted(set(owners) | set(volumes)):
+        owner = owners.get(key)
+        name, volume = 'swarm-job-' + key[:32], 'swarm-cache-' + key[:32]
+        result.append({'key': key, 'container': name, 'volume': volume,
+                       'owner_id': owner['Id'] if owner else None,
+                       'owner_state': owner.get('State', {}).get('Status') if owner else 'missing',
+                       'created': owner.get('Created', '') if owner else '',
+                       'volume_verified': key in volumes,
+                       'owner_verified': owner is None or any(m.get('Type')=='volume' and m.get('Name')==volume and m.get('Destination')=='/dev/shm' for m in owner.get('Mounts',[])),
+                       'consumers': [consumer for consumer in consumers[volume] if owner is None or consumer != name],
+                       'exec_readers': len(owner.get('ExecIDs') or []) if owner else 0})
+    return result
+
+def _cache_cleanup_docker(args,missing=False):
+    result=subprocess.run(['docker',*args],capture_output=True,text=True,timeout=30)
+    if result.returncode:
+        error=result.stderr.lower()
+        if missing and ('no such' in error or 'not found' in error):return None
+        raise RuntimeError('Cache cleanup Docker operation failed: '+result.stderr[-250:])
+    return result.stdout
+
+
+def _cache_cleanup_inspect(kind,name):
+    raw=_cache_cleanup_docker([kind,'inspect',name],missing=True)
+    return json.loads(raw)[0] if raw is not None else None
+
+
+def cleanup_ram_cache(args):
+    """Controller attests terminal-only ownership; this node fences live readers.
+
+    Queue bindings live on the controller, not here. This signed operation must
+    be called only after a fresh queue check, one exact owner instance at a time.
+    No implicit discovery, arbitrary names, prune, or force-volume removal.
+    """
+    if (not isinstance(args,dict) or set(args)!={'key','owner_id','machine','ownership','dry_run'}
+            or not isinstance(args.get('key'),str) or not re.fullmatch(r'[a-f0-9]{64}',args['key'])
+            or args.get('owner_id') is not None and (not isinstance(args['owner_id'],str) or not re.fullmatch(r'[a-f0-9]{64}',args['owner_id']))
+            or not isinstance(args.get('machine'),str) or not re.fullmatch(r'[a-f0-9]{64}',args['machine'])
+            or args.get('ownership')!='terminal-only' or type(args.get('dry_run')) is not bool):
+        raise ValueError('Expected one exact cache identity and controller terminal-ownership attestation')
+    if hashlib.sha256(Path('/etc/machine-id').read_bytes()).hexdigest()!=args['machine']:
+        raise ValueError('Cache cleanup machine identity differs')
+    key=args['key'];name='swarm-job-'+key[:32];volume_name='swarm-cache-'+key[:32]
+    result={'key':key,'removed':False,'owner_removed':False,'dry_run':args['dry_run']}
+    def skip(reason):return {**result,'reason':reason}
+    def valid_owner(row):
+        labels=row.get('Config',{}).get('Labels') or {}
+        return (row.get('Name','').lstrip('/')==name and labels.get('org.lifetech.cache-owner')==key
+                and labels.get('org.lifetech.group')=='shared-cache'
+                and any(m.get('Type')=='volume' and m.get('Name')==volume_name and m.get('Destination')=='/dev/shm' for m in row.get('Mounts',[])))
+    def valid_volume(row):
+        options=row.get('Options') or {}
+        return (row.get('Name')==volume_name and row.get('Driver')=='local'
+                and options.get('type')=='tmpfs' and options.get('device')=='tmpfs'
+                and (row.get('Labels') or {}).get('org.lifetech.cache-owner')==key)
+    owner=_cache_cleanup_inspect('container',name)
+    if (owner['Id'] if owner else None)!=args['owner_id']:return skip('owner_changed')
+    if owner and not valid_owner(owner):return skip('owner_identity_invalid')
+    volume=_cache_cleanup_inspect('volume',volume_name)
+    if not volume:return skip('volume_missing')
+    if not valid_volume(volume):return skip('volume_identity_invalid')
+    consumers=_cache_cleanup_docker(['ps','-a','--filter','volume='+volume_name,'--format','{{.Names}}']).splitlines()
+    if any(consumer!=name for consumer in consumers):return skip('docker_consumer')
+    # Recheck the exact owner after consumer enumeration. A new loader under
+    # the same content key is a different instance and cannot be removed.
+    owner=_cache_cleanup_inspect('container',name)
+    if (owner['Id'] if owner else None)!=args['owner_id']:return skip('owner_changed')
+    if owner and (not valid_owner(owner) or owner.get('ExecIDs')):
+        return skip('active_transfer_or_owner_changed')
+    if args['dry_run']:return skip('eligible_terminal_cache')
+    if owner:
+        _cache_cleanup_docker(['rm','-f',owner['Id']])
+        result['owner_removed']=True
+    # An ownerless volume never authorizes deleting any subsequently created
+    # owner. Docker's non-forced reference check protects a new attachment.
+    volume=_cache_cleanup_inspect('volume',volume_name)
+    if not volume:return {**result,'removed':True,'reason':'already_removed'}
+    if not valid_volume(volume):return skip('volume_identity_changed')
+    try:_cache_cleanup_docker(['volume','rm',volume_name])
+    except RuntimeError as error:
+        if 'in use' in str(error).lower() or 'being used' in str(error).lower():return skip('docker_consumer')
+        raise
+    return {**result,'removed':True,'reason':'removed'}
+
+
 class DockerWorkerJournal:
     """Durable attempt identity and last observation, independent of agent lifetime."""
     def __init__(self,path,accounting_reader=None):
@@ -2003,6 +2134,11 @@ class Agent:
         if op=='resource.gpus':
             if args:raise ValueError('GPU inventory accepts no arguments')
             return self.gpu_resources()
+        if op=='resource.caches.inspect':
+            if args:raise ValueError('Cache cleanup inventory accepts no arguments')
+            return {'items':cache_cleanup_inventory(),'ownership_authority':'controller-submission-queue'}
+        if op=='resource.caches.cleanup':
+            return cleanup_ram_cache(args)
         if op=='resource.caches':
             if args:raise ValueError('RAM cache inventory accepts no arguments')
             return verified_ram_caches()
@@ -2144,7 +2280,7 @@ class Agent:
                     'machine':hashlib.sha256(machine.read_bytes()).hexdigest(),'hostname':socket.gethostname(),
                     'addresses':addresses,'platform':info['OSType']+'/'+info['Architecture'],
                     'routing':getattr(self,'routing_status',{'status':'pending'}),
-                    'worker_policy':policy,'capabilities':['controller-signature','github-jobs','p2p-browser','cancel','events','layer-pull','registry-read','peer-layer-cache','mptcp-transport','file-queue','snapshot-stage','event-wait','shared-resources','renewable-resources','docker-workers','durable-docker-workers-v1','execution-accounting-v1','persistent-command-pipes-v1','generic-workers','encrypted-backup','gpu-kernel','telemetry-push','performance-v1','builtin-monitor','stream-work-v1','independent-job-sinks-v1','node-command-v1','gpu-resource-inventory-v1','node-maintenance-recipes-v1','verified-ram-caches-v1','worker-storage-v1','node-web-v1'],
+                    'worker_policy':policy,'capabilities':['controller-signature','github-jobs','p2p-browser','cancel','events','layer-pull','registry-read','peer-layer-cache','mptcp-transport','file-queue','snapshot-stage','event-wait','shared-resources','renewable-resources','docker-workers','durable-docker-workers-v1','execution-accounting-v1','persistent-command-pipes-v1','generic-workers','encrypted-backup','gpu-kernel','telemetry-push','performance-v1','builtin-monitor','stream-work-v1','independent-job-sinks-v1','node-command-v1','gpu-resource-inventory-v1','node-maintenance-recipes-v1','verified-ram-caches-v1','cache-cleanup-v1','worker-storage-v1','node-web-v1'],
                     'enrolled_peers':sorted(config['peers']),'storage':self.storage_status,'storage_policy':self.worker_storage_policy(),
                     'hardware':self.hardware(info),
                     'preparations':[key for key,j in self.jobs.items() if j['status']=='running' and j.get('prepare_only')],
@@ -2620,6 +2756,30 @@ class Agent:
         timer.daemon=True;self.browser_timers[ident]=timer;timer.start()
         return {'started':True}
 
+    def run_gpu_probe(self,args,*,timeout,prefix):
+        """Serialize probes and settle failed removals before creating more helpers."""
+        with self.__dict__.setdefault('gpu_probe_lock',threading.Lock()):
+            def remove(name):
+                result=subprocess.run(['docker','rm','-f',name],capture_output=True,text=True,timeout=30)
+                if result.returncode and 'No such container' not in result.stderr:
+                    raise RuntimeError('GPU helper cleanup failed: '+result.stderr[-300:])
+            pending=getattr(self,'gpu_probe_pending',None)
+            if pending:
+                remove(pending)
+                self.gpu_probe_pending=None
+            name=prefix+secrets.token_hex(8)
+            self.gpu_probe_pending=name
+            try:
+                result=subprocess.run(['docker','run','--name',name,*args],capture_output=True,text=True,check=True,timeout=timeout)
+            except BaseException:
+                # Retain ownership if Docker is still unavailable. The next
+                # probe retries removal instead of adding another container.
+                remove(name)
+                self.gpu_probe_pending=None
+                raise
+            self.gpu_probe_pending=None  # --rm completed successfully.
+            return result
+
     def host_render_groups(self):
         if getattr(self,'gpu_render_groups',None) is not None and time.time()-self.gpu_render_groups_at<30:return self.gpu_render_groups
         # Only metadata: no character-device permission is granted to this helper.
@@ -2634,7 +2794,7 @@ for p in pathlib.Path('/host-share/vulkan/icd.d').glob('*.json'):
  except (OSError,ValueError,TypeError):continue
 print(json.dumps(result))"""
         try:
-            result=subprocess.run(['docker','run','--rm','--pull=never','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--memory','64m','--memory-swap','64m','--cpus','0.1','--pids-limit','16','--label','org.lifetech.service=gpu-inventory','--mount','type=bind,src=/dev/dri,dst=/host-dri,readonly','--mount','type=bind,src=/usr/share,dst=/host-share,readonly','organization-launcher:webrtc-1','python3','-c',code],capture_output=True,text=True,check=True,timeout=10)
+            result=self.run_gpu_probe(['--rm','--pull=never','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--memory','64m','--memory-swap','64m','--cpus','0.1','--pids-limit','16','--label','org.lifetech.service=gpu-inventory','--mount','type=bind,src=/dev/dri,dst=/host-dri,readonly','--mount','type=bind,src=/usr/share,dst=/host-share,readonly','organization-launcher:webrtc-1','python3','-c',code],timeout=10,prefix='swarm-gpu-inventory-render-')
             metadata=json.loads(result.stdout)
             groups=metadata.get('groups',metadata)
             if 'icds' in metadata:
@@ -2642,7 +2802,7 @@ print(json.dumps(result))"""
                 if not isinstance(icds,list) or any(not isinstance(x,dict) or not isinstance(x.get('path'),str) or not isinstance(x.get('library'),str) for x in icds):raise ValueError('Invalid host Vulkan manifests')
                 self.gpu_host_icds=icds
             if not isinstance(groups,dict) or any(not re.fullmatch(r'renderD[0-9]+',k) or type(v) is not int or v<0 for k,v in groups.items()):raise ValueError('Invalid host device groups')
-        except (OSError,ValueError,subprocess.SubprocessError):return {}
+        except (OSError,ValueError,RuntimeError,subprocess.SubprocessError):return {}
         self.gpu_render_groups=groups;self.gpu_render_groups_at=time.time();return groups
 
     def host_intel_devices(self,render,gid,icd):
@@ -2668,33 +2828,29 @@ try:
  print(json.dumps(rows))
 finally:v.vkDestroyInstance(instance,None)
 """
-        name='swarm-gpu-inventory-intel-'+secrets.token_hex(8)
         try:
-            result=subprocess.run(['docker','run','--rm','--pull=never','--name',name,'--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--memory','128m','--memory-swap','128m','--cpus','0.25','--pids-limit','64','--label','org.lifetech.service=gpu-inventory','--device',render,'--group-add',str(gid),'--mount','type=bind,src=/usr,dst=/usr,readonly','--tmpfs','/tmp:rw,nosuid,nodev,size=16m','--env','XDG_CACHE_HOME=/tmp','--env','VK_ICD_FILENAMES='+icd,'organization-launcher:webrtc-1','/usr/bin/python3','-c',code],capture_output=True,text=True,check=True,timeout=15)
+            result=self.run_gpu_probe(['--rm','--pull=never','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--memory','128m','--memory-swap','128m','--cpus','0.25','--pids-limit','64','--label','org.lifetech.service=gpu-inventory','--device',render,'--group-add',str(gid),'--mount','type=bind,src=/usr,dst=/usr,readonly','--tmpfs','/tmp:rw,nosuid,nodev,size=16m','--env','XDG_CACHE_HOME=/tmp','--env','VK_ICD_FILENAMES='+icd,'organization-launcher:webrtc-1','/usr/bin/python3','-c',code],timeout=15,prefix='swarm-gpu-inventory-intel-')
             rows=json.loads(result.stdout)
             if not isinstance(rows,list) or any(not isinstance(r,dict) or type(r.get('integrated')) is not bool for r in rows):raise ValueError('Invalid Vulkan physical devices')
-        except (OSError,ValueError,subprocess.SubprocessError):rows=[]
-        finally:
-            try:subprocess.run(['docker','rm','-f',name],capture_output=True,timeout=5)
-            except (OSError,subprocess.SubprocessError):pass
+        except (OSError,ValueError,RuntimeError,subprocess.SubprocessError):rows=[]
         cache[key]=(time.time(),rows);return rows
 
     def host_nvidia_allocations(self):
+        with self.__dict__.setdefault('nvidia_probe_lock',threading.Lock()):
+            if getattr(self,'cuda_runtime',None) is False:return []
+            if time.monotonic()<getattr(self,'nvidia_probe_retry_at',0):return []
+            rows=self._host_nvidia_allocations()
+            self.nvidia_probe_retry_at=0 if rows else time.monotonic()+60
+            return rows
+
+    def _host_nvidia_allocations(self):
         # Timestamp inside the helper: Docker startup is not sample age.
-        name='swarm-gpu-inventory-nvidia-'+secrets.token_hex(8)
         code="import json,subprocess,time; output=subprocess.check_output(['nvidia-smi','--query-gpu=uuid,pci.bus_id,name,memory.total,memory.free,utilization.gpu,temperature.gpu','--format=csv,noheader,nounits'],text=True,timeout=5); print(json.dumps({'output':output,'sampled_at':time.time()}))"
-        completed=False
         try:
-            result=subprocess.run(['docker','run','--rm','--pull=never','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--memory','96m','--memory-swap','96m','--cpus','0.25','--pids-limit','128','--name',name,'--label','org.lifetech.service=gpu-inventory','--gpus','all','--env','NVIDIA_DRIVER_CAPABILITIES=utility','organization-launcher:webrtc-1','python3','-c',code],capture_output=True,text=True,check=True,timeout=15)
-            completed=True
+            result=self.run_gpu_probe(['--rm','--pull=never','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--memory','96m','--memory-swap','96m','--cpus','0.25','--pids-limit','128','--label','org.lifetech.service=gpu-inventory','--gpus','all','--env','NVIDIA_DRIVER_CAPABILITIES=utility','organization-launcher:webrtc-1','python3','-c',code],timeout=15,prefix='swarm-gpu-inventory-nvidia-')
             value=json.loads(result.stdout)
             return [{**row,'sampled_at':value['sampled_at']} for row in nvidia_allocation_rows(value['output'])]
-        except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError):return []
-        finally:
-            # A CLI timeout does not remove the helper container.
-            if not completed:
-                try:subprocess.run(['docker','rm','-f',name],capture_output=True,timeout=10)
-                except (OSError,subprocess.SubprocessError):pass
+        except (OSError,ValueError,KeyError,TypeError,RuntimeError,subprocess.SubprocessError):return []
 
     def gpu_resources(self):
         with self.__dict__.setdefault('gpu_inventory_lock',threading.RLock()):return self._gpu_resources()
@@ -2709,8 +2865,6 @@ finally:v.vkDestroyInstance(instance,None)
             if nvidia:inventory['gpus']=[r for r in inventory['gpus'] if r['vendor']!='NVIDIA']+nvidia
         machine=hashlib.sha256(Path('/etc/machine-id').read_bytes()).hexdigest()
         memory={line.split(':',1)[0]:int(line.split()[1]) for line in Path('/proc/meminfo').read_text().splitlines() if len(line.split())>=2 and line.split()[1].isdigit()}
-        released=self.stream_work.released_gpu_work() if hasattr(self,'stream_work') else set()
-        workers=gpu_worker_commitments(released) if released else gpu_worker_commitments()
         rows=[];groups=None
         for raw in inventory['gpus']:
             row=dict(raw)
@@ -2733,10 +2887,20 @@ finally:v.vkDestroyInstance(instance,None)
                         if len(matches)==1 and matches[0]['integrated']:
                             row.update(device_type='integrated',name=matches[0]['name'],memory_domain='shared-system-memory',memory_source='Vulkan physical integrated device; kernel host RAM',memory_total_mib=None,memory_free_mib=None,memory_used_mib=None,shared_memory_available_mib=memory.get('MemAvailable',0)/1024,gpu_allocation_added_to_host_ram=False)
             row['allocation_known']=row.get('memory_total_mib') is not None and row.get('memory_free_mib') is not None
+            row.setdefault('sampled_at',now);rows.append(row)
+        # Slow device classification must finish before taking the shared
+        # ownership/RAM snapshot. Keep allocation timestamps on each device.
+        memory={line.split(':',1)[0]:int(line.split()[1]) for line in Path('/proc/meminfo').read_text().splitlines() if len(line.split())>=2 and line.split()[1].isdigit()}
+        memory_sampled=time.time()
+        released=self.stream_work.released_gpu_work() if hasattr(self,'stream_work') else set()
+        workers=gpu_worker_commitments(released) if released else gpu_worker_commitments()
+        for row in rows:
+            if row.get('memory_domain')=='shared-system-memory':row['shared_memory_available_mib']=memory.get('MemAvailable',0)/1024
             row.update(workers['devices'].get(row.get('uuid'),{'active_workers':0,'private_commitment_mib':0,'exclusive_worker_present':False}))
-            row['workers_known']=workers['known'];row.setdefault('sampled_at',now);rows.append(row)
-        self.gpu_resource_cache={'machine':machine,'sampled_at':min((row['sampled_at'] for row in rows),default=now),'gpus':rows,
+            row['workers_known']=workers['known']
+        self.gpu_resource_cache={'machine':machine,'sampled_at':memory_sampled,'gpus':rows,
             'host_memory':{'total_mib':memory.get('MemTotal',0)/1024,'available_mib':memory.get('MemAvailable',0)/1024,
+                           'sampled_at':memory_sampled,
                            'source':'kernel MemTotal/MemAvailable; GPU allocations are not added'},
             'selection_policy':'physical identity and measured allocation; workload qualification required separately'}
         self.gpu_resource_sampled=time.time()

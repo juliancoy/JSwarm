@@ -14,11 +14,11 @@ from scripts.swarm_source_client import SourceClient
 @pytest.fixture
 def source(tmp_path,monkeypatch):
     def openssl(*args):subprocess.run(['openssl',*args],cwd=tmp_path,check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-    openssl('req','-x509','-newkey','ec','-pkeyopt','ec_paramgen_curve:P-256','-nodes','-keyout','ca.key','-out','ca.crt','-subj','/CN=fixture-ca','-days','1')
+    openssl('req','-x509','-newkey','ec','-pkeyopt','ec_paramgen_curve:P-256','-nodes','-keyout','ca.key','-out','ca.crt','-subj','/CN=fixture-ca','-days','1','-addext','basicConstraints=critical,CA:TRUE','-addext','keyUsage=critical,keyCertSign,cRLSign')
     fingerprints={}
     for name in ('source','controller','other'):
         openssl('req','-new','-newkey','ec','-pkeyopt','ec_paramgen_curve:P-256','-nodes','-keyout',name+'.key','-out',name+'.csr','-subj','/CN='+name)
-        (tmp_path/(name+'.ext')).write_text('extendedKeyUsage=serverAuth,clientAuth\nsubjectAltName=IP:127.0.0.1\n')
+        (tmp_path/(name+'.ext')).write_text('basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth,clientAuth\nsubjectAltName=IP:127.0.0.1\n')
         openssl('x509','-req','-in',name+'.csr','-CA','ca.crt','-CAkey','ca.key','-CAcreateserial','-out',name+'.crt','-days','1','-extfile',name+'.ext')
         fingerprints[name]=hashlib.sha256(ssl.PEM_cert_to_DER_cert((tmp_path/(name+'.crt')).read_text())).hexdigest()
     peers={name:{'machine':name*16,'address':'127.0.0.1','certificate_sha256':fingerprints[name]} for name in fingerprints}

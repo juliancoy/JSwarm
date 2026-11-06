@@ -47,8 +47,8 @@ def launch_container(args):
         if args.login:
             container_login(args, name)
         return 0
-    from scripts.swarm_node import build_node_image
-    build_node_image(image)
+    from scripts.swarm_node import ensure_node_image
+    ensure_node_image(image)
     if existing.returncode == 0:
         subprocess.run(['docker', 'rm', '--force', name], check=True)
     # The full launcher takes over the peer port from a test-initialized session.
@@ -60,8 +60,11 @@ def launch_container(args):
                '--network', 'host', '--user', f'{os.getuid()}:{os.getgid()}', '--group-add', str(socket.stat().st_gid),
                '--label', 'organization.container-class=swarm-node', '--label', 'organization.color=biotech-gold',
                '--mount', f'type=bind,src={ROOT},dst={ROOT}',
+               '--mount', f'type=bind,src={ROOT},dst=/opt/swarm-node,readonly',
                '--mount', f'type=bind,src={socket},dst=/var/run/docker.sock', '--workdir', str(ROOT),
                '--mount', f'type=bind,src={docker_cli},dst=/usr/local/bin/docker,readonly',
+               '--env', 'PYTHONPATH='+str(ROOT)+os.pathsep+str(ROOT/'JSwarm/ramtop'),
+               '--env', 'SWARM_WORKSPACE='+str(ROOT),
                '--env', 'HOME=/tmp', '--env', 'PYTHONUNBUFFERED=1', '--env', 'ORGANIZATION_LAUNCHER_CONTAINER=1',
                '--env', 'ORGPORTAL_JOURNAL_AUTO_SYNC=false']
     if 'JSWARM_WORKER_STORAGE' in os.environ:
@@ -122,7 +125,7 @@ def parse_args(argv=None):
     parser.add_argument('--all', action='store_true', help='With --stop, stop all enrolled LAN nodes too.')
     parser.add_argument('--memory-pressure-benchmark',choices=['run','status'],help='Benchmark a complete alignment shard under FS-Cache RAM pressure.')
     parser.add_argument('--monitor-view',choices=['deploy','status'],help='Publish monitor assets without restarting nodes or workers.')
-    parser.add_argument('--pipeline-view',choices=['deploy','status'],help='Publish the read-only shard pipeline without restarting compute workers.')
+    parser.add_argument('--pipeline-view',choices=['deploy','status','device-controls','authenticated-nodes'],help='Publish the read-only shard pipeline without restarting compute workers.')
     parser.add_argument('--network-reference-cache',choices=['build','test','qualify','status','stop'],help='Test and inspect launcher-managed FS-Cache over LAN; does not change production placement.')
     parser.add_argument('--shared-reference',choices=['prepare','enable','status'],help='Manage the validated stock-BWA shared index for memory-constrained workers.')
     parser.add_argument('--node-alignment',choices=['build','qualify','deploy','status'],help='Manage qualified node-owned BWA CPU/GPU execution and shared reference mounts.')

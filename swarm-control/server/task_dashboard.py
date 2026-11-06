@@ -69,12 +69,8 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     self.send_error(404,'Unknown enrolled machine');return
             elif path.path == '/api/tasks/pipeline':
-                from task_pipeline import snapshot as pipeline_snapshot
+                from pipeline_nodes import snapshot as pipeline_snapshot
                 data=pipeline_snapshot()
-                from pipeline_workers import snapshot as workers_snapshot
-                workers=workers_snapshot()
-                data['infrastructure']=workers['items']
-                data['errors'].extend(workers['errors'])
             elif path.path == '/api/tasks/events':
                 query=parse_qs(path.query)
                 data=EventStore().history(query.get('run',[None])[0],query.get('after',[0])[0],100)

@@ -277,3 +277,45 @@ class NewConversationTests(unittest.TestCase):
             self.assertEqual(codex.history({'rollout_path':str(path)})['activity'],'idle')
             path.write_text(json.dumps({'type':'event_msg','payload':{'type':'task_started'}})+'\n')
             self.assertEqual(codex.history({'rollout_path':str(path)})['activity'],'running')
+
+class NodeEnrollmentBoundaryTests(unittest.TestCase):
+    setUp=RemoteBoundaryTests.setUp
+    request=RemoteBoundaryTests.request
+    def test_node_enrollment_requires_pidp_and_same_origin_approval(self):
+        path='/api/v1/swarm/node-enrollment'
+        with patch('node_enrollment.details',return_value={'name':'node.local'}) as details,patch('node_enrollment.approve',return_value={'approved':True}) as approve:
+            self.assertEqual(self.request(path+'?request=node'),401)
+            self.assertEqual(self.request(path,'POST',body={'request_id':'node'},cookie=self.cookie),403)
+            details.assert_not_called();approve.assert_not_called()
+            self.assertEqual(self.request(path+'?request=node',cookie=self.cookie),200)
+            self.assertEqual(self.request(path,'POST',body={'request_id':'node'},cookie=self.cookie,origin='https://compai.example'),200)
+
+    def test_browser_cannot_exchange_a_native_grant(self):
+        with patch('node_enrollment.exchange') as exchange:
+            self.assertEqual(self.request('/api/node-enrollment/exchange','POST',body={},origin='https://compai.example'),403)
+            exchange.assert_not_called()
+
+    def test_native_grant_is_public_but_has_no_browser_cookie_authority(self):
+        with patch('node_enrollment.start',return_value={'request_id':'fixture'}) as start:
+            self.assertEqual(self.request('/api/node-enrollment/start','POST',body={}),200)
+            start.assert_called_once()
+
+    def test_node_login_preserves_pkce_and_returns_to_enrollment(self):
+        with patch('identity.start',return_value=('https://pidp.example/authorize','login-cookie')):
+            self.assertEqual(self.request('/auth/login?node_request='+'n'*43),303)
+        with patch('identity.complete',return_value='device-token') as complete:
+            self.assertEqual(self.request('/auth/callback?code=x&state=y&iss=z',cookie='__Host-compai_node='+'n'*43),303)
+            complete.assert_called_once()
+
+    def test_large_pipeline_is_bounded_and_compressed_for_authenticated_browser(self):
+        import gzip
+        payload=json.dumps({'items':[],'padding':'x'*(17*1024*1024)}).encode()
+        upstream=Mock();upstream.__enter__=Mock(return_value=upstream);upstream.__exit__=Mock(return_value=False);upstream.read.return_value=payload
+        with patch('urllib.request.urlopen',return_value=upstream):
+            client=http.client.HTTPConnection(*self.server.server_address)
+            client.request('GET','/api/tasks/pipeline',headers={'Host':'compai.example','Cookie':self.cookie,'Accept-Encoding':'gzip'})
+            response=client.getresponse();body=response.read();client.close()
+        self.assertEqual(response.status,200)
+        self.assertEqual(response.getheader('Content-Encoding'),'gzip')
+        self.assertEqual(json.loads(gzip.decompress(body))['items'],[])
+        self.assertLess(len(body),len(payload)//10)

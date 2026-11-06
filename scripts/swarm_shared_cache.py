@@ -4,6 +4,7 @@ The existing resource pool charges its owner once. Consumers mount the volume
 read-only and reserve only private memory. No host IPC or payload disk fallback.
 """
 import contextlib
+from collections import Counter, OrderedDict, defaultdict
 import hashlib
 import json
 import math
@@ -13,6 +14,7 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
+import threading
 
 from scripts.swarm_runtime import AgentClient,CapacityWait,shell_command
 
@@ -113,40 +115,112 @@ def _remove_unreferenced(host,cache,*,expected_owner=None):
     return True
 
 
-def finished_cache_keys(host,path=None):
-    """Existing job requests are the only cache ownership records.
+class _QueueOwnership:
+    """Disposable read model of the existing queue; never a claims ledger.
 
-    Read every namespace, including CPU witnesses and source-side inputs. A
-    preparation whose input bindings are not complete protects resident data:
-    lack of a Docker attachment never proves that a waiting job released it.
-    Unknown queue state fails closed. No separate cache claims are maintained.
+    SQLite data_version detects commits by other connections, including WAL
+    writes. Unchanged rows reuse parsed bindings by content digest. No read
+    transaction survives a call and no timed/stale eligibility cache is used.
     """
-    path=Path(path or os.getenv('SWARM_SUBMISSION_QUEUE',str(Path.home()/'.local/state/swarm-control/submission/queue.sqlite')))
-    if not path.exists():return set()
-    physical=host['host'].split('#',1)[0]
-    def bindings(value,node):
-        if isinstance(value,dict):
-            node=value.get('host',node)
-            key=value.get('key')
-            if (isinstance(key,str) and re.fullmatch(r'[a-f0-9]{64}',key)
-                    and value.get('container')=='swarm-job-'+key[:32]
-                    and value.get('volume')=='swarm-cache-'+key[:32]
-                    and node and node.split('#',1)[0]==physical):yield key
-            for child in value.values():yield from bindings(child,node)
-        elif isinstance(value,list):
-            for child in value:yield from bindings(child,node)
-    terminal=set();protected=set()
-    try:
-        with contextlib.closing(sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=2)) as db:
-            for state,node,request in db.execute('SELECT state,host,request FROM submissions'):
-                value=json.loads(request or '{}')
-                if not isinstance(value,dict):return set()
+    def __init__(self,path,identity):
+        self.identity=identity
+        self.db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=2,check_same_thread=False)
+        self.version=None
+        self.rows={}
+        self.eligible={}
+        self.uses={}
+
+    @staticmethod
+    def parse(request,node):
+        value=json.loads(request or '{}')
+        if not isinstance(value,dict):raise ValueError('Invalid cache ownership request')
+        bindings=defaultdict(set)
+        def visit(item,owner):
+            if isinstance(item,dict):
+                owner=item.get('host',owner)
+                key=item.get('key')
+                if (isinstance(key,str) and re.fullmatch(r'[a-f0-9]{64}',key)
+                        and item.get('container')=='swarm-job-'+key[:32]
+                        and item.get('volume')=='swarm-cache-'+key[:32]
+                        and isinstance(owner,str) and owner):
+                    bindings[owner.split('#',1)[0]].add(key)
+                for child in item.values():visit(child,owner)
+            elif isinstance(item,list):
+                for child in item:visit(child,owner)
+        visit(value,node)
+        legacy=(value.get('inputs_ready') is False or not request) and value.get('cache_claims_version')!=1
+        owner=value.get('worker_host') or node
+        if owner is not None and not isinstance(owner,str):raise ValueError('Invalid preparation host')
+        return bindings,legacy,owner.split('#',1)[0] if owner else None
+
+    def refresh(self):
+        version=self.db.execute('PRAGMA data_version').fetchone()[0]
+        if self.version==version:return
+        terminal=defaultdict(set);protected=defaultdict(set);uses=defaultdict(Counter)
+        blocked=set();blocked_all=False;rows={}
+        self.db.execute('BEGIN')
+        try:
+            for ident,state,node,request in self.db.execute('SELECT rowid,state,host,request FROM submissions'):
+                if request is not None and not isinstance(request,str):raise ValueError('Invalid queue request encoding')
+                digest=hashlib.sha256((request or '').encode()).digest()
+                previous=self.rows.get(ident)
+                summary=previous[2] if previous and previous[:2]==(node,digest) else self.parse(request,node)
+                rows[ident]=(node,digest,summary)
+                bindings,legacy,owner=summary
                 finished=state in ('completed','failed','cancelled')
-                if not finished and (value.get('inputs_ready') is False or state=='preparing' and not request):return set()
-                keys=set(bindings(value,node))
-                (terminal if finished else protected).update(keys)
-    except (OSError,ValueError,sqlite3.Error):return set()
-    return terminal-protected
+                for host,keys in bindings.items():
+                    (terminal if finished else protected)[host].update(keys)
+                    uses[host].update(keys)
+                if not finished and state in ('accepted','preparing') and legacy:
+                    if not owner:blocked_all=True
+                    else:blocked.add(owner)
+                    blocked.update(bindings)
+        finally:
+            self.db.rollback()
+        self.eligible={} if blocked_all else {host:keys-protected[host] for host,keys in terminal.items() if host not in blocked}
+        self.uses=uses
+        self.rows=rows
+        # A commit during our snapshot forces the next call to refresh again.
+        self.version=version if self.db.execute('PRAGMA data_version').fetchone()[0]==version else None
+
+
+_OWNERSHIP_LOCK=threading.RLock()
+_OWNERSHIP_QUEUES=OrderedDict()
+
+
+def _ownership_for(host,path=None):
+    path=Path(path or os.getenv('SWARM_SUBMISSION_QUEUE',str(Path.home()/'.local/state/swarm-control/submission/queue.sqlite'))).resolve()
+    physical=host['host'].split('#',1)[0]
+    with _OWNERSHIP_LOCK:
+        try:
+            stat=path.stat()
+            identity=(os.getpid(),stat.st_dev,stat.st_ino,stat.st_mtime_ns,stat.st_size)
+            entry=_OWNERSHIP_QUEUES.get(path)
+            if entry and entry.identity!=identity:
+                entry.db.close();del _OWNERSHIP_QUEUES[path];entry=None
+            if entry is None:
+                entry=_QueueOwnership(path,identity)
+                _OWNERSHIP_QUEUES[path]=entry
+                while len(_OWNERSHIP_QUEUES)>4:
+                    _,old=_OWNERSHIP_QUEUES.popitem(last=False);old.db.close()
+            _OWNERSHIP_QUEUES.move_to_end(path)
+            entry.refresh()
+            return set(entry.eligible.get(physical,())),dict(entry.uses.get(physical,{}))
+        except (OSError,ValueError,TypeError,sqlite3.Error,RecursionError):
+            entry=_OWNERSHIP_QUEUES.pop(path,None)
+            if entry:entry.db.close()
+            return set(),{}
+
+
+def finished_cache_keys(host,path=None):
+    """Terminal-only bindings across every namespace, with fresh commit checks.
+
+    Preparing, queued, retrying and unknown-state consumers remain protected.
+    Legacy incomplete preparation blocks its physical node (or every node when
+    unassigned). Missing/corrupt/locked queues fail closed. Returned sets are
+    copies; callers cannot change the cached read model.
+    """
+    return _ownership_for(host,path)[0]
 
 
 def remove_unused(host,cache,*,terminal=None):
@@ -158,26 +232,45 @@ def remove_unused(host,cache,*,terminal=None):
 
 def _reclaim_completed(host,keep=None,*,keys=None,required_mb=None):
     if required_mb is not None and (type(required_mb) is not int or required_mb<1):raise ValueError('Positive reclamation budget required')
-    candidates=finished_cache_keys(host)
+    candidates,uses=_ownership_for(host)
     if keys is not None:candidates.intersection_update(keys)
     keep={keep} if isinstance(keep,str) else set(keep or ())
     candidates-=keep
     if not candidates:return 0
-    ids=command(host,['docker','ps','-aq','--filter','label='+OWNER]).split()
-    if not ids:return 0
-    rows=json.loads(command(host,['docker','inspect',*ids]));removed=0
-    for row in sorted(rows,key=lambda row:row.get('Created','')):
-        key=(row['Config'].get('Labels') or {}).get(OWNER,'')
-        if key not in candidates:continue
-        cache={'key':key,'container':'swarm-job-'+key[:32],'volume':'swarm-cache-'+key[:32]}
-        if row.get('Name','').lstrip('/')!=cache['container']:continue
-        volume=inspect(host,'volume',cache['volume'])
-        if not volume:continue
-        options=volume.get('Options') or {}
-        if volume.get('Driver')!='local' or options.get('type')!='tmpfs' or (volume.get('Labels') or {}).get(OWNER)!=key:continue
-        if _remove_unreferenced(host,cache):
-            removed+=1
-    return removed
+    client=AgentClient(host) if required_mb is not None else None
+    def enough():
+        if client is None:return False
+        available=client.call('resource.capacity').get('available_mb')
+        if not isinstance(available,(int,float)) or isinstance(available,bool) or not math.isfinite(available) or available<0:
+            raise ValueError('Invalid admission headroom during cache reclamation')
+        return available>=required_mb
+    try:
+        if enough():return 0
+        ids=command(host,['docker','ps','-aq','--filter','label='+OWNER]).split()
+        if not ids:return 0
+        rows=json.loads(command(host,['docker','inspect',*ids]));removed=0
+        def order(row):
+            key=(row['Config'].get('Labels') or {}).get(OWNER,'')
+            return (uses.get(key,0) if client else 0,row.get('Created',''),key)
+        for row in sorted(rows,key=order):
+            key=(row['Config'].get('Labels') or {}).get(OWNER,'')
+            if key not in candidates:continue
+            cache={'key':key,'container':'swarm-job-'+key[:32],'volume':'swarm-cache-'+key[:32]}
+            if row.get('Name','').lstrip('/')!=cache['container']:continue
+            volume=inspect(host,'volume',cache['volume'])
+            if not volume:continue
+            options=volume.get('Options') or {}
+            if volume.get('Driver')!='local' or options.get('type')!='tmpfs' or (volume.get('Labels') or {}).get(OWNER)!=key:continue
+            # A new preparation may have published bindings during Docker probes.
+            if key not in finished_cache_keys(host):continue
+            if _remove_unreferenced(host,cache):
+                removed+=1
+                # Observe actual headroom, never count configured limits as RAM
+                # freed. Background sweeps intentionally clear every candidate.
+                if enough():break
+        return removed
+    finally:
+        if client:client.close()
 
 
 def evict_unused(host,keep=None,*,keys=None,required_mb=None):
@@ -201,11 +294,13 @@ def park_verified_owner(host,cache,row):
         command(host,['docker','update','--cpus','0.1',cache['container']])
 
 
-def ensure(host,image,files,load,metrics=None):
+def ensure(host,image,files,load,metrics=None,*,on_bound=None):
     """Load once; callback streams files into the admitted owner container."""
     key,value=contract(image,files);shm_mb=math.ceil(sum(r['bytes'] for r in files.values())/1024**2)+16
     cache={**value,'host':host['host'],'key':key,'container':'swarm-job-'+key[:32],'volume':'swarm-cache-'+key[:32],
            'memory_mb':shm_mb+128,'shm_mb':shm_mb}
+    # Publish queue ownership before inspecting/reusing an existing cache.
+    if on_bound:on_bound(cache)
     owner=inspect(host,'container',cache['container']);volume=inspect(host,'volume',cache['volume'])
     if volume:validate_volume(volume,cache)
     if owner and ((owner['Config'].get('Labels') or {}).get(OWNER)!=key or owner.get('Image')!=image):raise ValueError('Shared cache owner differs')
@@ -224,7 +319,9 @@ def ensure(host,image,files,load,metrics=None):
         if not status.get('worker_policy',{}).get('accepting_jobs'):raise CapacityWait('Worker paused before shared cache preparation')
         request={'id':key[:32],'container':cache['container'],'group':'shared-cache','cpus':1,'memory_mb':cache['memory_mb']}
         acquired=client.call('resource.acquire',request)['acquired']
-        if not acquired and _reclaim_completed(host,keep=key,required_mb=cache['memory_mb']):acquired=client.call('resource.acquire',request)['acquired']
+        if not acquired:
+            _reclaim_completed(host,keep=key,required_mb=cache['memory_mb'])
+            acquired=client.call('resource.acquire',request)['acquired']
         if not acquired:raise CapacityWait('Waiting for the shared cache RAM reservation')
         command(host,['docker','volume','create','--driver','local','--label',OWNER+'='+key,'--opt','type=tmpfs','--opt','device=tmpfs',
                       '--opt','o=size='+str(shm_mb)+'m,mode=1777,nosuid,nodev,noexec',cache['volume']])
@@ -273,7 +370,7 @@ def mount_args(host,cache,target='/dev/shm',primary=True):
     return ['--mount','type=volume,src='+cache['volume']+',dst='+target+',readonly,volume-nocopy','--label',label+'='+cache['container']]
 
 
-def ensure_derived(host,image,identity,build,load):
+def ensure_derived(host,image,identity,build,load,*,on_bound=None):
     """Materialize an immutable object once on its local owner, then reuse RAM.
 
     The lookup is metadata only; Docker names, seals and the existing pool remain
@@ -289,6 +386,7 @@ def ensure_derived(host,image,identity,build,load):
     if metadata.exists():
         record=json.loads(metadata.read_text());cache=record['cache']
         if record.get('identity')!=identity or cache.get('image')!=image:raise ValueError('Immutable object lookup changed')
+        if on_bound:on_bound({**cache,'host':host['host']})
         owner=inspect(host,'container',cache['container'])
         if owner and ready(host,cache,owner):
             return record
@@ -299,7 +397,7 @@ def ensure_derived(host,image,identity,build,load):
             if not p.is_file() or p.is_symlink():raise ValueError('Derived objects must be flat regular files')
             with p.open('rb') as stream:digest=hashlib.file_digest(stream,'sha256').hexdigest()
             files[p.name]={'bytes':p.stat().st_size,'sha256':digest}
-        cache=ensure(host,image,files,lambda owner:load(owner,root,files))
+        cache=ensure(host,image,files,lambda owner:load(owner,root,files),on_bound=on_bound)
     record={'identity':identity,'cache':cache}
     from scripts.swarm_runtime import atomic_json
     atomic_json(metadata,record)
@@ -309,6 +407,7 @@ def ensure_derived(host,image,identity,build,load):
 def capacity_for_work(host,client,group,memory_mb):
     """Reclaim before placement too, so idle nodes cannot starve behind caches."""
     capacity=client.call('resource.capacity',{'group':group})
-    if capacity['available_mb']<memory_mb and reclaim_completed(host,required_mb=memory_mb):
+    if capacity['available_mb']<memory_mb:
+        reclaim_completed(host,required_mb=memory_mb)
         capacity=client.call('resource.capacity',{'group':group})
     return capacity

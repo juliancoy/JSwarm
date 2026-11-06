@@ -173,8 +173,17 @@ def reconcile_node_web_ports(address):
     return {'port':80,'address':address,'status':'configured'}
 
 
+_routing_lock=threading.Lock()
+_routing_pending=None
+
+
 def configure_launcher_routing(peers,node_name=None):
+    with _routing_lock:return _configure_launcher_routing(peers,node_name)
+
+
+def _configure_launcher_routing(peers,node_name=None):
     """Use a short-lived, narrowly privileged helper; the launcher stays unprivileged."""
+    global _routing_pending
     import inspect
     import docker
     source=inspect.getsource(lan_paths)+'\n'+inspect.getsource(reconcile_lan_routing)
@@ -186,14 +195,22 @@ def configure_launcher_routing(peers,node_name=None):
     source+='print(json.dumps(reconcile_lan_routing('+repr(dict(peers))+')))\n'
     client=docker.from_env(timeout=20)
     container=None
+    name='swarm-launcher-routing-'+secrets.token_hex(8)
+    attempted=False
     try:
         # The launcher image is already provisioned locally. No pull or host
         # socket mount is needed by this network-only helper. Host nft and its
         # libraries are mounted read-only when maintaining the public port.
         if any('rootless' in option for option in client.info().get('SecurityOptions',[])):
             return {'status':'unavailable','error':'Rootless Docker cannot configure host LAN routing; host network configuration is required'}
+        if _routing_pending:
+            try:client.api.remove_container(_routing_pending,force=True)
+            except docker.errors.NotFound:pass
+            _routing_pending=None
+        attempted=True
+        _routing_pending=name
         container=client.containers.create('organization-launcher:webrtc-1',
-            ['/usr/bin/python3' if node_name else 'python','-c',source],detach=True,network_mode='host',user='0:0',
+            ['/usr/bin/python3' if node_name else 'python','-c',source],name=name,detach=True,network_mode='host',user='0:0',
             volumes={'/usr':{'bind':'/usr','mode':'ro'}} if node_name else {},
             cap_drop=['ALL'],cap_add=['NET_ADMIN'],read_only=True,
             security_opt=['no-new-privileges'],pids_limit=32,mem_limit='96m',
@@ -206,6 +223,11 @@ def configure_launcher_routing(peers,node_name=None):
     finally:
         try:
             if container is not None:container.remove(force=True)
+            elif attempted:
+                # Creation may have reached Docker before its response timed out.
+                try:client.api.remove_container(name,force=True)
+                except docker.errors.NotFound:pass
+            if attempted:_routing_pending=None
         finally:client.close()
 
 
