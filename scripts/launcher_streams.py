@@ -998,7 +998,6 @@ class Engine:
                         or proof.get('started_at')!=owner['State']['StartedAt'] or ready['identities']!=proof.get('identities')):raise ValueError('Shared reference readiness proof differs')
                 args+=['--mount','type=volume,src='+cache['volume']+',dst=/dev/shm,readonly,volume-nocopy','--label','org.lifetech.shared-cache='+cache['container']]
         if gpu:
-            active=self.command(['docker','ps','-q','--filter','label=org.lifetech.accelerator='+gpu['uuid']]).stdout.strip()
             if hasattr(self.agent,'gpu_resources'):
                 inventory=self.agent.gpu_resources()
                 if inventory.get('machine')!=self.machine:raise ValueError('GPU inventory machine identity differs')

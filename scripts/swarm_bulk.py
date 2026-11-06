@@ -60,7 +60,8 @@ def load_config():
 
 def offer(config, path, sha256, size, peer, machine):
     import re
-    from transfer import atomic_json, identity
+    if __package__:from .swarm_tls_transfer import atomic_json,identity
+    else:from transfer import atomic_json,identity
     if machine != config['machine'] or peer not in config['peers']:raise ValueError('Unknown enrolled peer')
     if not re.fullmatch('[0-9a-f]{64}',sha256):raise ValueError('Invalid immutable digest')
     path = Path(path).resolve(strict=True)
@@ -81,7 +82,8 @@ def offer(config, path, sha256, size, peer, machine):
 def inbox(config,destination,peer,machine,job_key,files,max_bytes,expires):
     """Create an immutable output capability before submitting a node job."""
     import re,time
-    from transfer import atomic_json
+    if __package__:from .swarm_tls_transfer import atomic_json
+    else:from transfer import atomic_json
     if machine!=config['machine'] or peer not in config['peers'] or not re.fullmatch('[a-f0-9]{64}',job_key):raise ValueError('Invalid output grant identity')
     if not isinstance(files,dict) or not files or any(not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,79}',n) or type(v) is not int or v<0 for n,v in files.items()):raise ValueError('Invalid output file limits')
     if type(max_bytes) is not int or max_bytes<1 or not time.time()<expires<=time.time()+30*86400:raise ValueError('Invalid output quota/expiry')

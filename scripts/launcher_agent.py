@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import selectors
 import signal
 import shutil
 import subprocess
@@ -20,6 +21,101 @@ import threading
 import time
 import urllib.request
 import urllib.error
+
+
+class NvidiaSampler:
+    """One node-owned utility process; readers never wait for Docker startup."""
+    def __init__(self,changed=lambda:None):
+        self.lock=threading.Lock();self.stopped=threading.Event();self.thread=None
+        self.rows=[];self.changed=changed;self.retry_at=0
+
+    def command(self,name):
+        code="""import json,subprocess,time
+while True:
+ try:
+  output=subprocess.check_output(['nvidia-smi','--query-gpu=uuid,pci.bus_id,name,memory.total,memory.free,utilization.gpu,temperature.gpu','--format=csv,noheader,nounits'],text=True,timeout=5)
+  print(json.dumps({'output':output,'sampled_at':time.time()}),flush=True)
+ except (OSError,subprocess.SubprocessError):print('{}',flush=True)
+ time.sleep(2)
+"""
+        return ['docker','run','--rm','--pull=never','--name',name,'--network','none','--read-only','--cap-drop','ALL',
+                '--security-opt','no-new-privileges','--memory','96m','--memory-swap','96m','--cpus','0.25','--pids-limit','128',
+                '--label','org.lifetech.service=gpu-inventory','--gpus','all','--env','NVIDIA_DRIVER_CAPABILITIES=utility',
+                '--label','org.lifetech.gpu-inventory-owner='+os.environ.get('HOSTNAME',''),
+                'organization-launcher:webrtc-1','python3','-u','-c',code]
+
+    def reap_orphans(self):
+        result=subprocess.run(['docker','ps','-aq','--filter','label=org.lifetech.gpu-inventory-owner'],capture_output=True,text=True,timeout=15,check=True)
+        for ident in result.stdout.split():
+            info=json.loads(subprocess.check_output(['docker','inspect',ident],text=True,timeout=15))[0]
+            owner=info['Config']['Labels'].get('org.lifetech.gpu-inventory-owner','')
+            if not re.fullmatch(r'[a-f0-9]{12,64}',owner):continue
+            inspected=subprocess.run(['docker','inspect',owner],capture_output=True,text=True,timeout=15)
+            if inspected.returncode:
+                if 'No such' not in inspected.stderr:raise RuntimeError('Sampler owner inspection unavailable')
+            elif json.loads(inspected.stdout)[0]['State']['Running']:continue
+            self.remove(ident)
+
+    def snapshot(self):
+        with self.lock:
+            if not self.stopped.is_set() and (self.thread is None or not self.thread.is_alive()) and time.monotonic()>=self.retry_at:
+                self.thread=threading.Thread(target=self.run,daemon=True,name='nvidia-allocation-sampler');self.thread.start()
+            now=time.time()
+            return [dict(row) for row in self.rows if -5<=now-row['sampled_at']<=10]
+
+    def accept(self,line):
+        value=json.loads(line)
+        if not isinstance(value,dict):raise ValueError('Invalid NVIDIA sample')
+        sample=value.get('sampled_at')
+        rows=[]
+        if type(sample) in (float,int) and -5<=time.time()-sample<=10:
+            rows=[{**row,'sampled_at':sample} for row in nvidia_allocation_rows(value.get('output',''))]
+        with self.lock:
+            previous={r['uuid']:r.get('memory_free_mib') for r in self.rows};self.rows=rows
+        # Wake admission when inventory first becomes usable or disappears.
+        if previous!={r['uuid']:r.get('memory_free_mib') for r in rows}:self.changed()
+
+    def remove(self,name):
+        result=subprocess.run(['docker','rm','-f',name],capture_output=True,text=True,timeout=15)
+        if result.returncode and 'No such container' not in result.stderr:raise RuntimeError('NVIDIA sampler cleanup unconfirmed')
+
+    def run(self):
+        name='swarm-gpu-inventory-nvidia-'+secrets.token_hex(8);process=None
+        try:
+            self.reap_orphans()
+            process=subprocess.Popen(self.command(name),stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout,selectors.EVENT_READ)
+                pending=b'';last=time.monotonic();deadline=60
+                while not self.stopped.is_set():
+                    if not selector.select(.5):
+                        if time.monotonic()-last>deadline:raise TimeoutError('NVIDIA sampler heartbeat unavailable')
+                        continue
+                    block=os.read(process.stdout.fileno(),65536)
+                    if not block:break
+                    pending+=block
+                    if len(pending)>65536:raise ValueError('Oversized NVIDIA inventory')
+                    while b'\n' in pending:
+                        line,pending=pending.split(b'\n',1);self.accept(line);last=time.monotonic();deadline=12
+        except (OSError,ValueError,RuntimeError,subprocess.SubprocessError):pass
+        finally:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:process.wait(timeout=3)
+                except subprocess.TimeoutExpired:process.kill();process.wait()
+            if process is not None:process.stdout.close()
+            try:self.remove(name)
+            except (OSError,RuntimeError,subprocess.SubprocessError):
+                # Do not spawn replacements while ownership is uncertain.
+                self.retry_at=float('inf')
+            with self.lock:
+                self.rows=[]
+                if self.retry_at!=float('inf'):self.retry_at=time.monotonic()+2
+            self.changed()
+
+    def close(self):
+        self.stopped.set()
+        if self.thread:self.thread.join(timeout=20)
 
 def required_test_repositories(suites, jobs=None, repositories=None):
     """Select only reviewed application source dependencies for an owned suite."""
@@ -1736,6 +1832,8 @@ class Agent:
         self.storage_status={}
         self.storage_lock=threading.RLock()
         self.storage_stop=threading.Event()
+        self.resource_condition=threading.Condition();self.resource_revision=0
+        self.nvidia_sampler=NvidiaSampler(self.gpu_inventory_changed)
         self.uploads = {}
         self.registry_transfers=0
         self.image_progress={}
@@ -1927,6 +2025,15 @@ class Agent:
             raise ValueError('Invalid run ID')
         return self.root/ident
 
+    def resource_changed(self):
+        condition=self.__dict__.setdefault('resource_condition',threading.Condition())
+        with condition:
+            self.resource_revision=getattr(self,'resource_revision',0)+1;condition.notify_all()
+
+    def gpu_inventory_changed(self):
+        self.gpu_resource_cache=None
+        self.resource_changed()
+
     def watch_docker_workers(self):
         """Observe existing Docker identities; this pipe never owns a worker."""
         since=str(int(time.time())-2)
@@ -1940,6 +2047,7 @@ class Agent:
                     if self.storage_stop.is_set():break
                     event=json.loads(line);action=event.get('Action',event.get('status'))
                     if action in ('create','start','die'):
+                        self.resource_changed()
                         actor=event.get('Actor') or {};attributes=actor.get('Attributes') or {}
                         if attributes.get('org.lifetech.group') in ('stream-work','shared-cache'):continue
                         job=attributes.get('org.lifetech.job','')
@@ -2127,6 +2235,12 @@ class Agent:
         self.validate_worker_storage(paths)
 
     def dispatch(self, op, args):
+        if op=='resource.events':
+            if (set(args)!={'after','timeout'} or type(args['after']) is not int or args['after']<0
+                    or type(args['timeout']) not in (float,int) or not 0<=args['timeout']<=25):raise ValueError('Invalid resource event cursor')
+            with self.resource_condition:
+                self.resource_condition.wait_for(lambda:self.resource_revision!=args['after'] or self.storage_stop.is_set(),timeout=args['timeout'])
+                return {'revision':self.resource_revision}
         if op=='worker.storage':
             if args:raise ValueError('Storage policy accepts no arguments')
             return self.worker_storage_policy()
@@ -2208,6 +2322,7 @@ class Agent:
                 if op=='resource.release':
                     entry=self.pending_resources.pop(ident,None)
                     if entry:entry['lease'].close()
+                    self.resource_changed()
                     self.busy();return {'released':True}
                 if op=='resource.renew':
                     # Compatibility for existing controllers; no timer or lease owner.
@@ -2330,7 +2445,7 @@ class Agent:
                     'machine':hashlib.sha256(machine.read_bytes()).hexdigest(),'hostname':socket.gethostname(),
                     'addresses':addresses,'platform':info['OSType']+'/'+info['Architecture'],
                     'routing':getattr(self,'routing_status',{'status':'pending'}),
-                    'worker_policy':policy,'capabilities':['controller-signature','github-jobs','p2p-browser','cancel','events','layer-pull','registry-read','peer-layer-cache','mptcp-transport','file-queue','snapshot-stage','event-wait','shared-resources','renewable-resources','docker-workers','durable-docker-workers-v1','execution-accounting-v1','persistent-command-pipes-v1','generic-workers','encrypted-backup','gpu-kernel','telemetry-push','performance-v1','builtin-monitor','stream-work-v1','independent-job-sinks-v1','node-command-v1','gpu-resource-inventory-v1','node-maintenance-recipes-v1','verified-ram-caches-v1','cache-cleanup-v1','node-cache-v1','worker-storage-v1','node-web-v1'],
+                    'worker_policy':policy,'capabilities':['controller-signature','github-jobs','p2p-browser','cancel','events','layer-pull','registry-read','peer-layer-cache','mptcp-transport','file-queue','snapshot-stage','event-wait','shared-resources','renewable-resources','docker-workers','durable-docker-workers-v1','execution-accounting-v1','persistent-command-pipes-v1','generic-workers','encrypted-backup','gpu-kernel','telemetry-push','performance-v1','builtin-monitor','stream-work-v1','independent-job-sinks-v1','node-command-v1','gpu-resource-inventory-v1','resource-events-v1','node-maintenance-recipes-v1','verified-ram-caches-v1','cache-cleanup-v1','node-cache-v1','worker-storage-v1','node-web-v1'],
                     'cache_summary':getattr(getattr(self,'cache_manager',None),'summary',{}),'enrolled_peers':sorted(config['peers']),'storage':self.storage_status,'storage_policy':self.worker_storage_policy(),
                     'hardware':self.hardware(info),
                     'preparations':[key for key,j in self.jobs.items() if j['status']=='running' and j.get('prepare_only')],
@@ -2886,6 +3001,8 @@ finally:v.vkDestroyInstance(instance,None)
         cache[key]=(time.time(),rows);return rows
 
     def host_nvidia_allocations(self):
+        if hasattr(self,'nvidia_sampler'):
+            return [] if getattr(self,'cuda_runtime',None) is False else self.nvidia_sampler.snapshot()
         with self.__dict__.setdefault('nvidia_probe_lock',threading.Lock()):
             if getattr(self,'cuda_runtime',None) is False:return []
             if time.monotonic()<getattr(self,'nvidia_probe_retry_at',0):return []
@@ -2991,6 +3108,7 @@ finally:v.vkDestroyInstance(instance,None)
         return value
 
     def close(self):
+        if hasattr(self,'nvidia_sampler'):self.nvidia_sampler.close()
         if hasattr(self,'commands'):self.commands.close()
         if hasattr(self,'stream_work'):self.stream_work.close()
         if hasattr(self,'control_executor'):self.control_executor.shutdown(wait=False,cancel_futures=True)
