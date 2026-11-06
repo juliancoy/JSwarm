@@ -148,7 +148,7 @@ def test_cache_rpc_rejects_replaced_machine_before_docker():
         agent.dispatch('resource.cache.prune',{'machine':'wrong'})
 
 
-def test_derived_legacy_lookup_rebuilds_into_singleton_on_upgraded_node(tmp_path,monkeypatch):
+def test_derived_legacy_lookup_preserves_a_valid_copy_without_rebuilding(tmp_path,monkeypatch):
     image='sha256:'+'e'*64;identity={'reference':'original'};old=binding(image,b'input')
     old={k:v for k,v in old.items() if k not in ('layout','path','subpath')}
     old.update(container='swarm-job-'+old['key'][:32],volume='swarm-cache-'+old['key'][:32])
@@ -156,21 +156,12 @@ def test_derived_legacy_lookup_rebuilds_into_singleton_on_upgraded_node(tmp_path
     folder=tmp_path/'.local/state/swarm-control/submission/shared-objects';folder.mkdir(parents=True)
     (folder/(derived+'.json')).write_text(json.dumps({'identity':identity,'cache':old}))
     monkeypatch.setattr(shared.Path,'home',lambda:tmp_path)
-    class Client:
-        def __init__(self,host):pass
-        def close(self):pass
-        def call(self,op):return {'capabilities':['node-cache-v1']}
-    monkeypatch.setattr(shared,'AgentClient',Client)
-    monkeypatch.setattr(shared,'inspect',lambda *a:pytest.fail('Legacy holder was reused'))
-    calls=[]
-    def ensure(host,image,files,loader,**kwargs):
-        assert kwargs['load_path'] is True and files==old['files']
-        calls.append('managed')
-        return binding(image,b'input')
-    monkeypatch.setattr(shared,'ensure',ensure)
-    def build(root):calls.append('rebuild');(root/'payload').write_bytes(b'input')
-    result=shared.ensure_derived({'host':'source','local':True},image,identity,build,lambda *a:None,load_path=True)
-    assert calls==['rebuild','managed'] and result['cache']['layout']=='node-cache-v1'
+    monkeypatch.setattr(shared,'inspect',lambda *a:{'Id':'owner'})
+    monkeypatch.setattr(shared,'ready',lambda *a:True)
+    def unavailable(*a,**kw):pytest.fail('Valid legacy data cannot require retired staging')
+    monkeypatch.setattr(shared,'ensure',unavailable)
+    result=shared.ensure_derived({'host':'source','local':True,'capabilities':['node-cache-v1']},image,identity,unavailable,unavailable,load_path=True)
+    assert result['cache']==old
 
 
 def test_warm_keeper_cannot_lend_memory_promised_to_new_objects():
