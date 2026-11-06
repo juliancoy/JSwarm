@@ -2149,6 +2149,10 @@ class Agent:
             if args:raise ValueError('GPU inventory accepts no arguments')
             return self.gpu_resources()
         if op.startswith('resource.cache.'):
+            if op!='resource.cache.inventory':
+                args=dict(args)
+                if args.pop('machine',None)!=hashlib.sha256(Path('/etc/machine-id').read_bytes()).hexdigest():
+                    raise ValueError('Cache node machine identity changed')
             if not hasattr(self, 'cache_manager'):
                 with self.lock:
                     if not hasattr(self, 'cache_manager'):

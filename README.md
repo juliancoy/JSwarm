@@ -58,58 +58,52 @@ GenomeHarbor. Legacy links rely on the adjacent workspace layout.
 
 ## Shared node memory
 
-JSwarm owns the reusable shared RAM cache in
-[`scripts/swarm_shared_cache.py`](scripts/swarm_shared_cache.py).
-Jobs declare an immutable set of files and use `ensure(host, image, files, load)`
-to prepare one verified cache per node. `image` is a pinned Docker image ID;
-each file declares its byte count and SHA-256. The application supplies the
-`load(owner_container)` callback that streams those files into `/dev/shm`.
-JSwarm verifies the payload before publishing the cache for reuse.
+Each updated node has one bounded RAM cache keeper, managed by its agent through
+controller-signed `resource.cache.*` operations. Immutable object sets live in
+separate directories of one Docker tmpfs volume. Jobs mount only their required
+object directories read-only using Docker `volume-subpath`; they never see the
+whole cache. Docker Engine must support volume subpaths. The keeper charges its
+payload commitment once, with one 128 MiB allowance for the node instead of one
+allowance and sleeping container per object. Configured limits are not measured
+physical RAM usage.
 
-Pass the returned descriptor to `swarm_runtime.run_job(..., shared_cache=cache)`.
-Concurrent jobs mount the same native Docker tmpfs volume read-only at
-`/dev/shm`; keep mutable scratch in a separate private mount, such as `/work`.
-The existing scheduler charges the cache owner's RAM once, while each job's
-`memory_mb` covers its private working memory and scratch. The cache owner
-also reserves one CPU slot. Job reports include the cache descriptor.
+The default payload budget is 25% of effective node RAM. The node owner can set
+`SWARM_CACHE_BUDGET_MB` before agent startup. Admission also checks actual node
+headroom; a cache budget does not reserve permission to exhaust host RAM. Idle
+objects are evicted in least-recently-used order to make room. Explicit cleanup
+removes all unpinned managed objects without consulting controller queue state.
+Queued jobs retain immutable preparation instructions, not permanent RAM pins.
+An input miss returns to preparation and rebuilds or transfers the same verified
+bytes before launch. Derived references are regenerated from their original
+source; cached lookup metadata alone never proves residency.
 
-JSwarm controls identity, admission, concurrent loading, verification and
-safe cleanup. Cache ownership comes from input bindings in the existing durable
-job requests, across namespaces and machines; there is no separate cache claims
-ledger. Prepared, queued, paused and retrying jobs retain their inputs. Completion
-or confirmed cancellation allows cleanup only after no unfinished job needs the
-entry and Docker confirms that no consumer or transfer uses it. Incomplete
-preparation and unknown queue state preserve caches. Capacity pressure can retry
-cleanup of terminal job data, but cannot evict inputs owned by unfinished jobs.
-External shared volumes remain owned by their coordinator queue; the node's
-stream journal cleans only its own streamed input entries. Cache preparation
-honors the node's worker policy and live capacity. There is no cache-wide or
-derived-object file lock: Docker's unique container name elects the loader;
-competing requests retry until its verified seal is available. Background terminal
-cleanup sweeps all eligible entries. Pressure-driven cleanup treats `required_mb`
-as the desired admission headroom, checks the node's capacity before and after
-successful deletions, and stops once that target is met. It prefers entries with
-fewer recorded consumers, preserving heavily reused objects when possible.
-Configured memory limits are never counted as proof of freed physical RAM.
+Loading, execution and transfers hold renewable 120-second pins. A lost
+controller's pins expire. Running and stopped Docker consumers independently
+protect their exact object directories even after agent replacement; unknown
+whole-volume readers or untracked keeper execs conservatively block eviction.
+The RAM manifest survives agent replacement with the keeper, and disappears with
+the payload on reboot. Results and private scratch remain outside this cache.
 
-Ownership lookups share a bounded, in-process read model of the existing queue.
-SQLite commit notifications (`PRAGMA data_version`) invalidate eligibility;
-unchanged request contents reuse their parsed bindings. A snapshot serves every
-physical node and namespace, while changed requests, state transitions, deletions
-and database replacement refresh the result. No read transaction stays open
-between calls. Eligibility is checked again after Docker inspection, immediately
-before removal; unreadable queue data prevents reclamation. No new durable
-ownership records or time-based eligibility cache are introduced.
+Applications call `swarm_shared_cache.ensure(..., load_path=True)`. The loader
+accepts `(owner_container, object_directory)` and streams files there. For older
+nodes it receives just `owner_container` and must default its directory to
+`/dev/shm`. Descriptors continue to contain pinned image IDs, byte counts and
+SHA-256 hashes. Generic `swarm_runtime.run_job` pins managed inputs through Docker
+cleanup. Peer transfers pin the source through completion. Loader paths, seals,
+instance identities and read-only file identities are checked before reuse.
 
-Applications choose cache contents, transfer method, private memory budget and
-fallback policy. GenomeHarbor's BWA adapter uses this interface; BWA formats,
-reference selection and alignment validation remain in GenomeHarbor. Across
-nodes, files are transferred into independent local caches. This interface
-provides shared host RAM, not shared VRAM or remote pointer access.
+Legacy per-object owners remain readable during migration and retain their
+previous terminal-queue and Docker-reference cleanup checks. Existing immutable
+node recipe bindings continue using their legacy owners until replaced; no
+accepted worker is stopped or rebound by this change. New managed genomics
+staging and recipe bundles share the node keeper. The pipeline shows one cache
+summary per machine, including overlapping legacy owners during migration.
 
-Validation: `python -m pytest tests/test_swarm_shared_cache.py tests/test_swarm_runtime.py`.
-The Docker integration check exercises concurrent consumers, read-only mounts,
-cache reuse, payload rejection and alignment output parity.
+Validation: `python -m pytest tests/test_node_cache_manager.py
+ tests/test_swarm_shared_cache.py tests/test_swarm_runtime.py` (on one line).
+The manager tests use uniquely named local Docker volumes and never enumerate or
+remove production cache holders. Build the runtime with `./build.sh`; publish and
+roll out through the standard validated release path.
 
 ## Fleet releases
 

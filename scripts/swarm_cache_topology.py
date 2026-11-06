@@ -28,7 +28,8 @@ class CacheTopology:
             rows=[]
             for cache in inventory['caches']:
                 key,_=contract(cache['image'],cache['files'])
-                validate_binding(cache)
+                if cache.get('layout')=='node-cache-v1':validate_binding(cache)
+                elif cache.get('key')!=key or cache.get('container')!='swarm-job-'+key[:32]:raise ValueError('Cache inventory binding differs')
                 rows.append(cache)
             return self.clock(),rows
         finally:client.close()

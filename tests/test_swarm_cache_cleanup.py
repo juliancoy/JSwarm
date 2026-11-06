@@ -99,13 +99,30 @@ def test_identity_change_before_apply_is_rejected(client, policy):
     assert 'resource.caches.cleanup' not in [call.args[0] for call in client.call.call_args_list]
 
 
-def test_missing_controller_queue_refuses_all_node_operations(tmp_path, monkeypatch):
+def test_missing_controller_queue_never_authorizes_legacy_cleanup(tmp_path, monkeypatch, client):
     import sys
     sys.path.insert(0, str(Path(cleanup.__file__).resolve().parents[1] / 'swarm-control/server'))
     import agent_client
     config = tmp_path / 'peers.json';config.write_text(json.dumps({'peers': {'mini': 'address'}}))
     monkeypatch.setattr(agent_client, 'CONFIG', config)
-    constructor = Mock();monkeypatch.setattr(agent_client, 'AgentClient', constructor)
-    with pytest.raises(ValueError, match='queue is missing'):
-        cleanup.cleanup_fleet('', queue=tmp_path / 'missing', apply=True)
-    constructor.assert_not_called()
+    monkeypatch.setattr(agent_client, 'AgentClient', lambda host:client)
+    source=Path(cleanup.__file__).with_name('swarm_shared_cache.py').read_text()
+    result=cleanup.cleanup_fleet(source,queue=tmp_path/'missing',apply=True)
+    assert result['summary']['removed']==0
+    assert result['summary']['eligible_at_inspection']==0
+    assert 'resource.caches.cleanup' not in [call.args[0] for call in client.call.call_args_list]
+
+
+def test_managed_cleanup_ignores_unfinished_queue_and_works_without_queue(client, policy):
+    original=client.call.side_effect
+    def call(op,args=None,**kwargs):
+        if op=='status':return {**original(op,args,**kwargs),'capabilities':['cache-cleanup-v1','node-cache-v1']}
+        if op=='resource.caches.inspect':return {'items':[]}
+        if op=='resource.cache.inventory':return {'items':[{'key':KEY,'pinned':False}]}
+        if op=='resource.cache.prune':return {'removed':[{'key':KEY,'layout':'node-cache-v1'}]}
+        return original(op,args,**kwargs)
+    client.call.side_effect=call
+    policy._ownership_for.return_value=(set(),{})
+    result=cleanup.clean_node('mini',client,policy,Path('/missing-queue'),apply=True)
+    assert result['status']=='complete' and len(result['removed'])==1
+    policy.finished_cache_keys.assert_not_called()

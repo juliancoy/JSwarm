@@ -14,6 +14,9 @@ def repositories(tmp_path):
         git(folder,'config','user.name','Test')
         git(folder,'config','user.email','test@localhost')
         (folder/'source.py').write_text('version = 1\n')
+        if folder==root:
+            (folder/'.gitignore').write_text('/JSwarm/\n/GenomeHarbor/\n')
+            git(folder,'add','.gitignore')
         git(folder,'add','source.py');git(folder,'commit','-qm','first')
         git(folder,'remote','add','origin',str(folder))
     return root
@@ -43,6 +46,25 @@ def test_changed_managed_checkout_is_rejected(tmp_path):
     (deployed/'JSwarm/source.py').write_text('tampered\n')
     with pytest.raises(RuntimeError,match='Managed Git source changed'):
         workspace(manifest,tmp_path/'node-source')
+
+
+def test_workspace_preserves_cross_repository_relative_assets(tmp_path):
+    root=repositories(tmp_path)
+    view=root/'JSwarm/swarm-control/server/view'
+    view.mkdir(parents=True)
+    web=root/'GenomeHarbor/web';web.mkdir()
+    (web/'genome.js').write_text('pinned genome asset\n')
+    (view/'genome.js').symlink_to('../../../../GenomeHarbor/web/genome.js')
+    git(root/'JSwarm','add','swarm-control')
+    git(root/'JSwarm','commit','-qm','link genome asset')
+    git(root/'GenomeHarbor','add','web')
+    git(root/'GenomeHarbor','commit','-qm','genome asset')
+    manifest=snapshot(root)
+    deployed=workspace(manifest,tmp_path/'node-source')
+    assert not (deployed/'JSwarm').is_symlink()
+    assert (deployed/'JSwarm/swarm-control/server/view/genome.js').read_text()=='pinned genome asset\n'
+    assert git(deployed,'rev-parse','HEAD')==manifest['Organization']['commit']
+    assert workspace(manifest,tmp_path/'node-source')==deployed
 
 
 def test_unavailable_commit_cannot_switch_existing_workspace(tmp_path):

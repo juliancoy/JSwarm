@@ -411,6 +411,16 @@ def test_gpu_setup_uses_daemon_ram_mount_and_embeds_admission_code(tmp_path):
     assert 'type=bind,src=/dev/shm,dst=/gpu-parent' in helper
     assert helper[-1]=='jswarm-gpu-locks/id' and '--read-only' in helper
     assert helper[helper.index('--memory')+1]==helper[helper.index('--memory-swap')+1]=='64m'
+    # Existing public ancestors are valid; the final accounting directory is
+    # private. Never traverse an attacker-controlled symlink during setup.
+    daemon=tmp_path/'daemon';daemon.mkdir();(daemon/'shared').mkdir(mode=0o755)
+    setup_code=helper[-2].replace("'/gpu-parent'",repr(str(daemon)))
+    with patch.object(runtime.sys,'argv',['setup','shared/private']):exec(setup_code,{})
+    assert (daemon/'shared/private').stat().st_mode & 0o777==0o700
+    outside=tmp_path/'outside';outside.mkdir();(daemon/'link').symlink_to(outside,target_is_directory=True)
+    import pytest
+    with patch.object(runtime.sys,'argv',['setup','link/private']),pytest.raises(AssertionError):exec(setup_code,{})
+    assert not (outside/'private').exists()
     worker=launch.call_args.args[0]
     import shlex
     command=json.loads((tmp_path/'report.json').read_text())['command']

@@ -107,7 +107,7 @@ def clean_node(name, client, policy, queue, apply=False, min_free_mb=None):
                     available = client.call('resource.capacity', timeout=20)['available_mb']
                     if available >= min_free_mb:break
                     args['required_mb'] = max(1, math.ceil(min_free_mb-available))
-                outcome = client.call('resource.cache.prune', args, timeout=120)
+                outcome = client.call('resource.cache.prune', {**args,'machine':verified['machine']}, timeout=120)
                 row['removed'].extend(outcome['removed'])
                 if min_free_mb is None or not outcome['removed']:break
         row['after'] = status_summary(client, name)
@@ -129,15 +129,7 @@ def cleanup_fleet(policy_source, hosts=None, apply=False, min_free_mb=None, queu
     if not names or len(set(names)) != len(names) or any(name not in config['peers'] for name in names):
         raise ValueError('Select distinct enrolled machine names')
     queue = Path(queue or Path.home() / '.local/state/swarm-control/submission/queue.sqlite').resolve()
-    if not queue.is_file():
-        raise ValueError('Controller submission queue is missing; refusing cleanup')
     policy = load_policy(policy_source)
-    # Strict preflight distinguishes an unreadable queue from "nothing eligible".
-    reader = policy._QueueOwnership(queue, None)
-    try:
-        reader.refresh()
-    finally:
-        reader.db.close()
 
     def one(name):
         client = None

@@ -194,6 +194,8 @@ with tempfile.TemporaryDirectory(prefix='launcher-start-update-') as temporary:
 class LauncherUpdates:
     def __init__(self,root,stopped,progress):
         self.stopped,self.progress=stopped,progress
+        root=Path(root)
+        if (root/'JSwarm/scripts').is_dir():root=root/'JSwarm'
         folder=Path(root)/'scripts'
         manifest=Path(root)/'.node-git-source.json'
         self.git_source=None

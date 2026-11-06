@@ -1,4 +1,21 @@
-# Shared RAM cache cleanup API and script
+# Shared RAM cache cleanup
+
+Updated nodes advertise `node-cache-v1`. Their singleton cache is controlled by
+signed `resource.cache.begin`, `seal`, `check`, `pin`, `renew`, `release`,
+`inventory`, `drop` and `prune` operations. Every mutation validates exact object
+keys; loading and reader pins expire after 120 seconds and renew every 30 seconds.
+The node also checks all Docker consumers, including stopped containers, before
+eviction. Queued or legacy controller jobs do not block managed cache cleanup.
+`prune {}` removes every currently unpinned object; `prune {"required_mb": N}`
+selects idle objects in LRU order until their recorded allocation reaches N.
+That allocation is a selection budget, not proof of physical RAM reclaimed.
+Callers recheck actual admission headroom after each pass.
+
+The fleet cleanup script below handles managed objects and legacy owners in one
+pass. Managed cleanup works without a controller queue file. Legacy objects still
+require readable terminal ownership and retain the safeguards described below.
+
+## Legacy per-object cleanup
 
 JSwarm exposes controller-signed RPCs over the existing encrypted `/agent/v1`
 transport. Updated nodes advertise `cache-cleanup-v1` in `status.capabilities`.

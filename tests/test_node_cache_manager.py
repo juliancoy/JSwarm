@@ -63,6 +63,7 @@ def test_loading_and_reader_pins_survive_agent_replacement_and_cleanup(keeper):
     manager,image=keeper;cache=binding(image,b'one');token='b'*64
     assert manager.dispatch('begin',{'cache':cache,'token':token})['state']=='loading'
     assert manager.dispatch('prune',{})['removed']==[]
+    assert manager.dispatch('begin',{'cache':cache,'token':'c'*64})['state']=='waiting'
     manager.docker(['exec',manager.name,'python3','-c',
                     'import pathlib,sys;pathlib.Path(sys.argv[1]).write_bytes(b"one")',cache['path']+'/payload'])
     manager.dispatch('seal',{'key':cache['key'],'token':token})
@@ -70,7 +71,14 @@ def test_loading_and_reader_pins_survive_agent_replacement_and_cleanup(keeper):
     successor=module.CacheManager(capacity=manager.capacity,machine=manager.machine,name=manager.name)
     assert successor.dispatch('prune',{})['removed']==[]
     successor.dispatch('release',{'key':cache['key'],'token':token})
+    assert successor.dispatch('prune',{'keep':[cache['key']]})['removed']==[]
     assert len(successor.dispatch('prune',{})['removed'])==1
+    load(successor,cache,b'one')
+    successor.dispatch('pin',{'key':cache['key'],'token':token})
+    successor.docker(['exec',successor.name,'python3','-c',
+        'import json,pathlib; p=pathlib.Path("/cache/.state.json"); v=json.loads(p.read_text()); '
+        '[i.update(pins={k:0 for k in i["pins"]}) for i in v.values()]; p.write_text(json.dumps(v))'])
+    assert len(successor.dispatch('prune',{})['removed'])==1  # Dead reader pins cannot leak forever.
 
 
 def test_readonly_subpath_hides_other_objects_and_stopped_consumer_blocks_eviction(keeper):
@@ -99,3 +107,42 @@ def test_seal_rejects_modified_contents_and_foreign_paths(keeper):
     with pytest.raises(RuntimeError,match='checksum differs'):
         manager.dispatch('seal',{'key':cache['key'],'token':token})
     assert manager.dispatch('inventory',{})['items'][0]['phase']=='loading'
+
+
+def test_managed_client_reuses_objects_and_pins_runtime_until_failure_cleanup(monkeypatch, tmp_path):
+    from scripts import swarm_runtime as runtime
+    image='sha256:'+'e'*64;data=b'input'
+    record=binding(image,data);events=[];objects={};loads=[]
+    class Client:
+        def __init__(self,host):pass
+        def close(self):pass
+        def call(self,op,args=None,**kwargs):
+            events.append((op,args))
+            if op=='status':return {'capabilities':['node-cache-v1'],'machine':'m'}
+            assert args['machine']=='m'
+            if op=='resource.cache.begin':
+                old=objects.get(args['cache']['key'])
+                objects[args['cache']['key']]=args['cache']
+                return {'state':'ready' if old else 'loading'}
+            return {}
+    monkeypatch.setattr(shared,'AgentClient',Client)
+    monkeypatch.setattr(shared,'command',lambda *a,**kw:pytest.fail('Managed cache used legacy Docker ownership'))
+    host={'host':'test','machine':'m'}
+    def loader(owner,path):loads.append((owner,path))
+    first=shared.ensure(host,image,record['files'],loader,load_path=True)
+    assert shared.ensure(host,image,record['files'],loader,load_path=True)==first
+    assert loads==[('swarm-node-cache','/cache/objects/'+record['key'])]
+    def execute(*args,**kwargs):
+        assert events[-1][0]=='resource.cache.pin'
+        raise RuntimeError('Execution interrupted')
+    monkeypatch.setattr(runtime,'_run_job',execute)
+    with pytest.raises(RuntimeError,match='Execution interrupted'):
+        runtime.run_job(host,image,'true',[],str(tmp_path),1,128,tmp_path/'report',group='test',shared_cache=first)
+    assert events[-1][0]=='resource.cache.release'
+
+
+def test_cache_rpc_rejects_replaced_machine_before_docker():
+    from scripts import launcher_agent
+    agent=launcher_agent.Agent.__new__(launcher_agent.Agent)
+    with pytest.raises(ValueError,match='machine identity changed'):
+        agent.dispatch('resource.cache.prune',{'machine':'wrong'})

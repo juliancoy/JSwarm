@@ -65,7 +65,7 @@ class pin:
         self.client = AgentClient(self.host)
         try:
             if self.acquire:
-                self.client.call('resource.cache.pin', {'key':self.cache['key'], 'token':self.token}, timeout=120)
+                self.client.call('resource.cache.pin', {'key':self.cache['key'], 'token':self.token, 'machine':self.host['machine']}, timeout=120)
             self.thread = threading.Thread(target=self.renew, daemon=True, name='cache-pin')
             self.thread.start()
         except BaseException as error:
@@ -75,7 +75,7 @@ class pin:
 
     def renew(self):
         while not self.stop.wait(30):
-            try:self.client.call('resource.cache.renew', {'key':self.cache['key'], 'token':self.token}, timeout=20)
+            try:self.client.call('resource.cache.renew', {'key':self.cache['key'], 'token':self.token, 'machine':self.host['machine']}, timeout=20)
             except Exception as error:
                 self.error = error
                 return
@@ -84,7 +84,7 @@ class pin:
         if self.client is None:return
         self.stop.set()
         self.thread.join(timeout=25)
-        try:self.client.call('resource.cache.release', {'key':self.cache['key'], 'token':self.token}, timeout=20)
+        try:self.client.call('resource.cache.release', {'key':self.cache['key'], 'token':self.token, 'machine':self.host['machine']}, timeout=20)
         except Exception:pass  # Expiry and actual Docker mounts remain authoritative.
         finally:self.client.close()
 
@@ -99,17 +99,17 @@ def _ensure_managed(host, image, files, load, metrics=None, on_bound=None):
     token = secrets.token_hex(32)
     client = AgentClient(host)
     try:
-        result = client.call('resource.cache.begin', {'cache':cache, 'token':token}, timeout=120)
+        result = client.call('resource.cache.begin', {'cache':cache, 'token':token, 'machine':host['machine']}, timeout=120)
         if result['state'] in ('waiting', 'capacity'):
             raise CapacityWait('Shared cache awaits loading or RAM headroom')
         if on_bound:on_bound(cache)
         if result['state'] == 'ready':
-            client.call('resource.cache.check', {'key':key}, timeout=120)
+            client.call('resource.cache.check', {'key':key, 'machine':host['machine']}, timeout=120)
             if metrics is not None:metrics.update(cache_hit=True, loaded_bytes=0)
             return cache
         with pin(host, cache, token=token, acquire=False):
             load(cache['container'], cache['path'])
-            client.call('resource.cache.seal', {'key':key, 'token':token}, timeout=120)
+            client.call('resource.cache.seal', {'key':key, 'token':token, 'machine':host['machine']}, timeout=120)
         if metrics is not None:metrics.update(cache_hit=False, loaded_bytes=sum(r['bytes'] for r in files.values()))
         return cache
     except CapacityWait:raise
@@ -182,7 +182,7 @@ def ready(host,cache,row):
         validate_binding(cache)
         client=AgentClient(host)
         try:
-            client.call('resource.cache.check', {'key':cache['key']}, timeout=120)
+            client.call('resource.cache.check', {'key':cache['key'], 'machine':host['machine']}, timeout=120)
             return True
         except (RuntimeError,ValueError):return False
         finally:client.close()
@@ -334,7 +334,7 @@ def remove_unused(host,cache,*,terminal=None):
     """Delete terminal job data only when the existing queue permits it."""
     if is_managed(cache):
         client=AgentClient(host)
-        try:return client.call('resource.cache.drop', {'key':cache['key']}, timeout=120).get('removed',False)
+        try:return client.call('resource.cache.drop', {'key':cache['key'], 'machine':host['machine']}, timeout=120).get('removed',False)
         finally:client.close()
     if terminal not in ('completed','failed','cancelled'):return False
     if cache['key'] not in finished_cache_keys(host):return False
@@ -402,8 +402,9 @@ def reclaim_completed(host,keep=None,*,required_mb=None):
             available = client.call('resource.capacity')['available_mb']
             if available >= required_mb:return removed
             args['required_mb'] = max(1, math.ceil(required_mb-available))
-        # Runtime pins protect keep entries on managed nodes.
-        return removed + len(client.call('resource.cache.prune', args, timeout=120)['removed'])
+        if keep:args['keep']=sorted({keep} if isinstance(keep,str) else set(keep))
+        # Runtime pins and explicit keep keys protect the current inputs.
+        return removed + len(client.call('resource.cache.prune', {**args,'machine':host['machine']}, timeout=120)['removed'])
     finally:client.close()
 
 

@@ -352,12 +352,18 @@ def validate_execution(definition):
         validate_gpu_sharing(gpu)
     cache=definition.get('shared_cache')
     if cache is not None:
-        if not isinstance(cache,dict) or set(cache)!={'image','files','key','container','volume','memory_mb','shm_mb'}:raise ValueError('Invalid shared reference binding')
+        managed=isinstance(cache,dict) and cache.get('layout')=='node-cache-v1'
+        expected={'image','files','key','container','volume','memory_mb','shm_mb'}
+        if managed:expected.update(('layout','path','subpath'))
+        if not isinstance(cache,dict) or set(cache)-{'host'}!=expected:raise ValueError('Invalid shared reference binding')
         if not re.fullmatch(r'sha256:[a-f0-9]{64}',str(cache['image'])) or not isinstance(cache['files'],dict) or not cache['files']:raise ValueError('Invalid reference owner image/objects')
         for name,row in cache['files'].items():
             if not re.fullmatch(r'[A-Za-z0-9_-][A-Za-z0-9_.-]{0,119}',name) or not isinstance(row,dict) or set(row)!={'bytes','sha256'} or type(row['bytes']) is not int or row['bytes']<1 or not is_sha(row['sha256']):raise ValueError('Invalid shared reference object')
         key=digest({k:cache[k] for k in ('image','files')})
-        if cache['key']!=key or cache['container']!='swarm-job-'+key[:32] or cache['volume']!='swarm-cache-'+key[:32]:raise ValueError('Shared reference identity differs')
+        if managed:
+            if (cache['key']!=key or cache['container']!='swarm-node-cache' or cache['volume']!='swarm-node-cache'
+                    or cache['path']!='/cache/objects/'+key or cache['subpath']!='objects/'+key):raise ValueError('Managed shared reference identity differs')
+        elif cache['key']!=key or cache['container']!='swarm-job-'+key[:32] or cache['volume']!='swarm-cache-'+key[:32]:raise ValueError('Shared reference identity differs')
         required=(sum(v['bytes'] for v in cache['files'].values())+1024**2-1)//1024**2+16
         if type(cache['shm_mb']) is not int or cache['shm_mb']!=required or type(cache['memory_mb']) is not int or cache['memory_mb']<required:raise ValueError('Shared reference budget differs')
 
@@ -967,20 +973,26 @@ class Engine:
         validate_execution(definition)
         args=[];gpu=definition.get('gpu');cache=definition.get('shared_cache')
         if cache:
-            owner=json.loads(self.command(['docker','inspect',cache['container']]).stdout)[0]
-            volume=json.loads(self.command(['docker','volume','inspect',cache['volume']]).stdout)[0]
-            options=volume.get('Options') or {}
-            if (owner.get('Image')!=cache['image'] or (owner['Config'].get('Labels') or {}).get('org.lifetech.cache-owner')!=cache['key']
-                    or volume.get('Driver')!='local' or options.get('type')!='tmpfs' or options.get('device')!='tmpfs'
-                    or (volume.get('Labels') or {}).get('org.lifetech.cache-owner')!=cache['key']
-                    or 'size='+str(cache['shm_mb'])+'m' not in options.get('o','').split(',')):raise ValueError('Shared reference owner/volume identity differs')
-            if not owner['State'].get('Running'):raise RuntimeError('Shared reference owner unavailable')
-            code="import json,pathlib; p=pathlib.Path('/dev/shm'); r=json.loads((p/'.ready.json').read_text()); print(json.dumps({'proof':r,'identities':{n:[s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns] for n in r['files'] for s in [(p/n).stat()]}}))"
-            ready=json.loads(self.command(['docker','exec',cache['container'],'python3','-c',code]).stdout)
-            proof=ready['proof']
-            if (any(proof.get(k)!=cache[k] for k in ('key','files')) or proof.get('container_id')!=owner['Id']
-                    or proof.get('started_at')!=owner['State']['StartedAt'] or ready['identities']!=proof.get('identities')):raise ValueError('Shared reference readiness proof differs')
-            args+=['--mount','type=volume,src='+cache['volume']+',dst=/dev/shm,readonly,volume-nocopy','--label','org.lifetech.shared-cache='+cache['container']]
+            if cache.get('layout')=='node-cache-v1':
+                try:self.agent.dispatch('resource.cache.check',{'key':cache['key'],'machine':self.machine})
+                except (ValueError,RuntimeError) as error:raise RuntimeError('Cache miss; recipe inputs need preparation') from error
+                args+=['--mount','type=volume,src='+cache['volume']+',dst=/dev/shm,readonly,volume-nocopy,volume-subpath='+cache['subpath'],
+                       '--label','org.lifetech.shared-cache-'+cache['key'][:12]+'='+cache['key']]
+            else:
+                owner=json.loads(self.command(['docker','inspect',cache['container']]).stdout)[0]
+                volume=json.loads(self.command(['docker','volume','inspect',cache['volume']]).stdout)[0]
+                options=volume.get('Options') or {}
+                if (owner.get('Image')!=cache['image'] or (owner['Config'].get('Labels') or {}).get('org.lifetech.cache-owner')!=cache['key']
+                        or volume.get('Driver')!='local' or options.get('type')!='tmpfs' or options.get('device')!='tmpfs'
+                        or (volume.get('Labels') or {}).get('org.lifetech.cache-owner')!=cache['key']
+                        or 'size='+str(cache['shm_mb'])+'m' not in options.get('o','').split(',')):raise ValueError('Shared reference owner/volume identity differs')
+                if not owner['State'].get('Running'):raise RuntimeError('Shared reference owner unavailable')
+                code="import json,pathlib; p=pathlib.Path('/dev/shm'); r=json.loads((p/'.ready.json').read_text()); print(json.dumps({'proof':r,'identities':{n:[s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns] for n in r['files'] for s in [(p/n).stat()]}}))"
+                ready=json.loads(self.command(['docker','exec',cache['container'],'python3','-c',code]).stdout)
+                proof=ready['proof']
+                if (any(proof.get(k)!=cache[k] for k in ('key','files')) or proof.get('container_id')!=owner['Id']
+                        or proof.get('started_at')!=owner['State']['StartedAt'] or ready['identities']!=proof.get('identities')):raise ValueError('Shared reference readiness proof differs')
+                args+=['--mount','type=volume,src='+cache['volume']+',dst=/dev/shm,readonly,volume-nocopy','--label','org.lifetech.shared-cache='+cache['container']]
         if gpu:
             active=self.command(['docker','ps','-q','--filter','label=org.lifetech.accelerator='+gpu['uuid']]).stdout.strip()
             if hasattr(self.agent,'gpu_resources'):
@@ -1004,6 +1016,21 @@ class Engine:
         return args
 
     def launch(self,row):
+        cache=self.definition(row['spec']).get('shared_cache')
+        if cache and cache.get('layout')=='node-cache-v1':
+            # A short RAM pin bridges validation to the Docker mount, including
+            # overlapping agent replacement. Docker protects the mounted object.
+            token=secrets.token_hex(32)
+            request={'key':cache['key'],'token':token,'machine':self.machine}
+            try:self.agent.dispatch('resource.cache.pin',request)
+            except (ValueError,RuntimeError) as error:raise RuntimeError('Cache miss; recipe inputs need preparation') from error
+            try:return self._launch(row)
+            finally:
+                try:self.agent.dispatch('resource.cache.release',request)
+                except (OSError,ValueError,RuntimeError):pass
+        return self._launch(row)
+
+    def _launch(self,row):
         definition=self.definition(row['spec'])
         if digest(definition)!=row['spec']['recipe_fingerprint']:raise ValueError('Installed recipe changed; submit a new work contract')
         if row['state'] in ('queued','retry_wait'):

@@ -35,7 +35,7 @@ def validate(repositories):
             raise ValueError('Invalid Git origin')
 
 
-def sync(repositories, base):
+def sync(repositories, base, *, checkout_root=None):
     """Fetch exact commits into dedicated detached worktrees, preserving old ones.
 
     The configuration directory is already mounted in node containers. Neither
@@ -44,7 +44,8 @@ def sync(repositories, base):
     validate(repositories)
     base=Path(base);base.mkdir(parents=True,exist_ok=True,mode=0o700)
     commits={}
-    for name,spec in repositories.items():
+    for name in ('Organization', 'JSwarm', 'GenomeHarbor'):
+        spec=repositories[name]
         cache=base/(name+'.git')
         if not cache.exists():
             subprocess.run(['git','init','--bare',str(cache)],check=True,capture_output=True,timeout=30)
@@ -52,8 +53,8 @@ def sync(repositories, base):
         git(cache,'-c','core.hooksPath=/dev/null','fetch','--no-tags','--',spec['origin'],spec['commit'])
         commit=git(cache,'rev-parse',spec['commit']+'^{commit}')
         if commit!=spec['commit']:raise ValueError('Fetched Git commit differs from publication')
-        checkout=base/name/commit
-        checkout.parent.mkdir(exist_ok=True)
+        checkout=(Path(checkout_root) if name=='Organization' else Path(checkout_root)/name) if checkout_root is not None else base/name/commit
+        checkout.parent.mkdir(parents=True,exist_ok=True)
         if not checkout.exists():
             git(cache,'-c','core.hooksPath=/dev/null','worktree','add','--detach',str(checkout),commit)
         if git(checkout,'rev-parse','HEAD')!=commit or git(checkout,'status','--porcelain','--untracked-files=all'):
@@ -65,12 +66,10 @@ def sync(repositories, base):
 def workspace(repositories, base):
     """Assemble the sibling layout used by the existing runtime release builder."""
     import hashlib
-    paths=sync(repositories,base)
     identity=hashlib.sha256(json.dumps(repositories,sort_keys=True).encode()).hexdigest()
     folder=Path(base)/'workspaces'/identity
-    folder.mkdir(parents=True,exist_ok=True)
-    for name in ('JSwarm','GenomeHarbor'):
-        target=folder/name
-        if not target.exists():target.symlink_to(paths[name],target_is_directory=True)
-        if target.resolve()!=Path(paths[name]).resolve():raise ValueError('Git workspace link changed')
+    # Real adjacent worktrees preserve cross-repository relative symlinks.
+    # Directory aliases resolve through the physical per-repository checkout
+    # and silently leave those links pointing outside the assembled workspace.
+    sync(repositories,base,checkout_root=folder)
     return folder

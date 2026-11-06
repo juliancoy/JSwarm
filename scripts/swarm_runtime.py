@@ -322,7 +322,7 @@ def _run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_f
             # within this worker's already acquired CPU/RAM reservation.
             parent='/dev/shm' if ram_only else str(Path(locks).parent)
             relative=str(Path(locks).relative_to(parent))
-            prepare="import pathlib,os,sys\np=pathlib.Path('/gpu-parent')\nfor part in pathlib.Path(sys.argv[1]).parts:\n p=p/part\n assert not p.is_symlink()\n p.mkdir(mode=0o700,exist_ok=True)\n assert (p.stat().st_uid==os.getuid() or os.getuid()==0) and not p.stat().st_mode & 0o077"
+            prepare="import pathlib,os,sys\np=pathlib.Path('/gpu-parent')\nfor part in pathlib.Path(sys.argv[1]).parts:\n p=p/part\n assert not p.is_symlink()\n p.mkdir(mode=0o700,exist_ok=True)\nassert (p.stat().st_uid==os.getuid() or os.getuid()==0) and not p.stat().st_mode & 0o077"
             setup=name+'-gpu-setup'
             helper=['docker','run','--rm','--pull=never','--name',setup,'--network','none','--read-only',
                     '--cap-drop','ALL','--security-opt','no-new-privileges','--cpus',str(min(cpus,.25)),

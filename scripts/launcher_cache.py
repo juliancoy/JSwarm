@@ -30,14 +30,15 @@ with (root/'.lock').open('a+') as lock:
  def save():
   tmp=root/'.state.tmp';tmp.write_text(json.dumps(entries));os.replace(tmp,state)
  def used():return sum(i['cache']['shm_mb'] for i in entries.values())
- def protected(key,item):return bool(item['pins']) or key in p.get('consumers',[]) or p.get('busy',False)
+ def protected(key,item):return bool(item['pins']) or key in p.get('consumers',[]) or key in p.get('keep',[]) or p.get('busy',False)
  def drop(key):
   item=entries.get(key)
   if item is None:return {'removed':False,'reason':'absent'}
   if protected(key,item):return {'removed':False,'reason':'pinned'}
   path=root/'objects'/key
   if path.is_symlink():raise ValueError('Cache directory changed')
-  if path.exists():shutil.rmtree(path)
+  if path.exists():
+   path.chmod(0o700);shutil.rmtree(path)
   del entries[key]
   return {'removed':True,'key':key}
  op=p['op'];key=p.get('key');result={}
@@ -90,6 +91,7 @@ with (root/'.lock').open('a+') as lock:
     f.chmod(0o444);s=f.stat();identities[name]=[s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns]
    proof={**item['cache'],'container_id':p['owner_id'],'started_at':p['started_at'],'identities':identities}
    (path/'.ready.json').write_text(json.dumps(proof));(path/'.ready.json').chmod(0o444)
+   path.chmod(0o555)
    item['phase']='ready';item['last_used']=now;item['pins'].pop(p['token'],None)
   else:
    if item['phase']!='ready':raise ValueError('Cache miss; prepare object again')
@@ -252,8 +254,10 @@ class CacheManager:
                 if not self.accepting():
                     raise ValueError('Node is paused')
             elif op == 'prune':
-                if set(args) - {'required_mb'} or ('required_mb' in args and (type(args['required_mb']) is not int or args['required_mb'] < 1)):
+                if set(args) - {'required_mb','keep'} or ('required_mb' in args and (type(args['required_mb']) is not int or args['required_mb'] < 1)):
                     raise ValueError('Invalid reclamation budget')
+                if 'keep' in args and (not isinstance(args['keep'],list) or any(not isinstance(k,str) or not re.fullmatch('[a-f0-9]{64}',k) for k in args['keep'])):
+                    raise ValueError('Invalid protected cache keys')
             elif op == 'inventory':
                 if args:raise ValueError('Inventory accepts no arguments')
             elif op in ('check', 'drop'):
