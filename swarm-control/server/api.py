@@ -25,6 +25,7 @@ ASSETS.update({'/'+name: name for name in ('task-manager.html','task-manager.js'
 ASSETS['/task-manager']='task-manager.html'
 ASSETS.update({'/'+name:name for name in ('monitor.js','monitor.css','monitor-model.js')})
 ASSETS.update({'/history':'history.html','/history.html':'history.html','/history.js':'history.js','/history-contributions.js':'history-contributions.js','/history.css':'history.css'})
+ASSETS.update({'/'+name:name for name in ('pipeline.html','pipeline.css','pipeline.js','pipeline-model.js','pipeline-colors.js','task-display.js','tasks.css')})
 ASSETS['/machine-connections.js']='machine-connections.js'
 ASSETS.update({'/'+name:name for name in ('message-markdown.js','marked-vendor.js','marked-LICENSE.txt')})
 ASSETS['/wgs-progress.js']='wgs-progress.js'
@@ -94,7 +95,7 @@ class Handler(BaseHTTPRequestHandler):
             name=ASSETS[path];return self.reply(200,(VIEW/name).read_bytes(),mimetypes.guess_type(name)[0] or 'application/octet-stream')
         pairing=self.command=='POST' and path=='/logout'
         deployment=path in ('/api/v1/test-app/status','/api/v1/test-app/download')
-        valid_read=self.command=='GET' and (path in ('/api/v1/swarm/wgs','/api/v1/swarm/history','/api/v1/swarm/connections','/api/v1/swarm/task-manager','/api/v1/swarm/status','/api/v1/swarm/session','/api/v1/swarm/research','/api/v1/swarm/research/jobs') or path==API+'queue' or path==API+'threads' or path.startswith(API+'threads/') or path in ('/api/v1/test-app/status','/api/v1/test-app/download'))
+        valid_read=self.command=='GET' and (path in ('/api/tasks/pipeline','/api/tasks/machine','/api/devices','/api/v1/swarm/wgs','/api/v1/swarm/history','/api/v1/swarm/connections','/api/v1/swarm/task-manager','/api/v1/swarm/status','/api/v1/swarm/session','/api/v1/swarm/research','/api/v1/swarm/research/jobs') or path==API+'queue' or path==API+'threads' or path.startswith(API+'threads/') or path in ('/api/v1/test-app/status','/api/v1/test-app/download'))
         valid_write=self.command=='POST' and path in (API+'commands',API+'queue',API+'queue/cancel',API+'queue/send-now',API+'transcribe','/api/v1/swarm/research/jobs','/api/v1/swarm/tests/request')
         if not (valid_read or valid_write or pairing):return self.reply(404,{'error':{'message':'Not found'}})
         if path!='/logout' and not identity.valid_session(origin,self.device()):return self.reply(401,{'error':{'message':'Sign in with PIdP to reconnect to CompAI'}})
@@ -127,6 +128,25 @@ class Handler(BaseHTTPRequestHandler):
                     if self.device():devices.revoke(self.device())
                     return self.reply(200,{'ok':True},cookie='__Host-compai_device=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0')
 
+            if path in ('/api/tasks/pipeline','/api/tasks/machine','/api/devices'):
+                from status import read_coordinator
+                from urllib.parse import urlencode
+                target = path
+                if path == '/api/tasks/machine':
+                    host = parse_qs(urlsplit(self.path).query).get('host', [''])[0]
+                    if not host or len(host) > 253:raise ValueError('Invalid machine')
+                    target += '?' + urlencode({'host': host})
+                elif path == '/api/devices':
+                    target += '?resolve=0'
+                try:
+                    if path == '/api/devices':return self.reply(200,read_coordinator(target))
+                    from urllib.request import urlopen
+                    from status import MAX_COORDINATOR_SNAPSHOT_BYTES
+                    with urlopen('http://127.0.0.1:8792'+target,timeout=4) as response:
+                        raw=response.read(MAX_COORDINATOR_SNAPSHOT_BYTES+1)
+                    if len(raw)>MAX_COORDINATOR_SNAPSHOT_BYTES:raise ValueError('Pipeline snapshot too large')
+                    return self.reply(200,json.loads(raw))
+                except (OSError,ValueError):return self.reply(503,{'error':{'message':'Pipeline observations unavailable'}})
             if path=='/api/v1/swarm/wgs':
                 from wgs_progress import snapshot
                 return self.reply(200,snapshot())

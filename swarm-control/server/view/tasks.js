@@ -20,8 +20,8 @@ function renderTask(task,changes){
  const p=task.primary_progress||task.progress,percent=pct(p?.work_percent??p?.percent),observedAt=latest?.sampled_at||task.updated;
  const eta=readEta(task,observedAt),metrics=el('dl');metrics.className='task-facts';
  const fact=(label,value)=>{const item=el('div');item.append(el('dt',label),el('dd',value));metrics.append(item);};
- fact(task.primary_progress?'Input aligned':'Verified',percent==null?'Measuring':percent+'%');
- fact(task.primary_progress?'Batches complete':'Work items complete',p?String(p.completed)+(task.primary_progress?'':' / '+p.total):'—');
+ fact(task.primary_progress?(p.label||'Input aligned'):'Verified',percent==null?'Measuring':percent+'%');
+ fact(task.primary_progress?'Batches complete':'Work items complete',p?String(p.completed)+(p.total!=null?' / '+p.total:''):'—');
  fact('Estimate',eta.text.replace(' · rough observed rate','').replace('Alignment ETA ~','~'));
  box.append(metrics,meter(percent,(p?.label||'Verified completion')+': '+task.name));
  if(p?.work_percent!=null){const text=el('p',progressText(p));text.className='scan-summary';box.append(text);}

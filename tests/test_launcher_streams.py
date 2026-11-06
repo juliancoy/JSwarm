@@ -82,6 +82,43 @@ def test_pause_after_admission_and_recovery(engine):
     assert e.store.get('piece-1')['state']=='cancelled' and not e.containers
 
 
+def test_node_ram_only_policy_rejects_durable_work_and_checks_queued_work(engine):
+    e=engine
+    e.dispatch('stream.submit',request())
+    s.atomic_json(e.agent.config.parent/'worker-storage.json',{'mode':'ram-only'})
+    # Idempotent reads of an accepted contract remain valid after a policy change.
+    assert e.dispatch('stream.capabilities',{})['storage_modes']==['ram-only']
+    assert e.dispatch('stream.submit',request())['state']=='queued'
+    with pytest.raises(ValueError,match='RAM-only'):
+        e.dispatch('stream.submit',request(id='durable-new'))
+    with pytest.raises(ValueError,match='RAM-only'):
+        e.launch(e.store.get('piece-1'))
+    assert not any(c[:2]==['docker','run'] for c in e.commands)
+    ram=request(id='ram-new',storage={'mode':'ram-only','scratch_mb':64})
+    assert e.dispatch('stream.submit',ram)['state']=='queued'
+    e.agent.validate_worker_storage=lambda paths:{'validated':True}
+    e.tick()
+    argv=next(c for c in e.commands if c[:2]==['docker','run'])
+    assert any(a.startswith('/work:rw,') for a in argv)
+    assert e.store.get('ram-new')['state']=='running'
+
+
+def test_ram_only_policy_does_not_stop_running_worker(engine):
+    e=engine;e.dispatch('stream.submit',request());e.tick()
+    s.atomic_json(e.agent.config.parent/'worker-storage.json',{'mode':'ram-only'})
+    e.tick()
+    assert e.store.get('piece-1')['state']=='running'
+    assert len([c for c in e.commands if c[:2]==['docker','run']])==1
+
+
+def test_ram_only_policy_rechecks_created_worker(engine):
+    e=engine;e.dispatch('stream.submit',request());e.tick()
+    row=e.store.get('piece-1');e.containers[row['container']]={'Running':False,'Status':'created'}
+    s.atomic_json(e.agent.config.parent/'worker-storage.json',{'mode':'ram-only'})
+    with pytest.raises(ValueError,match='RAM-only'):e.reconcile(row)
+    assert not any(c[:2]==['docker','start'] for c in e.commands)
+
+
 def test_cancel_allows_docker_its_full_grace_period(engine):
     from unittest.mock import Mock
     engine.dispatch('stream.submit',request());engine.tick()
@@ -567,3 +604,20 @@ def test_queue_wait_is_separate_from_execution_and_prior_attempts(engine,monkeyp
     assert value['queue_seconds']==280
     assert value['elapsed_seconds']==50
     assert value['attempt']==2
+
+
+def test_cached_file_cleanup_waits_for_all_queued_jobs(engine):
+    e=engine
+    first=request();first['inputs']['data']['mode']='shared'
+    e.dispatch('stream.submit',first)
+    second=request(id='second');second['inputs']['data']['mode']='shared'
+    e.dispatch('stream.submit',second)
+    folder=e.root/'cache';folder.mkdir()
+    path=folder/first['inputs']['data']['sha256'];path.write_bytes(b'cached payload')
+    path.with_suffix('.json').write_text('{}')
+    e.store.update('piece-1',state='completed')
+    e.release_job_cache(e.store.get('piece-1'))
+    assert path.exists()  # The second job has not even opened the cache yet.
+    e.store.update('second',state='cancelled')
+    e.release_job_cache(e.store.get('second'))
+    assert not path.exists() and not path.with_suffix('.json').exists()

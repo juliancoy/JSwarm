@@ -79,6 +79,38 @@ def test_nvidia_inventory_parses_driver_uuid_and_allocated_vram():
     assert row['memory_free_mib']==8192 and row['gpu_allocation_added_to_host_ram'] is False
 
 
+def test_nvidia_probe_timestamps_measurement_after_container_startup(tmp_path,monkeypatch):
+    a=agent.Agent.__new__(agent.Agent);a.root=tmp_path
+    clock=[100.0];calls=[]
+    monkeypatch.setattr(agent.time,'time',lambda:clock[0])
+    monkeypatch.setattr(agent,'hardware_sample',lambda **kw:{'gpus':[{'vendor':'NVIDIA'}]})
+    monkeypatch.setattr(agent,'gpu_worker_commitments',lambda:{'known':True,'devices':{}})
+    def run(args,**kwargs):
+        calls.append(args)
+        clock[0]=115.0
+        return SimpleNamespace(stdout=json.dumps({'sampled_at':114.0,'output':'GPU-11111111-1111-1111-1111-111111111111, 00000000:04:00.0, RTX, 12288, 8192, 0, 40'}))
+    monkeypatch.setattr(agent.subprocess,'run',run)
+    data=a.gpu_resources()
+    assert data['sampled_at']==114.0
+    gpu={'uuid':data['gpus'][0]['uuid'],'minimum_free_mib':512}
+    assert streams.resolve_gpu_allocation(gpu,data,data['machine'])==gpu
+    clock[0]=125.0
+    with pytest.raises(RuntimeError,match='stale'):streams.resolve_gpu_allocation(gpu,data,data['machine'])
+    assert calls[0][-3:-1]==['python3','-c']
+
+
+def test_timed_out_nvidia_probe_removes_its_container(tmp_path,monkeypatch):
+    a=agent.Agent.__new__(agent.Agent);calls=[]
+    def run(args,**kwargs):
+        calls.append(args)
+        if args[1]=='run':raise agent.subprocess.TimeoutExpired(args,15)
+        return SimpleNamespace(stdout='')
+    monkeypatch.setattr(agent.subprocess,'run',run)
+    assert a.host_nvidia_allocations()==[]
+    name=calls[0][calls[0].index('--name')+1]
+    assert calls[1]==['docker','rm','-f',name]
+
+
 def test_node_hardware_reads_fresh_native_gpu_counters_and_uses_runtime_when_needed(tmp_path,monkeypatch):
     a=agent.Agent.__new__(agent.Agent);a.root=tmp_path;a.config=tmp_path/'peers.json';a.hardware_cache=None;a.hardware_sampled=0;a.gpu_validation={}
     monkeypatch.setattr(agent,'hardware_sample',lambda **kw:{'gpus':[{'pci_id':'0000:04:00.0','vendor':'NVIDIA'}]})

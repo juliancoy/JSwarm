@@ -107,3 +107,12 @@ test('health and payload labels never imply zero from missing or stale counters'
  assert.equal(merged.hosts[0].percent,25);assert.equal(merged.hosts[0].network_interfaces[0].name,'eth0');
  assert.equal(mergeNetworkMeasurements(cpu,{hosts:[{host:'node',network_interfaces:[{status:'live',sampled_at:100,name:'eth0'}]}]},120).hosts[0].network_interfaces.length,0);
 });
+
+test('GPU counter access failures remain explicit instead of becoming idle zero',()=>{
+ const now=Date.now(),reason='Host PMU access is required';
+ const metrics={hosts:[{host:'node',status:'live',sampled_at:now/1000,hardware:{sampled_at:now/1000,gpus:[{pci_id:'pci',name:'Intel',utilization_unavailable_reason:reason}]}}]};
+ const row=deviceLevels({},metrics,'gpu',now)[0];
+ assert.equal(row.value,null);assert.equal(row.unavailableLabel,'Counter unavailable');assert.equal(row.basis,reason);
+ metrics.hosts[0].hardware.gpus[0].utilization_percent=0;
+ assert.equal(deviceLevels({},metrics,'gpu',now)[0].value,0);
+});

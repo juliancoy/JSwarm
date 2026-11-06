@@ -15,6 +15,17 @@ import time
 
 WINDOW=512*1024
 
+RAM_PATH_PROBE=r'''
+import json,pathlib,subprocess,sys
+swaps=pathlib.Path(sys.argv[2] if len(sys.argv)>2 else '/proc/swaps')
+if len(swaps.read_text().splitlines())>1:raise ValueError('RAM-only workers require host swap to be disabled')
+for value in json.loads(sys.argv[1]):
+ p=pathlib.Path(value).resolve(strict=True)
+ kind=subprocess.check_output(['findmnt','-n','-o','FSTYPE','--target',str(p)],text=True).strip()
+ if kind not in ('tmpfs','ramfs'):raise ValueError('RAM-only worker mount is not RAM-backed: '+value+' ('+kind+')')
+print(json.dumps({'validated':True}))
+'''
+
 
 # The Docker CLI can exit while its exec process keeps filling an abandoned
 # pipe. Keep a machine-local process identity so close also stops that group.
@@ -186,9 +197,18 @@ class CommandService:
         return process
     def changed(self):
         if self.agent:self.agent.busy()
-    def dispatch(self,op,args):
+    def dispatch(self,op,args,validate=None):
         ident=args.get('id')
         if not isinstance(ident,str) or not re.fullmatch(r'[a-f0-9]{32}',ident):raise ValueError('Invalid command identity')
+        if op=='command.storage':
+            paths=args.get('paths')
+            if set(args)!={'id','paths'} or not isinstance(paths,list) or len(paths)>128 or any(not isinstance(p,str) or not p.startswith('/') or '\0' in p for p in paths):raise ValueError('Invalid worker mount paths')
+            process=self.owner_spawn(['python3','-c',RAM_PATH_PROBE,json.dumps(paths)])
+            try:out,err=process.communicate(timeout=30)
+            except subprocess.TimeoutExpired:
+                process.kill();process.communicate();raise
+            if process.returncode:raise ValueError(err.decode(errors='replace')[-1000:])
+            return json.loads(out)
         if op=='command.start':
             if set(args)!={'id','argv'} or not isinstance(args['argv'],list) or not args['argv'] or any(not isinstance(s,str) or '\0' in s for s in args['argv']) or len(json.dumps(args['argv']))>512*1024:raise ValueError('Invalid owner command arguments')
             while True:
@@ -208,6 +228,7 @@ class CommandService:
             self.changed()
             try:
                 # Docker startup and process I/O must never hold the registry lock.
+                if validate:validate(args['argv'])
                 row=Command(args['argv'],self.spawn)
                 with self.lock:self.rows[ident]=row
                 return {'id':ident,'started':True}
@@ -303,8 +324,9 @@ class CommandProxy:
             raise error(value.get('error','Command operation failed'))
         return value['result']
 
-    def dispatch(self,op,args):
+    def dispatch(self,op,args,validate=None):
         if not hasattr(self,'routes'):self.routes={}
+        if op=='command.storage':return self._call(op,args,self.socket)
         ident=args['id'];cached=self.routes.get(ident)
         if cached is not None:
             try:
@@ -336,7 +358,9 @@ class CommandProxy:
             except OSError:
                 if not path.exists():continue
                 raise
-        if op=='command.start':return routed(self.socket)
+        if op=='command.start':
+            if validate:validate(args['argv'])
+            return routed(self.socket)
         if op=='command.close':return {'closed':True}
         raise FileNotFoundError('Command session unavailable; reconnect or retry its work unit')
 
@@ -374,7 +398,7 @@ def serve(config):
                 if op=='runtime.status':result={'active':service.active(),'pid':os.getpid(),'source_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
                 elif op=='runtime.lookup':
                     with service.lock:result={'known':args['id'] in service.rows or args['id'] in service.starts or args['id'] in service.tombstones}
-                elif op in ('command.start','command.poll','command.close'):result=service.dispatch(op,args)
+                elif op in ('command.start','command.poll','command.close','command.storage'):result=service.dispatch(op,args)
                 else:raise ValueError('Unknown command runtime operation')
                 reply={'ok':True,'result':result}
             except Exception as error:reply={'ok':False,'type':type(error).__name__,'error':str(error)[:500]}

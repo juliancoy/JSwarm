@@ -14,12 +14,12 @@ import sys
 import time
 import tempfile
 
-ROOT=Path(__file__).resolve().parents[4]
+ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT/'swarm-control/server'))
 from agent_updates import LauncherUpdates
 from agent_client import AgentClient,CONFIG
 
-INSTALL=r'''import base64,hashlib,json,os,pathlib,subprocess,sys
+INSTALL=r'''import base64,hashlib,json,os,pathlib,subprocess,sys,shlex
 os.umask(0o077)
 v=json.load(sys.stdin)
 if hashlib.sha256(pathlib.Path('/etc/machine-id').read_bytes()).hexdigest()!=v['machine']:raise RuntimeError('Machine identity mismatch')
@@ -30,14 +30,27 @@ if hashlib.sha256(raw).hexdigest()!=v['sha256']:raise RuntimeError('Runtime dige
 root=config.parent/'monitor-releases'/v['sha256'];root.mkdir(parents=True,exist_ok=True)
 (root/'runtime.zip').write_bytes(raw)
 (root/'run.py').write_text("import sys\nfrom pathlib import Path\nsys.path.insert(0,str(Path(__file__).with_name('runtime.zip')))\nfrom ramtop.swarm import main\nraise SystemExit(main())\n")
-candidates=[pathlib.Path.home()/'global/bin/python',pathlib.Path.home()/'.local/share/organization-node/venv/bin/python',pathlib.Path(sys.executable)]
-python=next((p for p in candidates if p.exists() and subprocess.run([str(p),'-c','import cryptography'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0),None)
+unit=pathlib.Path.home()/'.config/systemd/user/swarm-performance.service'
+existing=[]
+if unit.exists():
+ for line in unit.read_text().splitlines():
+  if line.startswith('ExecStart='):
+   argv=shlex.split(line.split('=',1)[1])
+   if argv and pathlib.Path(argv[0]).is_absolute():existing=[pathlib.Path(argv[0])]
+candidates=existing+[pathlib.Path.home()/'global/bin/python',pathlib.Path.home()/'.local/share/organization-node/venv/bin/python',pathlib.Path(sys.executable)]
+python=None
+for candidate in dict.fromkeys(candidates):
+ if not candidate.exists():continue
+ try:
+  if subprocess.run([str(candidate),'-c','import cryptography'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=5).returncode==0:
+   python=candidate;break
+ except subprocess.TimeoutExpired:continue
 if python is None:raise RuntimeError('Enrolled cryptography runtime is unavailable')
 unit=pathlib.Path.home()/'.config/systemd/user/swarm-performance.service';unit.parent.mkdir(parents=True,exist_ok=True)
 quote=lambda value:json.dumps(str(value).replace('%','%%'))
 source='[Unit]\nDescription=Swarm Node — built-in resource telemetry\nAfter=network-online.target\n[Service]\n'
 source+='ExecStart='+quote(python)+' '+quote(root/'run.py')+' --config '+quote(config)+'\n'
-source+='Environment=SWARM_MONITOR_REVISION='+v['sha256']+'\nRestart=on-failure\nRestartSec=3\nNoNewPrivileges=true\nUMask=0077\n[Install]\nWantedBy=default.target\n'
+source+='Environment=SWARM_MONITOR_REVISION='+v['sha256']+'\nRestart=on-failure\nRestartSec=3\nTimeoutStopSec=10\nNoNewPrivileges=true\nUMask=0077\n[Install]\nWantedBy=default.target\n'
 changed=not unit.exists() or unit.read_text()!=source
 unit.write_text(source)
 subprocess.run(['systemctl','--user','daemon-reload'],check=True,stdout=subprocess.DEVNULL)

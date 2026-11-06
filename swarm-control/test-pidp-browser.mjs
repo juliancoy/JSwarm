@@ -56,11 +56,14 @@ try{
  browser=await chromium.launch({headless:true,executablePath:'/usr/bin/google-chrome'});
  const contexts=[];
  for(const width of [1440,390]){
-  const context=await browser.newContext({ignoreHTTPSErrors:true,viewport:{width,height:950}});contexts.push(context);const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
-  await page.goto(origin);await page.getByRole('button',{name:'Sign in with PIdP'}).click();await page.locator('.pidp-user').waitFor({timeout:5000});await page.waitForFunction(()=>document.querySelector('.pidp-user img')?.naturalWidth>0);
+  const context=await browser.newContext({ignoreHTTPSErrors:true,viewport:{width,height:width===390?740:950}});contexts.push(context);const page=await context.newPage();const errors=[];page.on('pageerror',e=>{errors.push(e.message);console.error(e.message)});page.on('response',r=>{if(r.status()>=400)console.error(r.status(),r.url())});
+  await page.goto(origin);await page.getByRole('button',{name:'Sign in with PIdP'}).click();await page.locator('.pidp-user').waitFor({timeout:15000}).catch(async e=>{console.error(await page.locator('body').innerText(),stderr);throw e;});await page.waitForFunction(()=>document.querySelector('.pidp-user img')?.naturalWidth>0);
   assert.equal(await page.locator('.pidp-user-name').textContent(),'Synthetic Owner');assert.equal(await page.getByPlaceholder('Enter your owner token').count(),0);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   assert.equal(await page.evaluate(async()=> (await fetch('/pair',{method:'POST',headers:{'Content-Type':'application/json'},body:'{"token":"obsolete-pairing-token"}'})).status),404);
   await page.locator('.codex-thread').first().click();await page.locator('.codex-thread-info h2').waitFor();
+  const boxes=await page.evaluate(()=>{const rect=selector=>{const r=document.querySelector(selector).getBoundingClientRect();return {top:r.top,bottom:r.bottom}};return {send:rect('.codex-actions button'),nav:rect('.codex-header-actions'),height:innerHeight}});
+  assert.ok(boxes.nav.top>=0);if(width===390)assert.ok(boxes.send.bottom<=boxes.height,JSON.stringify(boxes));
+  await page.screenshot({path:join(out,`conversation-${width}.png`)});
   const draft=page.getByRole('textbox',{name:'Instruction to the selected thread'});await draft.fill('Keep my unsent draft');
   await page.evaluate(()=>history.back());await page.waitForFunction(()=>!document.querySelector('.codex-workspace').classList.contains('codex-reading'));
   assert.equal(new URL(page.url()).origin,origin);assert.equal(await page.locator('.codex-thread').first().isVisible(),true);

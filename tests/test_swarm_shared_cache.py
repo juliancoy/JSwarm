@@ -83,12 +83,19 @@ def test_real_concurrent_bwa_shards_share_one_readonly_inode_and_load_once(tmp_p
             result=docker('exec','-i',container,'python3','-c','import pathlib,sys;pathlib.Path(sys.argv[1]).write_bytes(sys.stdin.buffer.read())','/dev/shm/'+name,input=data,timeout=15)
             assert result.returncode==0,result.stderr.decode()
     try:
+        def prepare(_):
+            deadline=time.monotonic()+60
+            while True:
+                try:return cache.ensure(host,tool_image,files,load)
+                except cache.CapacityWait:
+                    assert time.monotonic()<deadline
+                    time.sleep(.05)
         with ThreadPoolExecutor(max_workers=2) as pool:
-            a,b=list(pool.map(lambda _:cache.ensure(host,tool_image,files,load),range(2)))
+            a,b=list(pool.map(prepare,range(2)))
         binding=a
         assert a==b and len(loads)==1
         assert cache.inspect(host,'container',binding['container'])['HostConfig']['NanoCpus']==100000000
-        assert len([r for op,r in admitted if op=='resource.acquire'])==1
+        assert {r['id'] for op,r in admitted if op=='resource.acquire'}=={binding['key'][:32]}
         program=r'''
 import errno,hashlib,json,os,pathlib,subprocess,time
 while not pathlib.Path('/dev/shm/.test-go').exists():time.sleep(.05)
@@ -124,7 +131,7 @@ print(json.dumps({'inode':[s.st_dev,s.st_ino],'sam_sha256':hashlib.sha256(data).
         with pytest.raises(RuntimeError,match='Cache object changed'):cache.mount_args(host,binding)
     finally:
         for name in names:docker('rm','-f',name)
-        if binding:cache.remove_unused(host,binding)
+        if binding:cache._remove_unreferenced(host,binding)
 
 
 def test_corrupt_cache_is_rejected_and_removed(admitted,tool_image):
@@ -159,20 +166,30 @@ def test_stopped_ram_cache_is_reloaded_instead_of_restarted_empty(tmp_path,admit
         assert second['Id']!=first['Id'] and len(loads)==2
         assert cache.ready(host,rebuilt,second)
     finally:
-        if binding:cache.remove_unused(host,binding)
+        if binding:cache._remove_unreferenced(host,binding)
 
 
-def test_derived_objects_build_once_and_mount_at_multiple_readonly_targets(tmp_path,admitted,tool_image):
+def test_concurrent_derivations_publish_one_cache_and_mount_readonly_targets(tmp_path,admitted,tool_image):
     host={'host':'fixture','local':True,'machine':uuid.uuid4().hex,'container_user':'1000:1000'}
-    builds=[];binding=None;payload=uuid.uuid4().bytes
+    builds=[];loads=[];binding=None;payload=uuid.uuid4().bytes
     def build(root):builds.append(1);(root/'reference.fa').write_bytes(payload)
     def load(owner,root,files):
+        loads.append(owner)
         p=docker('exec','-i',owner,'python3','-c',"import pathlib,sys;pathlib.Path('/dev/shm/reference.fa').write_bytes(sys.stdin.buffer.read())",input=(root/'reference.fa').read_bytes())
         assert p.returncode==0,p.stderr.decode()
     try:
-        with ThreadPoolExecutor(2) as pool:
-            results=list(pool.map(lambda _:cache.ensure_derived(host,tool_image,{'source':'sha','contig':'1'},build,load),range(2)))
-        binding=results[0]['cache'];assert results[0]==results[1] and len(builds)==1
+        def prepare(_):
+            deadline=time.monotonic()+60
+            while True:
+                try:return cache.ensure_derived(host,tool_image,{'source':'sha','contig':'1'},build,load)
+                except cache.CapacityWait:
+                    assert time.monotonic()<deadline
+                    time.sleep(.05)
+        with ThreadPoolExecutor(2) as pool:results=list(pool.map(prepare,range(2)))
+        binding=results[0]['cache'];assert results[0]==results[1] and len(loads)==1
+        count=len(builds)
+        assert cache.ensure_derived(host,tool_image,{'source':'sha','contig':'1'},build,load)==results[0]
+        assert len(builds)==count
         args=cache.mount_args(host,binding,target='/references/one',primary=False)
         p=docker('run','--rm','--network','none',*args,tool_image,'python3','-c',"import pathlib;assert pathlib.Path('/references/one/reference.fa').read_bytes()=="+repr(payload))
         assert p.returncode==0,p.stderr.decode()
@@ -183,9 +200,44 @@ def test_derived_objects_build_once_and_mount_at_multiple_readonly_targets(tmp_p
         assert cache.remove_unused(host,binding) is False
         time.sleep(3.2)
     finally:
-        if binding:cache.remove_unused(host,binding)
+        if binding:cache._remove_unreferenced(host,binding)
 
 
 def test_unscoped_pressure_sweep_cannot_evict_prepared_queue_inputs(monkeypatch):
     monkeypatch.setattr(cache,'command',lambda *a,**k:pytest.fail('Unscoped eviction enumerated caches without queue ownership'))
     assert cache.evict_unused({'host':'fixture'},keep='other-object')==0
+
+
+def test_finished_cache_keys_protects_unfinished_claims_and_other_nodes(tmp_path):
+    import sqlite3
+    path=tmp_path/'queue.sqlite'
+    def binding(key):return {'key':key,'container':'swarm-job-'+key[:32],'volume':'swarm-cache-'+key[:32]}
+    with sqlite3.connect(path) as db:
+        db.execute('CREATE TABLE submissions(state TEXT,host TEXT,request TEXT)')
+        for state,host,keys in [('completed','mini',['a'*64,'b'*64]),
+                                ('accepted','mini',['b'*64]),('preparing','mini#cpu',['c'*64]),
+                                ('completed','mini',['c'*64]),('completed','other',['d'*64])]:
+            db.execute('INSERT INTO submissions VALUES(?,?,?)',(state,host,json.dumps({'transport':{'references':[binding(k) for k in keys]}})))
+    assert cache.finished_cache_keys({'host':'mini'},path)=={'a'*64}
+    assert cache.finished_cache_keys({'host':'mini'},tmp_path/'missing')==set()
+
+
+def test_reclamation_requires_owner_candidates_and_preserves_live_bulk_readers(monkeypatch):
+    monkeypatch.setattr(cache,'command',lambda *a,**kw:pytest.fail('Unscoped eviction queried Docker'))
+    assert cache.evict_unused({'host':'mini'})==0
+    monkeypatch.setattr(cache,'users',lambda *a:[])
+    monkeypatch.setattr(cache,'inspect',lambda *a:{'Id':'owner-id','ExecIDs':['active-reader']})
+    assert cache.remove_unused({'host':'mini'},{'container':'cache','volume':'cache-volume'}) is False
+
+
+def test_placement_reclaims_before_rejecting_idle_node(monkeypatch):
+    from unittest.mock import Mock
+    client=Mock();client.call.side_effect=[{'available_mb':936},{'available_mb':2200}]
+    reclaim=Mock(return_value=3);monkeypatch.setattr(cache,'reclaim_completed',reclaim)
+    host={'host':'mini','machine':'id'}
+    assert cache.capacity_for_work(host,client,'compute',1792)['available_mb']==2200
+    reclaim.assert_called_once_with(host,required_mb=1792)
+    assert client.call.call_count==2
+    reclaim.reset_mock();client.call.side_effect=[{'available_mb':2200}]
+    cache.capacity_for_work(host,client,'compute',1792)
+    reclaim.assert_not_called()

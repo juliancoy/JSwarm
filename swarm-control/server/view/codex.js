@@ -13,10 +13,11 @@ const title = el('div'); title.append(el('h1', secureRemote ? 'Swarm Control' : 
 const deviceStatus=el('p','','muted');title.append(deviceStatus);
 const lock = el('button', 'Lock'); lock.hidden = true;
 const mapLink=el('a','Swarm status ↗','codex-map-link'); mapLink.href='/swarm-status'; mapLink.target='_blank'; mapLink.rel='noopener noreferrer'; mapLink.title='Open remote swarm status';
-const taskLink=el('a','Task Manager','codex-map-link');taskLink.href='/task-manager';
+const taskLink=el('a','Resource usage','codex-map-link');taskLink.href='/task-manager';
 const researchLink=el('a','Research ↗','codex-map-link');researchLink.href='/research.html';
 const historyLink=el('a','History','codex-map-link');historyLink.href='/history';
-const headerActions=el('div','','codex-header-actions'); headerActions.append(taskLink,historyLink,mapLink,researchLink,lock);
+const pipelineLink=el('a','Pipeline','codex-map-link');pipelineLink.href='/pipeline.html';
+const headerActions=el('div','','codex-header-actions'); headerActions.append(taskLink,pipelineLink,historyLink,mapLink,researchLink,lock);
 const userBadge=el('div','','pidp-user');userBadge.hidden=true;const userAvatar=el('img');userAvatar.width=36;userAvatar.height=36;userAvatar.referrerPolicy='no-referrer';const userInitials=el('span','','pidp-user-initials');const userName=el('span','','pidp-user-name');userBadge.append(userAvatar,userInitials,userName);headerActions.append(userBadge); heading.append(title,headerActions);
 const unlock = el('form', '', 'codex-unlock'); unlock.hidden=secureRemote;
 const label = el('label', 'Codex owner token '), password = el('input'); password.type = 'password'; password.autocomplete = 'off'; password.required = true; password.placeholder = 'Enter your owner token'; label.append(password);
@@ -91,7 +92,7 @@ async function load() {
   if (!value.threads.length) list.append(el('p', 'No local conversations found.'));
   filterThreads();
   status.dataset.state=value.connected?'connected':'disconnected';
-  status.textContent = value.machine + (value.connected ? ' · VS Code socket available' : ' · VS Code disconnected');
+  status.textContent = value.machine + (value.connected ? ' · Conversation service available' : ' · VS Code disconnected');
   if(secureRemote){const r=await fetch('/api/v1/swarm/session',{cache:'no-store'});if(r.ok){const d=await r.json();deviceStatus.textContent=d?`This controller: ${d.label} · Last seen ${new Date(d.last_seen*1000).toLocaleString()}`:'';const name=d.user?.name||'PIdP user';userName.textContent=name;userBadge.title='Signed in with PIdP as '+name;userBadge.hidden=false;userInitials.textContent=name.split(/\s+/).slice(0,2).map(part=>part[0]).join('').toUpperCase();userAvatar.hidden=true;userInitials.hidden=false;userAvatar.onload=()=>{userAvatar.hidden=false;userInitials.hidden=true;};userAvatar.onerror=()=>{userAvatar.hidden=true;userInitials.hidden=false;};userAvatar.alt=name+' avatar';if(d.user?.avatar_url&&userAvatar.getAttribute('src')!==d.user.avatar_url)userAvatar.src=d.user.avatar_url;else if(d.user?.avatar_url&&userAvatar.complete&&userAvatar.naturalWidth){userAvatar.hidden=false;userInitials.hidden=true;}}}
 }
 function showConversations(){saveDraft();empty.hidden=false;workspace.classList.remove('codex-reading');list.querySelector('[aria-pressed=true]')?.focus();}
@@ -124,11 +125,12 @@ async function choose(id,{recordHistory=true}={}) {
   try { await readThread(); await load(); await queue.refresh(); } finally { conversation.setAttribute('aria-busy','false'); }
 }
 const autoConnectAt=new Map();
+let threadReadRevision=0;
 async function readThread() {
   if (!selected) { form.hidden = true; return; }
-  const id = selected, epoch = generation;
+  const id = selected, epoch = generation, revision = ++threadReadRevision;
   const thread = await api('threads/' + encodeURIComponent(id));
-  if (epoch !== generation || selected !== id) return;
+  if (epoch !== generation || selected !== id || revision !== threadReadRevision) return;
   empty.hidden=workspace.classList.contains('codex-reading'); transcript.hidden=false;
   const connectionState=thread.connection_state || (thread.owner_connected?'connected':'detached');
   if(!thread.owner_connected && ['detached','connecting'].includes(connectionState) && Date.now()-(autoConnectAt.get(id)||0)>10000){
@@ -222,3 +224,8 @@ async function restoreDevice(){
 void restoreDevice();
 let polling = false;
 setInterval(async () => { if ((!token && !secureRemote) || workspace.hidden || !workspace.classList.contains('codex-reading') || document.hidden || busy || polling) return; polling = true; try { if (selected) {await readThread();await queue.refresh();} } catch (error) { failure(error); } finally { polling = false; } }, 5000);
+
+// Refresh immediately after returning from another app or unlocking the phone.
+function refreshVisibleThread(){if(!document.hidden&&!workspace.hidden&&selected&&!busy)void readThread().then(()=>queue.refresh()).catch(failure);}
+document.addEventListener('visibilitychange',refreshVisibleThread);
+window.addEventListener('online',refreshVisibleThread);

@@ -143,6 +143,29 @@ def digest(value):return hashlib.sha256(canonical(value).encode()).hexdigest()
 def is_sha(value):return isinstance(value,str) and re.fullmatch(r'[a-f0-9]{64}',value) is not None
 
 
+
+
+
+
+def worker_storage_policy(config):
+    """Container environment pins policy; mounted owner settings survive releases."""
+    mode=os.environ.get('JSWARM_WORKER_STORAGE')
+    source='environment' if mode is not None else 'configuration'
+    if mode is None:
+        path=Path(config).parent/'worker-storage.json'
+        mode=json.loads(path.read_text())['mode'] if path.exists() else 'durable'
+    if mode not in ('durable','ram-only'):raise ValueError('Invalid JSwarm worker storage mode')
+    return {'mode':mode,'source':source,'payload_disk_fallback':mode!='ram-only'}
+
+
+def set_worker_storage_policy(config,mode):
+    if mode not in ('durable','ram-only'):raise ValueError('Invalid JSwarm worker storage mode')
+    pinned=os.environ.get('JSWARM_WORKER_STORAGE')
+    if pinned is not None and pinned!=mode:raise ValueError('Worker storage is pinned by the container environment')
+    atomic_json(Path(config).parent/'worker-storage.json',{'mode':mode})
+    return worker_storage_policy(config)
+
+
 def atomic_json(path,value):
     path=Path(path);path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
     temporary=path.with_name(path.name+'.'+secrets.token_hex(6)+'.tmp')
@@ -482,14 +505,8 @@ def shared_input(row,create,cache,budget):
             if valid:
                 fcntl.flock(lock,fcntl.LOCK_SH);return CachedReader(path,lock)
         occupied=sum(p.stat().st_size for p in cache.iterdir() if is_sha(p.name) and p.is_file())
-        for candidate in sorted((p for p in cache.iterdir() if is_sha(p.name) and p.is_file()),key=lambda p:p.stat().st_atime_ns):
-            if occupied+row['bytes']<=budget:break
-            guard=(cache/(candidate.name+'.lock')).open('a+')
-            try:
-                try:fcntl.flock(guard,fcntl.LOCK_EX|fcntl.LOCK_NB)
-                except BlockingIOError:continue
-                occupied-=candidate.stat().st_size;candidate.unlink();candidate.with_suffix('.json').unlink(missing_ok=True)
-            finally:guard.close()
+        # Existing payloads belong to jobs, not an LRU pressure budget.
+        # If they fill the budget, stream this input without evicting theirs.
         if row['bytes']>budget or occupied+row['bytes']>budget or shutil.disk_usage(cache).free<row['bytes']:
             lock.close();return create()  # Caching is a preference, never a data-size cap.
         for stale in cache.glob(row['sha256']+'.*.partial'):stale.unlink(missing_ok=True)
@@ -732,6 +749,7 @@ class Journal:
 class Engine:
     """Node-local admission and recovery; Docker workers survive launcher reloads."""
     def __init__(self,agent,lease_factory,policy,start=True,state_root=None):
+        worker_storage_policy(agent.config)
         self.agent=agent;self.lease_factory=lease_factory;self.policy=policy;self.root=Path(state_root or agent.root)/'.stream-work';self.root.mkdir(mode=0o700,exist_ok=True)
         self.store=Journal(self.root/'work.sqlite3');self.stopped=threading.Event();self.pending={};self.lock=threading.RLock();self.last_error=None
         self.stop_pool=concurrent.futures.ThreadPoolExecutor(max_workers=4,thread_name_prefix='stream-stop');self.stops={};self.maintenance_at=0
@@ -739,10 +757,41 @@ class Engine:
         self.runtime=Path(__file__).resolve();self.revision=hashlib.sha256(self.runtime.read_bytes()).hexdigest()
         if start:
             self.thread=threading.Thread(target=self.loop,name='launcher-stream-work',daemon=True);self.thread.start()
+    def storage_policy(self):
+        return worker_storage_policy(self.agent.config)
+
+    def set_storage_policy(self,mode):
+        return set_worker_storage_policy(self.agent.config,mode)
+
+    def validate_storage(self,spec,definition):
+        if self.storage_policy()['mode']=='ram-only':
+            if spec.get('storage',{}).get('mode')!='ram-only':raise ValueError('Node requires RAM-only worker storage')
+            self.agent.validate_worker_storage([m['source'] for m in definition.get('mounts',[])])
+
     def definition(self,spec):
         if spec.get('recipe_definition') is not None:return spec['recipe_definition']
         if spec['recipe'] in BUILTINS:return {'image':spec['image'],'argv':['python3','/runtime/launcher_streams.py','--worker','/work/job.json'],'version':spec.get('runtime_sha256',self.revision)}
         return self.registry[spec['recipe']]
+    def release_job_cache(self,row):
+        if row['state'] not in TERMINAL:return
+        # Externally prepared shared volumes belong to their coordinator queue.
+        # This journal owns only its streamed input files. Never race the
+        # coordinator's prepared jobs by deleting an externally owned volume.
+        candidates={r['sha256'] for r in row['spec']['inputs'].values() if r.get('mode')=='shared'}
+        if not candidates:return
+        # The existing journal protects queued, paused, retrying and running jobs,
+        # including the gap before a worker opens its shared input file.
+        for other in self.rows():
+            if other['id']!=row['id'] and other['state'] not in TERMINAL:
+                candidates-={r['sha256'] for r in other['spec']['inputs'].values() if r.get('mode')=='shared'}
+        for sha in candidates:
+            path=self.root/'cache'/sha
+            if not path.exists() or path.is_symlink():continue
+            with path.with_suffix('.lock').open('a+') as guard:
+                try:fcntl.flock(guard,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                except BlockingIOError:continue
+                path.unlink(missing_ok=True);path.with_suffix('.json').unlink(missing_ok=True)
+
     def reply(self,row):
         result={k:row[k] for k in ('id','state','attempt','updated','result','error','container','priority')}
         result['archived']=row.get('archived',False)
@@ -785,7 +834,7 @@ class Engine:
         if op=='stream.capabilities':self.registry=recipes(self.agent.config)
         if op=='stream.capabilities':
             if args:raise ValueError('Streaming capabilities accepts no arguments')
-            return {'version':VERSION,'runtime_sha256':self.revision,'recipes':list(BUILTINS)+sorted(self.registry),'buffer_bytes':BUFFER,'durable_cancellation':True,'safe_removal':True,'lifecycle_budgets':LIFECYCLE,'durable_checkpoints':True,'queue_priorities':True,'gpu_recipes':True,'shared_reference_volumes':True,'direct_result_export':True,'compute_phase_release':True,'payload_cache':'streamed-by-default; shared verified references opt-in','shared_resource_pool':True,'maintenance_mount_recipes':True,'separate_memory_reservation':True,'storage_modes':['durable','ram-only'],'concurrency':'resource-admitted; no fixed job-count cap','last_error':self.last_error}
+            return {'version':VERSION,'runtime_sha256':self.revision,'recipes':list(BUILTINS)+sorted(self.registry),'buffer_bytes':BUFFER,'durable_cancellation':True,'safe_removal':True,'lifecycle_budgets':LIFECYCLE,'durable_checkpoints':True,'queue_priorities':True,'gpu_recipes':True,'shared_reference_volumes':True,'direct_result_export':True,'compute_phase_release':True,'payload_cache':'streamed-by-default; shared verified references opt-in','shared_resource_pool':True,'maintenance_mount_recipes':True,'separate_memory_reservation':True,'storage_modes':['ram-only'] if self.storage_policy()['mode']=='ram-only' else ['durable','ram-only'],'storage_policy':self.storage_policy(),'concurrency':'resource-admitted; no fixed job-count cap','last_error':self.last_error}
         with self.lock:
             if op=='stream.submit':self.registry=recipes(self.agent.config)
             if op=='stream.submit':
@@ -804,13 +853,16 @@ class Engine:
                     if 'lifecycle' in prior:spec={**spec,'lifecycle':lifecycle(spec) if 'lifecycle' in args else prior['lifecycle']}
                     if prior!=spec:raise ValueError('Stream work ID already has a different immutable contract')
                     return self.reply(old)
+                if worker_storage_policy(self.agent.config)['mode']=='ram-only' and spec.get('storage',{}).get('mode')!='ram-only':
+                    raise ValueError('Node requires RAM-only worker storage')
                 spec={**spec,'lifecycle':lifecycle(spec)}
                 definition=self.definition(spec);spec={**spec,'recipe_fingerprint':digest(definition),'runtime_sha256':self.revision,'recipe_definition':definition}
                 for row in [*spec['inputs'].values(),*([spec['output']] if spec.get('output') else [])]:
                     config=self.bulk()['config']
                     peer=config['peers'].get(row['peer'])
                     if not peer or peer['machine']!=row['machine']:raise ValueError('Streaming input is not an enrolled bulk peer')
-                row=self.store.submit(spec,self.policy(self.agent.config)['accepting_jobs']);return self.reply(row)
+                row=self.store.submit(spec,self.policy(self.agent.config)['accepting_jobs'])
+                return self.reply(row)
             if op=='stream.priority':
                 if set(args)!={'id','priority'} or not isinstance(args['id'],str) or type(args['priority']) is not int or not -1000<=args['priority']<=1000:raise ValueError('Expected ID and integer priority from -1000 to 1000')
                 row=self.store.get(args['id'])
@@ -966,6 +1018,7 @@ class Engine:
         if state:
             self.store.update(row['id'],state='launching')
             self.reconcile(self.store.get(row['id']));return
+        self.validate_storage(row['spec'],definition)
         if definition.get('gpu') and hasattr(self.agent,'gpu_resources'):
             definition={**definition,'gpu':resolve_gpu_allocation(definition['gpu'],self.agent.gpu_resources(),self.machine)}
         bindings=self.execution_bindings(definition)
@@ -1050,6 +1103,7 @@ class Engine:
             lease=self.pending.pop(row['id'],None)
             if lease:lease.close()
             self.store.update(row['id'],state=row['stop_target'] or 'cancelled',container=None)
+            self.release_job_cache(self.store.get(row['id']))
 
     def retry_interruption(self,row,reason):
         now=time.time();limits=lifecycle(row['spec']);retries=row.get('retries',0)+1;since=row.get('retry_since') or now
@@ -1113,6 +1167,7 @@ class Engine:
         if not retention:return
         count=0
         for row in self.rows(states=TERMINAL):
+            self.release_job_cache(row)
             if row['container'] or row['id'] in self.pending or now-row['updated']<retention:continue
             self.archive(row);count+=1
             if count>=100:break
@@ -1158,6 +1213,7 @@ class Engine:
             return
         if state and state.get('Status')=='created':
             if self.policy(self.agent.config)['accepting_jobs']:
+                self.validate_storage(row['spec'],self.definition(row['spec']))
                 self.command(['docker','start',row['container']]);self.store.update(row['id'],state='running')
             return
         if state is None and row['state']=='launching' and time.time()-row['updated']<35:return
@@ -1182,6 +1238,7 @@ class Engine:
         self.store.update(row['id'],container=None)
         lease=self.pending.pop(row['id'],None)
         if lease:lease.close()
+        self.release_job_cache(self.store.get(row['id']))
     def cleanup(self,row):
         state=self.inspect(row) if row['container'] else None
         if state:
@@ -1191,6 +1248,7 @@ class Engine:
         lease=self.pending.pop(row['id'],None)
         if lease:lease.close()
         self.store.update(row['id'],container=None)
+        self.release_job_cache(self.store.get(row['id']))
     def tick(self):
         with self.lock:
             self.finish_stops()

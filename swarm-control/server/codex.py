@@ -204,20 +204,34 @@ def history(row):
     activity = 'unknown'
     turn_id = None
     session_meta = False
+    size = path.stat().st_size
+    count = 0
+    # Walk backwards over tool output until the latest 60 actual messages are
+    # found. Memory is bounded even when a tool emits a very large JSON record.
     with path.open('rb') as stream:
-        stream.seek(0, 2)
-        size = stream.tell()
-        stream.seek(max(0, size - 2 * 1024 * 1024))
-        if stream.tell():
-            stream.readline()
-        while True:
-            line = stream.readline(512 * 1024 + 1)
-            if not line:
-                break
-            if len(line) > 512 * 1024:
-                while line and not line.endswith(b'\n'):
-                    line = stream.readline(512 * 1024)
-                continue
+        position = size
+        pending = b''
+        oversized = False
+        def records():
+            nonlocal position, pending, oversized
+            while position:
+                length = min(position, 65536)
+                position -= length
+                stream.seek(position)
+                parts = (stream.read(length) + pending).split(b'\n')
+                pending = parts.pop(0)
+                for line in reversed(parts):
+                    if oversized:
+                        oversized = False
+                        continue
+                    if line and len(line) <= 512 * 1024:
+                        yield line
+                if len(pending) > 512 * 1024:
+                    pending = b''
+                    oversized = True
+            if pending and not oversized:
+                yield pending
+        for line in records():
             try:
                 item = json.loads(line)
             except (ValueError, UnicodeDecodeError):
@@ -226,19 +240,23 @@ def history(row):
             if item.get('type') == 'session_meta':
                 session_meta = True
             kind = payload.get('type')
-            if item.get('type') == 'event_msg':
+            if item.get('type') == 'event_msg' and activity == 'unknown':
                 if kind == 'task_started':
                     activity, turn_id = 'running', payload.get('turn_id')
                 elif kind in ('task_complete', 'task_completed', 'turn_aborted'):
-                    activity = 'idle'
+                    activity, turn_id = 'idle', payload.get('turn_id')
             if item.get('type') == 'response_item' and kind == 'message' and payload.get('role') in ('user', 'assistant'):
                 text = '\n'.join(part.get('text', '') for part in payload.get('content', []) if part.get('type') in ('input_text', 'output_text'))
                 if text:
-                    messages.append({'role': payload['role'], 'text': text[:12000], 'at': item.get('timestamp')})
+                    count += 1
+                    if count <= 60:
+                        messages.appendleft({'role': payload['role'], 'text': text[:12000], 'at': item.get('timestamp')})
+                    else:
+                        break
     if activity == 'unknown' and session_meta and not messages and size <= 2 * 1024 * 1024:
         activity = 'idle'
     return {'messages': list(messages), 'activity': activity, 'turn_id': turn_id,
-            'history_limited': size > 2 * 1024 * 1024}
+            'history_limited': count > 60}
 
 
 def listing(offset=0):

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {currentItems,facts} from '../view/pipeline-model.js';
+import {currentItems,facts,inspectorSections} from '../view/pipeline-model.js';
 
 test('latest passing tests stay visible with unresolved and running work',()=>{
  const passed={id:'test/a',kind:'application-test',parent:'fix',status:'completed',attempts:[{parent:'fix',status:'completed'},{parent:'old',status:'failed'}]};
@@ -83,4 +83,22 @@ test('memory profiling distinguishes recommendations from measured peaks and sha
  assert.match(memoryProfileText(item),/suggested ceiling 896 MiB/);
  assert.match(memoryProfileText(item),/shared reference charged separately/);
  assert.equal(memoryProfileText({}),null);
+});
+
+test('shared cache has its own color category, executor and resource facts',()=>{
+ const item={kind:'shared-cache',run_type:'cache',worker:'mini',container:'cache-1',resources:{cpus:.1,memory_mb:256},resident_mb:64,updated:123,status:'running'};
+ assert.equal(runType(item),'cache');
+ assert.deepEqual(executionGroup(item),{key:'cache',label:'Shared cache',gpu:false});
+ const rows=inspectorSections(item,[])[0].rows;
+ assert.ok(rows.some(([label,value])=>label==='Reserved RAM'&&value==='256 MiB'));
+ assert.ok(rows.some(([label,value])=>label==='Resident RAM'&&value==='64 MiB'));
+});
+
+import {tileLabel} from '../view/pipeline-model.js';
+test('follow-up tiles have readable identities and their own run color',()=>{
+ assert.equal(tileLabel({chromosome:'9',shard:null}),'chr9');
+ assert.equal(tileLabel({shard:0}),'0');
+ assert.equal(tileLabel({kind:'qualification'}),'QC');
+ assert.equal(tileLabel({kind:'report'}),'Report');
+ assert.equal(runType({run_type:'genome-analysis'}),'genome-analysis');
 });

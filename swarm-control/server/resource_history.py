@@ -5,7 +5,7 @@ from copy import deepcopy
 WINDOW_SECONDS = 300
 MAX_SAMPLES = 2048
 HOST_FIELDS = 'host observed_hostname addresses status sampled_at window_seconds percent cpus ram_percent ram_used_bytes ram_total_bytes disk_busy_percent disk_basis network_mbps network_tx_mbps network_rx_mbps cpu_iowait_percent cpu_steal_percent cpu_pressure_some_percent'
-GPU_FIELDS = 'pci_id vendor name backend utilization_percent utilization_basis memory_total_mib memory_free_mib'
+GPU_FIELDS = 'pci_id vendor name backend utilization_percent utilization_basis utilization_unavailable_reason memory_total_mib memory_free_mib'
 
 
 def project_interfaces(rows):

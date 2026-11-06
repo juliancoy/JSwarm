@@ -81,6 +81,22 @@ retain completion evidence across container cleanup. `worker.status` and paginat
 creates work. Container-name reuse with a different container ID is rejected.
 The shared agent lock prevents two processes from managing the same node.
 
+Reference loading reuses sealed shared RAM objects before optional prefetch.
+`resource.caches` reports only Docker-owned tmpfs caches whose seal still matches
+the running container and read-only file identities. Deployment compares immutable
+file sizes and hashes across cache/image versions, avoiding another NFS scan of
+objects already present in RAM. Prefetch requires spare admitted RAM; otherwise
+the reference remains demand-paged. This path does not query GPU drivers.
+RAM cache owners do not auto-restart after a host reboot: their tmpfs contents
+are volatile. A stopped cache is checked and rebuilt on demand before reuse,
+rather than reserving memory indefinitely for an empty restarted container.
+
+Status polling returns fresh observations without committing unchanged worker
+records. Attempt identities and state transitions, including exit receipts, remain
+durable. I/O PSI includes network filesystem waits, so it alone never closes CPU
+or RAM admission. The storage guard requires corroborating physical disk activity
+before pausing new work, and preserves independently requested owner maintenance.
+
 Jobs retain their existing durable identities, pinned sources, phase events and
 verification receipts. Preparation and verification are phases of the same job,
 not new queues. A retry keeps its original source parent; a corrected-code run
@@ -402,3 +418,27 @@ with backoff; genuine failures expose a Retry connection action. Queue messages
 show their connection state and remain durable while disconnected. Known failures
 before dispatch remain queued; ambiguous outcomes after dispatch remain blocked
 from automatic retry. PIdP expiry preserves drafts and still requires sign-in.
+
+### Shared inputs and preparation admission
+
+Keep preparation and compute as separate phases. `SubmissionQueue.claim` accepts
+`preparation_resources` for bounded input work; its request retains the eventual
+compute budget and `inputs_ready=false`. Mark inputs ready before requesting the
+normal atomic node reservation. Transfers and cache warming must not reserve
+future CPU/private compute RAM. Cache owners still acquire their actual RAM from
+the same node pool. Ready work waits for capacity using a durable waiting record;
+restart recovery retains verified inputs and never infers a launched worker from
+an assignment alone.
+
+`swarm_shared_cache.ensure_derived` coalesces immutable derivations by application
+identity and pinned image. Metadata indexes the existing Docker-owned sealed RAM
+cache; it is not another ownership system. Multiple jobs use the same read-only
+volume, and `run_job(shared_caches={target: cache})` mounts multiple independent
+object sets without private reference copies. Cache eviction protects selected
+working sets, Docker consumers, and active bulk readers. Applications retain
+scientific partitioning, input provenance, derivation, and output validation.
+
+Warm-up uses authenticated bounded streams. Shared-cache metrics distinguish
+cache hits and loaded payload bytes; they do not claim physical wire traffic.
+Inputs and prepared outputs remain valid across controller replacement. Explicit
+node holds, immutable recipe checks and verified output receipts still apply.

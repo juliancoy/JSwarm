@@ -40,7 +40,7 @@ def _deploy(hosts,progress):
         except Exception as error:row={'host':host['host'],'status':'failed','error':str(error)}
         finally:client.close()
         results.append(row);progress(json.dumps(row))
-        if row['status']=='failed':break
+        # One offline node must not block the remaining enrolled fleet.
     return results
 
 

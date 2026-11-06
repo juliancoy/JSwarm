@@ -1,4 +1,4 @@
-"""Isolated read-only task dashboard API; no scheduler restart required."""
+"""Task observations and fixed selected-node controls; no scheduler restart required."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import hashlib
@@ -24,6 +24,37 @@ feed=TaskFeed()
 
 
 class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        if self.path!='/api/tasks/machine/control':
+            self.send_error(404);return
+        origin=urlsplit(self.headers.get('Origin',''))
+        host=self.headers.get('Host')
+        same_origin=origin.netloc==host or host in ('127.0.0.1:8792','localhost:8792') and origin.netloc=='map.local'
+        if (origin.scheme not in ('http','https') or not same_origin
+                or origin.path or origin.query or origin.fragment
+                or self.headers.get('X-JSwarm-Control')!='1'):
+            self.send_error(403,'Same-origin machine control required');return
+        try:
+            if self.headers.get('Transfer-Encoding') or len(self.headers.get_all('Content-Length',[]))!=1:
+                raise ValueError('Expected a bounded JSON request')
+            size=int(self.headers['Content-Length'])
+            if not 0<size<=1024 or self.headers.get('Content-Type','').split(';')[0]!='application/json':
+                raise ValueError('Expected a bounded JSON request')
+            self.connection.settimeout(5)
+            body=json.loads(self.rfile.read(size))
+            if not isinstance(body,dict) or set(body)!={'host','action'} or not all(isinstance(v,str) for v in body.values()):
+                raise ValueError('Expected host and action')
+            from machine_controls import request
+            data=request(body['host'],body['action']);code=202
+        except (ValueError,OSError):
+            data={'error':'Invalid machine control request'};code=400
+        except RuntimeError:
+            data={'error':'A command is already in progress for this machine'};code=409
+        raw=json.dumps(data).encode()
+        self.send_response(code);self.send_header('Content-Type','application/json')
+        self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(raw)))
+        self.end_headers();self.wfile.write(raw)
+
     def do_GET(self):
         path=urlsplit(self.path)
         if path.path=='/api/tasks/stream':
@@ -40,6 +71,10 @@ class Handler(BaseHTTPRequestHandler):
             elif path.path == '/api/tasks/pipeline':
                 from task_pipeline import snapshot as pipeline_snapshot
                 data=pipeline_snapshot()
+                from pipeline_workers import snapshot as workers_snapshot
+                workers=workers_snapshot()
+                data['infrastructure']=workers['items']
+                data['errors'].extend(workers['errors'])
             elif path.path == '/api/tasks/events':
                 query=parse_qs(path.query)
                 data=EventStore().history(query.get('run',[None])[0],query.get('after',[0])[0],100)

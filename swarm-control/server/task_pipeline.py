@@ -1,5 +1,6 @@
 """Read-only shard projection of the shared submission queue."""
 import datetime
+import hashlib
 import statistics
 import json
 import math
@@ -17,15 +18,17 @@ def collapse_test_attempts(items):
     """One current state per logical test; prior queue observations stay inspectable."""
     tests={};result=[]
     for item in items:
-        if item['kind']!='application-test':
+        validation=item.get('validation_identity') if item.get('parent','').startswith('intel-routing-smoke:') else None
+        if item['kind']!='application-test' and not validation:
             result.append(item)
             continue
-        tests.setdefault(item['job_id'],[]).append(item)
-    for task,attempts in tests.items():
+        key=('intel-routing-smoke',validation,item['job_id']) if validation else ('application-test',None,item['job_id'])
+        tests.setdefault(key,[]).append(item)
+    for (family,identity,task),attempts in tests.items():
         attempts.sort(key=lambda item:(item['created'],item['updated'],item['id']))
         latest=dict(attempts[-1])
         latest['attempt_id']=latest['id']
-        latest['id']='application-test/'+task
+        latest['id']=family+'/'+(identity[:16]+'/' if identity else '')+task
         latest['attempts']=[{key:item.get(key) for key in
                             ('id','parent','status','queue_state','worker','created','updated','detail')}
                            for item in reversed(attempts)]
@@ -78,8 +81,7 @@ def execution_report(namespace,ident,host,root=WGS,retained_reports=None):
                 'alignment_backend':report.get('alignment_backend'),'reference_location':report.get('reference_location'),
                 'gpu_index_resident':report.get('gpu_index_resident'),
                 'started':report.get('started'),'finished':report.get('finished'),
-                'elapsed_seconds':report.get('elapsed_seconds'),'gpu':bool(report.get('gpu')),
-                'gpu_devices':[str(report['gpu'].get('name') or report['gpu'].get('uuid'))[:200]] if isinstance(report.get('gpu'),dict) and (report['gpu'].get('name') or report['gpu'].get('uuid')) else [],
+                'elapsed_seconds':report.get('elapsed_seconds'),**gpu_execution_metadata(report),
                 'sink':report.get('sink'),'image':report.get('image')}
     except (OSError,ValueError,TypeError):return None
 
@@ -216,7 +218,7 @@ def followup_telemetry(report):
           'memory_current_bytes','memory_peak_bytes','memory_anon_bytes','memory_file_bytes',
           'memory_shmem_bytes','memory_swap_bytes','memory_sampled_at','memory_measurement_basis','memory_accounting_coverage',
           'profiling_context','recorded_at')
-    return {**{k:report[k] for k in keys if k in report},'resources':resources({**report,'memory_mb':report.get('memory_reservation_mb') or report.get('memory_mb')}),
+    return {**{k:report[k] for k in keys if k in report},**gpu_execution_metadata(report),'resources':resources({**report,'memory_mb':report.get('memory_reservation_mb') or report.get('memory_mb')}),
             'timing_basis':'Worker execution report; queue waiting time excluded'}
 
 
@@ -350,7 +352,7 @@ def snapshot(path=QUEUE,report_root=WGS,runtime_path=RUNTIME_DB):
                 saved=followup_reports.get((row['namespace'],row['id'],request.get('directory')))
                 regional=row['namespace'].startswith('genomics-followup-inputs:')
                 image=request.get('source_image') if regional else request.get('image')
-                binding_matches=regional or (saved and (saved.get('profiling_context') or {}).get('recipe_sha256')==request.get('binding'))
+                binding_matches=regional or (saved and (saved.get('profiling_context') or {}).get('recipe_sha256')== (hashlib.sha256(json.dumps(request['method_executor'],sort_keys=True,separators=(',',':')).encode()).hexdigest() if request.get('method_executor') else request.get('binding')))
                 if saved and saved.get('host')==row['host'] and image and saved.get('image')==image and binding_matches and request.get('admission_pending') is not True and (state=='accepted' or saved.get('finished')):
                     execution=followup_telemetry(saved)
             worker_resources=None
@@ -366,17 +368,22 @@ def snapshot(path=QUEUE,report_root=WGS,runtime_path=RUNTIME_DB):
             if not isinstance(peak,(int,float)) or isinstance(peak,bool) or not math.isfinite(peak) or peak<=0:peak=None
             dependencies=spec.get('depends_on',spec.get('dependencies',[]))
             if not isinstance(dependencies,list):dependencies=[str(dependencies)]
+            observed=runtime_observation(execution,result,row['host'])
+            if observed['gpu_used'] and worker_resources:worker_resources={**worker_resources,'sink':'gpu'}
+            displayed_resources=worker_resources or placement or submitted
+            if observed['gpu_used'] and displayed_resources:displayed_resources={**displayed_resources,'sink':'gpu'}
             items.append({'id':row['namespace']+'/'+row['id'],'job_id':row['id'],'parent':row['namespace'],
+                **({'validation_identity':hashlib.sha256(json.dumps(spec,sort_keys=True,separators=(',',':')).encode()).hexdigest()} if row['namespace'].startswith('intel-routing-smoke:') else {}),
                 'name':shard_title(spec,row['id'],row['namespace']),
                 'shard':spec.get('shard'),'chromosome':spec.get('chromosome'),'region':spec.get('region'),'stage':spec.get('stage'),'kind':spec.get('kind','work item'),'run_type':run_type(spec,request,row['namespace']),'completed_at':completion_time(execution,result,row['updated']) if state=='completed' else None,'status':phase,'queue_state':state,
-                'worker':row['host'],'dependencies':dependencies,'resources':worker_resources or placement or submitted,
+                'worker':row['host'],'dependencies':dependencies,'resources':displayed_resources,
                 'submission_resources':submitted,'placement_resources':placement,'worker_resources':worker_resources,
                 'execution':{k:v for k,v in execution.items() if k!='io'} if execution else None,'peak_memory_bytes':peak,
                 'profiling_context':result.get('profiling_context') or (execution or {}).get('profiling_context'),
                 'output_verified':result.get('primary_pair_accounting_verified') is True,
                 'configuration_equivalent':(result.get('configuration_comparison') or {}).get('baseline_equivalent'),
                 'io':io_observation(result.get('io') if state=='completed' else (execution or {}).get('io'),result,row['host'],state),
-                'runtime':runtime_observation(execution,result,row['host']),
+                'runtime':observed,
                 'work_units':result.get('pairs') or spec.get('reads'),
                 'detail':row['error'] or finalizer_wait or blocked_detail(spec,state) or failure_detail(spec,result,state),'detail_label':'Prior queue note (before worker started)' if execution and execution['phase']=='running' and execution['recorded_at']>row['updated'] else 'Benchmark outcome' if spec.get('kind')=='memory-pressure-benchmark' and not row['error'] and failure_detail(spec,result,state) else 'Last queue note','created':row['created'],'updated':row['updated'],
                 'reference_mode':result.get('reference_transport') or (execution or {}).get('reference_transport') or ('shared-index' if (execution or {}).get('shared_index') else request.get('reference_mode') if state in ('preparing','accepted') else None),'generation':spec.get('generation')})
@@ -395,6 +402,18 @@ def snapshot(path=QUEUE,report_root=WGS,runtime_path=RUNTIME_DB):
     return {'sampled_at':time.time(),'items':items,'machines':enrolled_machines(),'runtime_summary':runtime_summary(items),'runtime_inference':inference,'errors':[]}
 
 
+def gpu_execution_metadata(report):
+    """Keep device identity from execution reports without publishing runtime paths."""
+    descriptor=report.get('gpu')
+    devices=report.get('gpu_devices')
+    if not isinstance(devices,list):devices=[]
+    devices=[name[:200] for name in devices[:16] if isinstance(name,str) and name]
+    if not devices and isinstance(descriptor,dict):
+        name=descriptor.get('name') or descriptor.get('uuid')
+        if isinstance(name,str) and name:devices=[name[:200]]
+    return {'gpu':bool(descriptor),'gpu_devices':devices}
+
+
 def runtime_observation(execution, result, worker):
     report=execution or {}
     elapsed=report.get('elapsed_seconds') or result.get('elapsed_seconds') or result.get('wall_seconds') or result.get('duration_seconds')
@@ -410,17 +429,19 @@ def runtime_observation(execution, result, worker):
     outputs=nested.get('outputs') if isinstance(nested.get('outputs'),dict) else {}
     gpu_bases=outputs.get('gpu_bases')
     qc_gpu=type(gpu_bases) in (int,float) and math.isfinite(gpu_bases) and gpu_bases>0
-    gpu_used=bool(qc_gpu or report.get('gpu') or backend.get('gpu') or backend.get('backend')=='bwa-vulkan-exact')
+    comparison_gpu=result.get('execution_backend')=='vulkan' and result.get('method')=='comparison'
+    gpu_used=bool(comparison_gpu or qc_gpu or report.get('gpu') or backend.get('gpu') or backend.get('backend')=='bwa-vulkan-exact')
     devices=outputs.get('gpu_devices') if qc_gpu else report.get('gpu_devices') or []
     if not isinstance(devices,list):devices=[]
     devices=[name[:200] for name in devices[:16] if isinstance(name,str) and name]
-    descriptor=backend.get('gpu')
+    descriptor=report.get('gpu') if isinstance(report.get('gpu'),dict) else backend.get('gpu')
     if not devices and isinstance(descriptor,dict) and (descriptor.get('name') or descriptor.get('uuid')):devices=[str(descriptor.get('name') or descriptor['uuid'])[:200]]
     technologies=[]
     if qc_gpu:
         technologies.append('GPU quality control')
         if outputs.get('histogram_source')=='vulkan' or outputs.get('qc_backend')=='vulkan':technologies.append('Vulkan')
         if outputs.get('gpu_cpu_crosschecked_batches',0):technologies.append('CPU cross-check')
+    elif comparison_gpu:technologies.extend(['GPU comparison','Vulkan'])
     elif backend.get('backend')=='bwa-vulkan-exact':technologies.append('GPU alignment (CPU seeding)')
     elif report.get('gpu') or backend.get('gpu'):technologies.append('GPU (scope unreported)')
     elif report.get('sink')=='cpu' or backend.get('backend')=='bwa':technologies.append('CPU')

@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 
 ROOT=(Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('GenomeHarbor', 'JSwarm') else Path(__file__).resolve().parents[1])
-ASSETS=('pipeline.html','pipeline.css','pipeline.js','pipeline-model.js','pipeline-colors.js','levels-model.js','tasks.html')
+ASSETS=('node-web.js','pipeline.html','pipeline.css','pipeline.js','machine-controls.js','pipeline-model.js','pipeline-colors.js','levels-model.js','tasks.html')
 
 
 def atomic_copy(source,target):
@@ -24,14 +24,33 @@ def manage(action):
     server=Path(unit)
     if not server.is_dir():raise RuntimeError('Task dashboard source not found')
     source=ROOT/'swarm-control/server'
-    for name in ASSETS:atomic_copy(source/'view'/name,view/name)
-    atomic_copy(source/'task_registry.py',server/'task_registry.py')
-    atomic_copy(source/'task_progress.py',server/'task_progress.py')
-    for name in ('tasks.js','tasks.css','tasks-export.js','task-machines.js','task-display.js','export-data.js'):
-        atomic_copy(source/'view'/name,view/name)
-    atomic_copy(source/'runtime_estimates.py',server/'runtime_estimates.py')
-    atomic_copy(source/'task_pipeline.py',server/'task_pipeline.py')
+    assets=('pipeline.js','pipeline.css','machine-controls.js') if action=='device-controls' else ASSETS
+    for name in assets:atomic_copy(source/'view'/name,view/name)
+    if action!='device-controls':
+        atomic_copy(source/'task_registry.py',server/'task_registry.py')
+        atomic_copy(source/'task_progress.py',server/'task_progress.py')
+        for name in ('tasks.js','tasks.css','tasks-export.js','task-machines.js','task-display.js','export-data.js'):
+            atomic_copy(source/'view'/name,view/name)
+        atomic_copy(source/'runtime_estimates.py',server/'runtime_estimates.py')
+        atomic_copy(source/'task_pipeline.py',server/'task_pipeline.py')
     atomic_copy(source/'task_machines.py',server/'task_machines.py')
+    atomic_copy(source/'machine_controls.py',server/'machine_controls.py')
+    # Copy only the new POST handler into an existing dashboard; preserve its
+    # collector and observation routes across deployments.
+    import ast
+    dashboard=server/'task_dashboard.py';installed=dashboard.read_text();desired=(source/'task_dashboard.py').read_text()
+    cls=next(n for n in ast.parse(desired).body if isinstance(n,ast.ClassDef) and n.name=='Handler')
+    method=next(n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name=='do_POST')
+    code=''.join(desired.splitlines(keepends=True)[method.lineno-1:method.end_lineno])
+    tree=ast.parse(installed);handler=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='Handler')
+    previous=next((n for n in handler.body if isinstance(n,ast.FunctionDef) and n.name=='do_POST'),None)
+    lines=installed.splitlines(keepends=True)
+    if previous:installed=''.join(lines[:previous.lineno-1])+code+'\n'+''.join(lines[previous.end_lineno:])
+    else:installed=''.join(lines[:handler.lineno])+code+'\n'+''.join(lines[handler.lineno:])
+    compile(installed,str(dashboard),'exec')
+    with tempfile.NamedTemporaryFile(dir=dashboard.parent,delete=False) as handle:
+        temporary=Path(handle.name);handle.write(installed.encode())
+    temporary.chmod(0o644);temporary.replace(dashboard)
     # Add only the new route, preserving other changes in the active release.
     path=server/'task_dashboard.py';text=path.read_text()
     if "'/api/tasks/pipeline'" not in text:

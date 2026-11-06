@@ -7,6 +7,12 @@ from docker_utils.images import ImageResolver
 
 
 class ImageStreamingTests(unittest.TestCase):
+    def test_immutable_ids_have_stable_archive_tags_across_docker_stores(self):
+        for image in ('sha256:'+'1'*64,'example/image@sha256:'+'2'*64):
+            self.assertTrue(ImageResolver.cache_tag(image).startswith('docker-utils-digest:'))
+        self.assertNotEqual(ImageResolver.cache_tag('sha256:'+'1'*64),ImageResolver.cache_tag('sha256:'+'2'*64))
+        self.assertEqual(ImageResolver.cache_tag('example/image:release'),'example/image:release')
+
     def service(self):
         hosts=[{'host':'a.local'},{'host':'b.local'}]
         service=ImageResolver(hosts,lambda host:['ssh',host['host']],lambda:False,Mock())
@@ -83,3 +89,22 @@ def test_remote_image_timeout_reconnects_and_closes_connections(monkeypatch):
     service=ImageDistributor([],Mock(),lambda:False,Mock())
     assert service.inspect({'host':'peer','agent_endpoint':'http://peer:8790'},'image')=='sha256:verified'
     assert len(calls)==2 and closed==[0,1]
+
+
+def test_concurrent_deployments_share_one_verified_image_transfer(tmp_path,monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading,time
+    monkeypatch.setenv('HOME',str(tmp_path))
+    host={'host':'worker','machine':'a'*64};loaded=threading.Event();uploads=[]
+    def resolver():
+        r=ImageResolver();r.compatible=lambda *a:True
+        r.inspect=lambda node,image:'sha256:verified' if node is None or loaded.is_set() else None
+        def transfer(*args):
+            uploads.append(args);time.sleep(.05);loaded.set()
+        r.transfer=transfer
+        return r
+    a,b=resolver(),resolver()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures=[pool.submit(r.ensure,'image',[host]) for r in (a,b)]
+        assert [f.result() for f in futures]==['sha256:verified','sha256:verified']
+    assert len(uploads)==1

@@ -14,7 +14,7 @@ export function deviceLevels(data,metrics,mode,now=Date.now()) {
   const fresh=now/1000-sampledAt<15&&(h.hardware.sampled_at!==undefined||h.status==='live'&&!h.hardware.stale);
   let value=mode==='gpu'?gpu.utilization_percent:valid(gpu.memory_total_mib)&&gpu.memory_total_mib>0&&valid(gpu.memory_free_mib)?100*(1-gpu.memory_free_mib/gpu.memory_total_mib):null;
   if(!fresh||!valid(value))value=null;
-  return {id:h.host+':gpu:'+(gpu.pci_id||index),name:h.host+' · '+gpu.name,sampleTime:sampledAt*1000,value,basis:mode==='gpu'?(gpu.utilization_basis||'Live GPU utilization; unavailable backends remain unmeasured'):'GPU memory used, including reserved UMA where reported; unavailable counters remain unmeasured'};
+  return {id:h.host+':gpu:'+(gpu.pci_id||index),name:h.host+' · '+gpu.name,sampleTime:sampledAt*1000,value,unavailableLabel:mode==='gpu'&&fresh&&value===null?'Counter unavailable':undefined,basis:mode==='gpu'?(gpu.utilization_unavailable_reason&&value===null?gpu.utilization_unavailable_reason:gpu.utilization_basis||'Live GPU utilization; unavailable backends remain unmeasured'):'GPU memory used, including reserved UMA where reported; unavailable counters remain unmeasured'};
  }));
 
  if(['network','send','receive'].includes(mode))for(const host of hosts){

@@ -4,6 +4,40 @@ Swarm discovery, scheduling, transport, Docker execution, launcher supervision a
 
 For node and controller updates, follow the [no-drain replacement procedure](docs/REPLACEMENT.md).
 
+## Worker storage policy
+
+RAM-only operation is a node container setting. Set
+`JSWARM_WORKER_STORAGE=ram-only` in the container environment to pin it, or run
+`python run.py --worker-storage ram-only` on the enrolled owner to persist
+`worker-storage.json` in the mounted launcher configuration. The default is
+`durable`. An environment setting takes precedence over the configuration file;
+invalid settings fail closed. Both survive normal immutable node releases.
+
+The authenticated node API reports the effective setting in
+`status.storage_policy` and `worker.storage`. The controller-signed
+`worker.storage.set` operation accepts `{"mode":"ram-only"}` or
+`{"mode":"durable"}` and updates the mounted configuration without restarting
+the container. It cannot override an environment-pinned setting.
+
+In RAM-only mode, streaming jobs must explicitly declare bounded RAM scratch.
+Managed Docker workers require a read-only root, equal memory and memory-swap
+limits, and no Docker log file. Payload bind mounts are checked in the enrolled
+owner's filesystem namespace, including resolved symlinks; disk-backed mounts
+are refused. Shared payload volumes must be native Docker tmpfs volumes. The
+host must have swap disabled. Read-only GPU driver/runtime code may remain on
+disk, just like image layers; GPU scratch and payloads stay in RAM. The
+shared worker runtime checks mounts before reserving capacity. Existing running
+jobs finish; the policy applies to new launches and queued work. Privileged owner
+commands remain administrative access, rather than a workload sandbox.
+
+This controls worker payloads, inputs, outputs and scratch. Enrollment, image
+layers, queue metadata and execution receipts remain persistent control state.
+Full host I/O pressure can still delay RAM-only jobs when other processes use a
+disk. Apply the policy through the standard validated node release before
+configuring an older container; old releases do not enforce this setting.
+
+Build the node image with `PYTHON=/path/to/python ./build.sh` from this directory.
+
 - `scripts/`: swarm node runtime, launcher, enrollment, Docker workers and deployment tools.
 - `docker_utils/`: Docker image resolution, streaming and container management (`lan-docker`).
 - `swarm-control/`: controller, dashboard and Android client.
@@ -39,11 +73,20 @@ The existing scheduler charges the cache owner's RAM once, while each job's
 `memory_mb` covers its private working memory and scratch. The cache owner
 also reserves one CPU slot. Job reports include the cache descriptor.
 
-JSwarm controls identity, admission, loading serialization, verification,
-consumer attachment and safe eviction. It refuses to evict volumes still
-attached to containers. An unused cache can be reclaimed when another job
-needs memory; applications call `ensure` again before launching consumers.
-Cache preparation honors the node's existing worker policy and capacity.
+JSwarm controls identity, admission, concurrent loading, verification and
+safe cleanup. Cache ownership comes from input bindings in the existing durable
+job requests, across namespaces and machines; there is no separate cache claims
+ledger. Prepared, queued, paused and retrying jobs retain their inputs. Completion
+or confirmed cancellation allows cleanup only after no unfinished job needs the
+entry and Docker confirms that no consumer or transfer uses it. Incomplete
+preparation and unknown queue state preserve caches. Capacity pressure can retry
+cleanup of terminal job data, but cannot evict inputs owned by unfinished jobs.
+External shared volumes remain owned by their coordinator queue; the node's
+stream journal cleans only its own streamed input entries. Cache preparation
+honors the node's worker policy and live capacity. There is no cache-wide or
+derived-object file lock: Docker's unique container name elects the loader;
+competing requests retry until its verified seal is available. Terminal cleanup
+sweeps all eligible entries rather than stopping at a pressure budget.
 
 Applications choose cache contents, transfer method, private memory budget and
 fallback policy. GenomeHarbor's BWA adapter uses this interface; BWA formats,
@@ -100,6 +143,33 @@ is `~/.local/state/swarm-control/input-deployment.json`; service logs are availa
 with `journalctl --user -u swarm-input-deployment.service`.
 
 
+## Independent private source catalogue
+
+`scripts/deploy_node_source.py` installs `swarm-node-source` on an existing
+enrolled source machine. It serves shard receipts, destination-specific input
+offers and bounded output grants over mTLS on bulk transport port + 2 (9450).
+Controllers use `scripts.swarm_source_client.SourceClient`; catalogue access
+does not use the node command channel. Input bytes continue through the existing
+bulk transport and outputs through the existing result sink.
+
+The container reuses the machine's certificates and enrolled identity. It has
+no Docker socket, a read-only root, read-only input mounts, and write access
+only to capability manifests and configured output directories. Replacing a
+node does not replace this service or require running workers to finish.
+
+To provision or update its immutable release, run from the workspace root:
+
+```sh
+python -m scripts.deploy_node_source --inventory /path/to/recall-hosts.json \
+  --host julian-latitude.local --input /path/to/source/generations \
+  --output /path/to/approved/results
+```
+
+Only approved input/output roots are exposed. New dataset roots must be
+explicitly provisioned. Installation uses administrative access; steady-state
+requests use existing certificates. Check `/health` with `SourceClient` or
+inspect the container's Docker health status on its source machine.
+
 ## Demand-paged public references
 
 JSwarm's standard fleet publication includes the checksummed `public-pager`
@@ -135,3 +205,59 @@ Per-node verification records live alongside it. Unavailable nodes retain the
 verified complete-cache fallback. GenomeHarbor owns BWA reference selection,
 alignment parity qualification, and private job memory budgets; it keeps an
 existing verified warm RAM cache in preference to a cold network mapping.
+
+
+## Pipeline device controls
+
+Select a machine in the pipeline inspector to Pause, Update, Resume, or use Auto.
+Pause closes new-job admission while existing workers continue. Resume restores
+the previous policy; Auto explicitly selects battery-aware scheduling.
+
+The dashboard sends fixed commands through the selected node’s signed JSwarm
+command API. Update uses the checksummed published release and the standard fleet
+deployment lock, then verifies that the same machine reports that revision ready.
+Node status is polled independently of resource and transfer diagnostics about
+once a second. State bubbles show observed admission, policy, power and update
+states; unavailable observations are marked stale instead of treated as success.
+
+## Pipeline addresses on each machine
+
+Each enrolled machine can serve the packaged pipeline UI through the independent
+`swarm-node-web` container. Build with `cd JSwarm && ./build.sh`, then install from
+the Organization workspace using `python JSwarm/scripts/node_web.py install`.
+For fleet installation, transfer the same built image to the coordinator using
+the shared image resolver, then run `python JSwarm/scripts/node_web.py deploy
+--image sha256:IMAGE_ID` there. This uses the existing enrollment, owner SSH
+transport, deployment lock and image resolver, replacing one web frontend at a
+time. The web component uses system Docker for host-network listeners, even
+when a node runs compute in rootless Docker. It records
+`~/.local/state/swarm-control/node-web/deployment.json`.
+
+The installer pins the image ID and a public configuration derived from existing
+enrollment, verifies readiness and retains a deployment receipt under
+`~/.local/share/jswarm-web/`. Reinstallation replaces only this web component;
+node agents and compute workers retain their lifecycles. A failed replacement
+restores the previous web container. No launcher publication is changed.
+
+On a machine with this component installed:
+
+- `http://jswarm.localhost/pipeline.html` serves that machine's packaged UI.
+- `http://compai.jswarm.localhost/pipeline.html` routes to CompAI's web service.
+- Every enrolled hostname has the same form, for example
+  `http://julian-minipc.jswarm.localhost/pipeline.html`; the unambiguous short
+  alias `http://minipc.jswarm.localhost/pipeline.html` is also supported.
+- `http://MACHINE_LAN_IP:8797/pipeline.html` reaches a node directly, including
+  from an enrolled machine without the local hostname gateway.
+
+The page identifies its serving node and links to the other nodes. Each node
+serves its own assets; shared queue and telemetry APIs use the enrolled
+coordinator. An unavailable serving node returns an error instead of silently
+showing another node's page. Loopback names need no custom DNS. The web service
+accepts loopback and enrolled LAN clients, validates Host and request Origin,
+and forwards control requests only to the existing coordinator APIs. It has no
+Docker socket, enrollment secrets or controller signing keys.
+
+On the coordinator, the existing nginx view can also own IPv6 port 80. The web
+installer adds a loopback-only `*.jswarm.localhost` virtual host there, validates
+nginx before reload, and retains a rollback copy. The same virtual host is part
+of the checked-in nginx configuration for subsequent normal view deployments.

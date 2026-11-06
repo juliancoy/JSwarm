@@ -64,6 +64,9 @@ def launch_container(args):
                '--mount', f'type=bind,src={docker_cli},dst=/usr/local/bin/docker,readonly',
                '--env', 'HOME=/tmp', '--env', 'PYTHONUNBUFFERED=1', '--env', 'ORGANIZATION_LAUNCHER_CONTAINER=1',
                '--env', 'ORGPORTAL_JOURNAL_AUTO_SYNC=false']
+    if 'JSWARM_WORKER_STORAGE' in os.environ:
+        if os.environ['JSWARM_WORKER_STORAGE'] not in ('durable','ram-only'):raise ValueError('Invalid JSwarm worker storage mode')
+        command+=['--env','JSWARM_WORKER_STORAGE']
     lan_inventory=Path.home()/'.local/state/orgportal/lan-ssh-devices.json'
     ssh_folder=Path.home()/'.ssh'
     if lan_inventory.exists():
@@ -115,19 +118,23 @@ def container_login(args, name):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--stop', action='store_true', help='Stop Organization services and containers, preserving data.')
+    parser.add_argument('--all', action='store_true', help='With --stop, stop all enrolled LAN nodes too.')
     parser.add_argument('--memory-pressure-benchmark',choices=['run','status'],help='Benchmark a complete alignment shard under FS-Cache RAM pressure.')
     parser.add_argument('--monitor-view',choices=['deploy','status'],help='Publish monitor assets without restarting nodes or workers.')
     parser.add_argument('--pipeline-view',choices=['deploy','status'],help='Publish the read-only shard pipeline without restarting compute workers.')
     parser.add_argument('--network-reference-cache',choices=['build','test','qualify','status','stop'],help='Test and inspect launcher-managed FS-Cache over LAN; does not change production placement.')
     parser.add_argument('--shared-reference',choices=['prepare','enable','status'],help='Manage the validated stock-BWA shared index for memory-constrained workers.')
     parser.add_argument('--node-alignment',choices=['build','qualify','deploy','status'],help='Manage qualified node-owned BWA CPU/GPU execution and shared reference mounts.')
-    parser.add_argument('--vulkan-alignment',choices=['build','deploy','deploy-controller','status'],help='Manage the independently admitted Vulkan alignment lane.')
+    parser.add_argument('--vulkan-alignment',choices=['build','deploy','deploy-controller','prepare-nodes','reconcile','status'],help='Manage the independently admitted Vulkan alignment lane.')
     parser.add_argument('--alignment-build',type=Path,default=Path.home()/'.cache/lifetech/bwa-vulkan-exact')
     parser.add_argument('--stream-work',choices=['deploy','status','open'],help='Deploy launcher streaming support, inspect it, or open enrolled nodes for work.')
+    parser.add_argument('--genomics-followup',choices=['build','deploy','deploy-orchestration','stop','status'],help='Manage receipt-gated bounded follow-up genomics jobs.')
     parser.add_argument('--shard-qc',choices=['build','deploy','start','stop','status'],help='Manage the streaming CPU/GPU shard feeder through this runner.')
     parser.add_argument('--wgs-root',type=Path,default=Path('/mnt/PILEDRIVE/genomics-workbench/wgs'),help='Durable genome run-manager state.')
     parser.add_argument('--recreate-node','--recreate-launcher',dest='recreate_launcher', action='store_true', help='Recreate the swarm-node container to load updated code/configuration; keep service containers and data.')
     parser.add_argument('--worker-mode',choices=['auto','always','paused'],help='Accept jobs on AC power, always, or submit only. Existing jobs finish.')
+    parser.add_argument('--worker-storage',choices=['durable','ram-only'],help='Persist this node container’s payload storage policy; running workers finish.')
     parser.add_argument('--swarm',action='store_true',help='Open this launcher’s local swarm controls.')
     parser.add_argument('--peer-register', type=Path, help='Register this machine using a private internet launcher invitation file.')
     parser.add_argument('--peer-enroll', action='store_true', help='Enroll saved LAN machines and this coordinator for launcher WebRTC; does not restart services.')
@@ -146,6 +153,8 @@ def parse_args(argv=None):
     parser.add_argument('--vm-timeout', type=int, default=5400, help='Total VM run timeout in seconds (default: 5400).')
     parser.add_argument('--vm-image-archive', type=Path, help='Optional docker-save archive to preload inside the VM.')
     args = parser.parse_args(argv)
+    if args.all and not args.stop:
+        parser.error('--all requires --stop')
     if args.recreate_launcher and (args.release or args.vm or args.peer_enroll or args.peer_register):
         parser.error('--recreate-launcher cannot be combined with --release, --vm or --peer-enroll')
     if args.peer_enroll and args.peer_register:
@@ -207,6 +216,9 @@ def start_codecollective_preview():
 
 def main(argv=None):
     args = parse_args(argv)
+    if args.stop:
+        from scripts.stop_organization import stop
+        return stop(ROOT, fleet=args.all)
     if args.stream_work:
         from scripts.deploy_stream_work import manage
         return manage(args.stream_work, args.wgs_root/'recall-hosts.json')
@@ -231,9 +243,18 @@ def main(argv=None):
     if args.vulkan_alignment:
         from scripts.vulkan_alignment_deployment import manage
         return manage(args.vulkan_alignment,args.wgs_root,args.alignment_build)
+    if args.genomics_followup:
+        from scripts.genomics_followup_controller import manage
+        return manage(args.genomics_followup,args.wgs_root)
     if args.shard_qc:
         from scripts.shard_qc_deployment import manage
         return manage(args.shard_qc,args.wgs_root)
+    if args.worker_storage:
+        from scripts.launcher_streams import set_worker_storage_policy
+        config=Path(os.getenv('LIFETECH_PEER_CONFIG',str(Path.home()/'.config/lifetech-launcher/peers.json')))
+        set_worker_storage_policy(config,args.worker_storage)
+        print('Worker storage: '+args.worker_storage+'; existing workers finish')
+        return 0
     if args.worker_mode:
         folder=Path.home()/'.config/lifetech-launcher';folder.mkdir(parents=True,exist_ok=True,mode=0o700)
         path=folder/'worker-policy.json';temporary=path.with_suffix('.tmp')

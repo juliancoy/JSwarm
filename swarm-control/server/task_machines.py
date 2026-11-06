@@ -20,9 +20,9 @@ CACHE={}
 PROBE_BYTES=4*1024**2
 
 
-def command(client,argv,payload=b'',limit=8*1024**2):
+def command(client,argv,payload=b'',limit=8*1024**2,timeout=30):
     ident=secrets.token_hex(16);offsets={'stdout':0,'stderr':0};sent=0;credit=512*1024
-    output=bytearray();errors=bytearray();deadline=time.monotonic()+30
+    output=bytearray();errors=bytearray();deadline=time.monotonic()+timeout
     client.call('command.start',{'id':ident,'argv':argv},timeout=5)
     started=time.monotonic()
     try:
@@ -193,4 +193,6 @@ def snapshot(name):
         if not row['busy'] and time.monotonic()-row['updated']>=1:
             row['busy']=True
             POOL.submit(collect,host,config['name'],row['value'])
-        return {**{key:value for key,value in row['value'].items() if not key.startswith('_')},'refreshing':row['busy']}
+        value={**{key:value for key,value in row['value'].items() if not key.startswith('_')},'refreshing':row['busy']}
+    from machine_controls import snapshot as control_snapshot
+    return {**value,'control':control_snapshot(name)}

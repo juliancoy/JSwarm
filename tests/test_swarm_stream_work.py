@@ -64,15 +64,16 @@ def test_fleet_recovery_returns_to_accepting_launcher_without_repreparation(tmp_
         def __enter__(self):return self
         def __exit__(self,*args):pass
         def capabilities(self):return True
-        def call(self,*args):return {'accepting_jobs':True}
-        def run(self,spec,progress=lambda row:None):calls.append((self.host['host'],spec['id']));return {'state':'completed'}
+        def call(self,*args):return {'accepting_jobs':True,'available_cpus':2,'available_mb':512}
+        def submit(self,spec):calls.append((self.host['host'],spec['id']))
+        def status(self,ident):return {'state':'completed'}
     monkeypatch.setattr(w,'StreamClient',Client)
     def prepare(unit,host):prepared.append(unit['id']);return {'id':'remote-'+unit['id']}
     assert w.distribute(units,[{'host':'node'}],prepare,path)=={'completed':2}
     assert calls==[('node','remote-one'),('node','remote-two')] and prepared==['two']
 
 
-def test_recovered_jobs_use_all_configured_slots(tmp_path,monkeypatch):
+def test_recovers_all_jobs_without_fixed_slots(tmp_path,monkeypatch):
     import scripts.swarm_stream_work as w
     path=tmp_path/'queue.sqlite';units=[{'id':'one'},{'id':'two'}];q=FleetQueue(path,units)
     for _ in units:
@@ -83,30 +84,55 @@ def test_recovered_jobs_use_all_configured_slots(tmp_path,monkeypatch):
         def __enter__(self):return self
         def __exit__(self,*args):pass
         def capabilities(self):return True
-        def call(self,*args):return {'accepting_jobs':True}
-        def run(self,spec,progress=lambda row:None):self.jobs.append(spec['id']);return {'state':'completed'}
+        def call(self,*args):return {'accepting_jobs':False}
+        def submit(self,spec):self.jobs.append(spec['id'])
+        def status(self,ident):
+            assert self.jobs==['one','two']
+            return {'state':'completed'}
     monkeypatch.setattr(w,'StreamClient',Client)
-    assert w.distribute(units,[{'host':'node'}],lambda *a:pytest.fail('Accepted work must not be prepared again'),path,slots={'node':2})=={'completed':2}
-    assert sorted(c.jobs for c in clients)==[['one'],['two']]
+    assert w.distribute(units,[{'host':'node'}],lambda *a:pytest.fail('Accepted work must not be prepared again'),path)=={'completed':2}
+    assert len(clients)==1
 
 
-def test_default_feeder_slots_follow_node_cpu_capacity(tmp_path,monkeypatch):
-    import threading
+def test_assigns_fitting_jobs_while_existing_jobs_are_running(tmp_path,monkeypatch):
     import scripts.swarm_stream_work as w
-    barrier=threading.Barrier(3);active=[]
+    submitted=[]
     class Client:
-        def __init__(self,host,*args):pass
+        def __init__(self,*args):pass
         def __enter__(self):return self
         def __exit__(self,*args):pass
         def capabilities(self):return True
-        def call(self,*args):return {'accepting_jobs':True}
-        def run(self,spec,progress=lambda row:None):
-            active.append(spec['id']);barrier.wait(timeout=5)
-            return {'state':'completed'}
+        def call(self,op):
+            if op=='worker.policy':return {'accepting_jobs':True}
+            return {'available_cpus':4-len(submitted),'available_mb':1024-256*len(submitted)}
+        def submit(self,spec):submitted.append(spec['id'])
+        def status(self,ident):return {'state':'running' if len(submitted)<3 else 'completed'}
     monkeypatch.setattr(w,'StreamClient',Client)
-    result=w.distribute([{'id':str(i)} for i in range(3)],[{'host':'node','cpus':3}],lambda u,h:u,tmp_path/'queue.sqlite')
-    assert result=={'completed':3}
-    assert len(active)==3
+    result=w.distribute([{'id':str(i)} for i in range(3)],[{'host':'node','cpus':1}],lambda u,h:u,tmp_path/'queue.sqlite')
+    assert result=={'completed':3} and len(submitted)==3
+
+
+def test_pending_admissions_reserve_stale_capacity(tmp_path,monkeypatch):
+    import scripts.swarm_stream_work as w
+    submitted=[];polls={}
+    class Client:
+        def __init__(self,*args):pass
+        def __enter__(self):return self
+        def __exit__(self,*args):pass
+        def capabilities(self):return True
+        def call(self,op):
+            if op=='worker.policy':return {'accepting_jobs':True}
+            return {'available_cpus':1,'available_mb':256}
+        def submit(self,spec):
+            if submitted:assert polls[submitted[-1]]>=3
+            submitted.append(spec['id'])
+        def status(self,ident):
+            polls[ident]=polls.get(ident,0)+1
+            return {'state':'queued' if polls[ident]<3 else 'completed'}
+    monkeypatch.setattr(w,'StreamClient',Client)
+    monkeypatch.setattr(w.time,'sleep',lambda _:None)
+    assert w.distribute([{'id':'one'},{'id':'two'}],[{'host':'node'}],lambda u,h:u,tmp_path/'q')=={'completed':2}
+    assert submitted==['one','two']
 
 
 def test_legacy_journal_migrates_accepted_work_into_shared_queue(tmp_path,monkeypatch):
@@ -137,7 +163,8 @@ def test_full_worker_does_not_take_pending_work(tmp_path,monkeypatch):
             if op=='worker.policy':return {'accepting_jobs':True}
             probes.append(op)
             return {'available_cpus':0 if len(probes)==1 else 1,'available_mb':256}
-        def run(self,spec,progress=lambda row:None):return {'state':'completed'}
+        def submit(self,spec):pass
+        def status(self,ident):return {'state':'completed'}
     monkeypatch.setattr(w,'StreamClient',Client)
     monkeypatch.setattr(w.time,'sleep',lambda *a:clock.__setitem__(0,clock[0]+6))
     monkeypatch.setattr(w.time,'monotonic',lambda:clock[0])
@@ -147,3 +174,59 @@ def test_full_worker_does_not_take_pending_work(tmp_path,monkeypatch):
     assert prepared==['one']
     assert updates[:2]==[{'queued':1},{'queued':1}]
     assert updates[-1]=={'completed':1}
+
+
+@pytest.mark.parametrize('state,error', [('failed', 'failed'), ('failed_integrity', 'integrity'), ('completed', 'identity')])
+def test_nonblocking_status_checks_terminal_results(state,error):
+    from scripts.swarm_stream_work import WorkFailure
+    class Transport:
+        def call(self,*args):
+            return {'state':state,'error':error,'contract_sha256':'correct',
+                    'result':{'contract_sha256':'wrong','worker_machine':'worker'}}
+    client=StreamClient({'machine':'worker'},client=Transport())
+    with pytest.raises(WorkFailure if state=='failed' else IntegrityFailure):client.status('one')
+
+
+def test_uncertain_submission_recovers_persisted_request(tmp_path,monkeypatch):
+    import json
+    import scripts.swarm_stream_work as w
+    path=tmp_path/'q';units=[{'id':'one'}];stopped=[False];submitted=[]
+    spec={'id':'remote-one','resources':{'cpus':2,'memory_mb':512}}
+    class Client:
+        def __init__(self,*args):pass
+        def __enter__(self):return self
+        def __exit__(self,*args):pass
+        def capabilities(self):return True
+        def call(self,op):return {'accepting_jobs':True,'available_cpus':2,'available_mb':512}
+        def submit(self,request):
+            submitted.append(request)
+            if len(submitted)==1:
+                stopped[0]=True
+                raise InterruptedError('Lost acknowledgement during shutdown')
+        def status(self,ident):return {'state':'completed'}
+    monkeypatch.setattr(w,'StreamClient',Client)
+    assert w.distribute(units,[{'host':'node'}],lambda *a:spec,path,stopped=lambda:stopped[0])=={'accepted':1}
+    row=FleetQueue(path,units).recover('node')[0]
+    request=json.loads(row['request'])
+    assert request['spec']==spec and request['admission_pending']
+    stopped[0]=False
+    assert w.distribute(units,[{'host':'node'}],lambda *a:pytest.fail('Must reuse accepted request'),path)=={'completed':1}
+    assert submitted==[spec,spec]
+
+
+def test_failed_job_does_not_disable_assignment_for_host(tmp_path,monkeypatch):
+    import scripts.swarm_stream_work as w
+    submitted=[]
+    class Client:
+        def __init__(self,*args):pass
+        def __enter__(self):return self
+        def __exit__(self,*args):pass
+        def capabilities(self):return True
+        def call(self,op):return {'accepting_jobs':True,'available_cpus':1,'available_mb':256}
+        def submit(self,spec):submitted.append(spec['id'])
+        def status(self,ident):
+            if ident=='one':raise w.WorkFailure('Task failed')
+            return {'state':'completed'}
+    monkeypatch.setattr(w,'StreamClient',Client)
+    assert w.distribute([{'id':'one'},{'id':'two'}],[{'host':'node'}],lambda u,h:u,tmp_path/'q')=={'failed':1,'completed':1}
+    assert submitted==['one','two']

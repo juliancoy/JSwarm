@@ -1598,12 +1598,12 @@ class Agent:
             if not isinstance(stream_directory,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}',stream_directory):raise ValueError('Invalid persistent streaming state directory')
             stream_root=self.config.parent/stream_directory
             stream_root.mkdir(mode=0o700,parents=True,exist_ok=True)
+        self.commands=load_command_runtime().CommandProxy(self,COMMAND_RUNTIME_SOURCE or (Path(__file__).resolve().parent/'launcher_commands.py').read_text())
         self.stream_work=load_stream_runtime(stream_root).Engine(self,ResourceLease,worker_policy,state_root=stream_root)
         from concurrent.futures import ThreadPoolExecutor
         self.control_executor=ThreadPoolExecutor(max_workers=max(2,min(4,os.cpu_count() or 2)),thread_name_prefix='launcher-control')
         directory=Path(os.getenv('SWARM_RESOURCE_DIR',str(self.root/'.resources')))
         directory.mkdir(parents=True,exist_ok=True,mode=0o700);(directory/'docker-workers').touch()
-        self.commands=load_command_runtime().CommandProxy(self,COMMAND_RUNTIME_SOURCE or (Path(__file__).resolve().parent/'launcher_commands.py').read_text())
         self.worker_journal=DockerWorkerJournal(self.config.parent/'docker-worker-journal.sqlite',self.stream_work.read_worker_accounting)
         self.recover_docker_workers()
         self.recover_pending_resources()
@@ -1933,9 +1933,61 @@ class Agent:
             temporary.write_text(json.dumps(policy));temporary.chmod(0o600);temporary.replace(path)
         return policy
 
+    def worker_storage_policy(self):
+        return self.stream_work.storage_policy()
+
+    def validate_worker_storage(self, paths):
+        if self.worker_storage_policy()['mode']!='ram-only':return {'validated':True}
+        return self.commands.dispatch('command.storage',{'id':secrets.token_hex(16),'paths':paths})
+
+    def validate_worker_command(self, argv):
+        """Apply node policy to managed workers launched by older controllers too."""
+        if argv[:2]!=['docker','run'] or not any(a in ('org.lifetech.worker=true','--label=org.lifetech.worker=true') for a in argv):return
+        if self.worker_storage_policy()['mode']!='ram-only':return
+        if '--read-only' not in argv:raise ValueError('RAM-only workers require a read-only container root')
+        def option(name):
+            for index,arg in enumerate(argv):
+                if arg==name and index+1<len(argv):return argv[index+1]
+                if arg.startswith(name+'='):return arg.partition('=')[2]
+        if not option('--memory') or option('--memory-swap')!=option('--memory'):
+            raise ValueError('RAM-only workers require an explicit no-swap memory limit')
+        if option('--log-driver')!='none':raise ValueError('RAM-only workers require the none log driver')
+        paths=[]
+        for index,arg in enumerate(argv):
+            if arg in ('-v','--volume') or arg.startswith(('--volume=','-v/')):
+                raise ValueError('RAM-only workers require explicit --mount declarations')
+            if arg=='--mount':
+                if index+1==len(argv):raise ValueError('Missing worker mount declaration')
+                mount=argv[index+1]
+            elif arg.startswith('--mount='):mount=arg.partition('=')[2]
+            else:continue
+            fields=dict(part.split('=',1) if '=' in part else (part,'') for part in mount.split(','))
+            source=fields.get('src',fields.get('source'))
+            if fields.get('type','volume')=='bind':
+                if not source:raise ValueError('Missing worker bind source')
+                target=fields.get('dst',fields.get('target',fields.get('destination')))
+                if target in ('/usr','/gpu-runtime') and ('readonly' in fields or 'ro' in fields):continue
+                paths.append(source)
+            elif fields.get('type','volume')=='volume':
+                with self.client() as client:volume=client.volumes.get(source).attrs
+                options=volume.get('Options') or {}
+                if volume.get('Driver')!='local' or options.get('type')!='tmpfs' or options.get('device')!='tmpfs':
+                    raise ValueError('RAM-only workers require tmpfs volumes')
+            elif fields.get('type')!='tmpfs':raise ValueError('Unsupported RAM-only worker mount')
+        self.validate_worker_storage(paths)
+
     def dispatch(self, op, args):
+        if op=='worker.storage':
+            if args:raise ValueError('Storage policy accepts no arguments')
+            return self.worker_storage_policy()
+        if op=='worker.storage.set':
+            if set(args)!={'mode'} or args['mode'] not in ('durable','ram-only'):raise ValueError('Choose durable or ram-only worker storage')
+            with self.lock:return self.stream_work.set_storage_policy(args['mode'])
+        if op=='worker.storage.validate':
+            if set(args)!={'paths'}:raise ValueError('Expected worker mount paths')
+            return self.validate_worker_storage(args['paths'])
         if op.startswith('command.'):
-            result=self.commands.dispatch(op,args)
+            result=self.commands.dispatch(op,args,validate=self.validate_worker_command) if op=='command.start' else self.commands.dispatch(op,args)
             # Idle command pipes must not spin through signed RPC hundreds of times/sec.
             if (op=='command.poll' and not args.get('data') and not result.get('stdout')
                     and not result.get('stderr') and result.get('exit_code') is None):
@@ -2092,8 +2144,8 @@ class Agent:
                     'machine':hashlib.sha256(machine.read_bytes()).hexdigest(),'hostname':socket.gethostname(),
                     'addresses':addresses,'platform':info['OSType']+'/'+info['Architecture'],
                     'routing':getattr(self,'routing_status',{'status':'pending'}),
-                    'worker_policy':policy,'capabilities':['controller-signature','github-jobs','p2p-browser','cancel','events','layer-pull','registry-read','peer-layer-cache','mptcp-transport','file-queue','snapshot-stage','event-wait','shared-resources','renewable-resources','docker-workers','durable-docker-workers-v1','execution-accounting-v1','persistent-command-pipes-v1','generic-workers','encrypted-backup','gpu-kernel','telemetry-push','performance-v1','builtin-monitor','stream-work-v1','independent-job-sinks-v1','node-command-v1','gpu-resource-inventory-v1','node-maintenance-recipes-v1','verified-ram-caches-v1'],
-                    'enrolled_peers':sorted(config['peers']),'storage':self.storage_status,
+                    'worker_policy':policy,'capabilities':['controller-signature','github-jobs','p2p-browser','cancel','events','layer-pull','registry-read','peer-layer-cache','mptcp-transport','file-queue','snapshot-stage','event-wait','shared-resources','renewable-resources','docker-workers','durable-docker-workers-v1','execution-accounting-v1','persistent-command-pipes-v1','generic-workers','encrypted-backup','gpu-kernel','telemetry-push','performance-v1','builtin-monitor','stream-work-v1','independent-job-sinks-v1','node-command-v1','gpu-resource-inventory-v1','node-maintenance-recipes-v1','verified-ram-caches-v1','worker-storage-v1'],
+                    'enrolled_peers':sorted(config['peers']),'storage':self.storage_status,'storage_policy':self.worker_storage_policy(),
                     'hardware':self.hardware(info),
                     'preparations':[key for key,j in self.jobs.items() if j['status']=='running' and j.get('prepare_only')],
                     'active_commands':self.commands.active() if hasattr(self,'commands') else 0,'active_jobs':[key for key,j in self.jobs.items() if j['status']=='running' and not j.get('prepare_only')],'active_image_transfers':self.registry_transfers,'active_uploads':len(self.uploads),'active_resource_leases':len(self.pending_resources),'workers':self.reconcile_resources()}
@@ -2628,18 +2680,18 @@ finally:v.vkDestroyInstance(instance,None)
         cache[key]=(time.time(),rows);return rows
 
     def host_nvidia_allocations(self):
-        # The agent need not hold compute-device access to collect driver metadata.
+        # Timestamp inside the helper: Docker startup is not sample age.
         name='swarm-gpu-inventory-nvidia-'+secrets.token_hex(8)
+        code="import json,subprocess,time; output=subprocess.check_output(['nvidia-smi','--query-gpu=uuid,pci.bus_id,name,memory.total,memory.free,utilization.gpu,temperature.gpu','--format=csv,noheader,nounits'],text=True,timeout=5); print(json.dumps({'output':output,'sampled_at':time.time()}))"
         completed=False
         try:
-            result=subprocess.run(['docker','run','--rm','--pull=never','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--memory','96m','--memory-swap','96m','--cpus','0.25','--pids-limit','128','--name',name,'--label','org.lifetech.service=gpu-inventory','--gpus','all','--env','NVIDIA_DRIVER_CAPABILITIES=utility','organization-launcher:webrtc-1','nvidia-smi','--query-gpu=uuid,pci.bus_id,name,memory.total,memory.free,utilization.gpu,temperature.gpu','--format=csv,noheader,nounits'],capture_output=True,text=True,check=True,timeout=10)
+            result=subprocess.run(['docker','run','--rm','--pull=never','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--memory','96m','--memory-swap','96m','--cpus','0.25','--pids-limit','128','--name',name,'--label','org.lifetech.service=gpu-inventory','--gpus','all','--env','NVIDIA_DRIVER_CAPABILITIES=utility','organization-launcher:webrtc-1','python3','-c',code],capture_output=True,text=True,check=True,timeout=15)
             completed=True
-            return nvidia_allocation_rows(result.stdout)
-        except (OSError,ValueError,subprocess.SubprocessError):return []
-
+            value=json.loads(result.stdout)
+            return [{**row,'sampled_at':value['sampled_at']} for row in nvidia_allocation_rows(value['output'])]
+        except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError):return []
         finally:
-            # docker CLI timeouts do not remove a created/running container.
-            # Unique names avoid poisoning every later inventory refresh.
+            # A CLI timeout does not remove the helper container.
             if not completed:
                 try:subprocess.run(['docker','rm','-f',name],capture_output=True,timeout=10)
                 except (OSError,subprocess.SubprocessError):pass
@@ -2682,8 +2734,8 @@ finally:v.vkDestroyInstance(instance,None)
                             row.update(device_type='integrated',name=matches[0]['name'],memory_domain='shared-system-memory',memory_source='Vulkan physical integrated device; kernel host RAM',memory_total_mib=None,memory_free_mib=None,memory_used_mib=None,shared_memory_available_mib=memory.get('MemAvailable',0)/1024,gpu_allocation_added_to_host_ram=False)
             row['allocation_known']=row.get('memory_total_mib') is not None and row.get('memory_free_mib') is not None
             row.update(workers['devices'].get(row.get('uuid'),{'active_workers':0,'private_commitment_mib':0,'exclusive_worker_present':False}))
-            row['workers_known']=workers['known'];row['sampled_at']=now;rows.append(row)
-        self.gpu_resource_cache={'machine':machine,'sampled_at':now,'gpus':rows,
+            row['workers_known']=workers['known'];row.setdefault('sampled_at',now);rows.append(row)
+        self.gpu_resource_cache={'machine':machine,'sampled_at':min((row['sampled_at'] for row in rows),default=now),'gpus':rows,
             'host_memory':{'total_mib':memory.get('MemTotal',0)/1024,'available_mib':memory.get('MemAvailable',0)/1024,
                            'source':'kernel MemTotal/MemAvailable; GPU allocations are not added'},
             'selection_policy':'physical identity and measured allocation; workload qualification required separately'}

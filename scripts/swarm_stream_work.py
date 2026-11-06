@@ -52,6 +52,15 @@ class StreamClient:
             raise
     def prioritize(self,ident,priority=100):
         return self.call('stream.priority',{'id':ident,'priority':priority})
+    def status(self,ident):
+        """Poll once, validating terminal results without blocking assignment."""
+        row=self.call('stream.status',{'id':ident})
+        if row['state']=='completed':
+            result=row['result']
+            if result.get('contract_sha256')!=row['contract_sha256'] or result.get('worker_machine')!=self.host['machine']:raise IntegrityFailure('Launcher result identity differs')
+        if row['state']=='failed_integrity':raise IntegrityFailure(row['error'])
+        if row['state'] in ('failed','cancelled'):raise WorkFailure(row['error'])
+        return row
     def wait(self,ident,progress=lambda row:None,timeout=None):
         started=time.monotonic()
         while not self.stopped():
@@ -103,8 +112,8 @@ class FleetQueue:
                                 (namespace,row['id'],row['fingerprint'],row['spec'],row['state'],row['host'],uuid.uuid4().hex,time.time(),time.time(),row['task_id'],row['request'],row['result'],row['error']))
                         db.execute('INSERT OR IGNORE INTO submission_imports(namespace) VALUES(?)',(namespace,))
         self.queue.submit_many(units)
-    def claim(self,host,capacity=None):
-        row=self.queue.claim(host,capacity)
+    def claim(self,host,capacity=None,requirements=None):
+        row=self.queue.claim(host,capacity,requirements=requirements)
         if row:self.tokens[row['id']]=row['token']
         return row
     def recover(self,host):
@@ -122,78 +131,94 @@ class FleetQueue:
             return workers
 
 
-def distribute(units,hosts,prepare,journal,*,slots=None,stopped=lambda:False,progress=lambda value:None,minimum_resources=None):
+def distribute(units,hosts,prepare,journal,*,stopped=lambda:False,progress=lambda value:None,minimum_resources=None):
     path=Path(journal);path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
     with path.with_suffix(path.suffix+'.lock').open('a+') as lock:
         try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:raise RuntimeError('This fleet queue already has a controller') from None
-        return _distribute(units,hosts,prepare,journal,slots=slots,stopped=stopped,progress=progress,minimum_resources=minimum_resources)
+        return _distribute(units,hosts,prepare,journal,stopped=stopped,progress=progress,minimum_resources=minimum_resources)
 
 
-def _distribute(units,hosts,prepare,journal,*,slots=None,stopped=lambda:False,progress=lambda value:None,minimum_resources=None):
-    """Reusable work stealing; accepted jobs reattach to their original launchers.
+def _distribute(units,hosts,prepare,journal,*,stopped=lambda:False,progress=lambda value:None,minimum_resources=None):
+    """Assign from live capacity while polling accepted jobs independently.
 
-    prepare(unit, host) builds a declared recipe request with that node's pinned
-    image and source offers. It never sends code or shell commands to the launcher.
-    Pass resource-derived slots for CPU/RAM-heavy jobs; the node rechecks admission.
+    Each host has one control connection, with no fixed execution slot count.
+    Pending admissions reserve CPU/RAM in the durable queue until the launcher
+    reports running; the node remains responsible for final resource admission.
     """
-    if slots is None:
-        # Every job reserves at least one CPU. This is the hardware upper bound
-        # for feeder waiters, not a fixed per-node execution limit; launchers
-        # independently admit declared CPU/RAM budgets.
-        slots={h['host']:max(1,int(h.get('cpus',1))) for h in hosts}
-    minimum_resources=minimum_resources or {'cpus':1,'memory_mb':0}
-    queue=FleetQueue(journal,units);queue.recover_preparations();guard=threading.Lock();fatal=threading.Event()
+    units=list(units)
+    minimum_resources=minimum_resources or {'cpus':1,'memory_mb':256}
+    requirements={u['id']:{k:u.get('resources',{}).get(k,minimum_resources.get(k,default))
+        for k,default in (('cpus',1),('memory_mb',256))} for u in units}
+    queue=FleetQueue(journal,units);queue.recover_preparations();fatal=threading.Event()
     recovered_by_host={host['host']:queue.recover(host['host']) for host in hosts}
     progress_lock=threading.Lock();last_progress=[float('-inf')]
     def report(force=False):
-        # Waiting for capacity and long accepted jobs are live states too.
-        # Serialize callbacks and bound durable/UI writes across all lanes.
         with progress_lock:
             now=time.monotonic()
             if force or now-last_progress[0]>=5:
                 progress(queue.snapshot());last_progress[0]=now
     report()
-    def run(host,index):
-        with StreamClient(host,lambda:stopped() or fatal.is_set()) as client:
-            if not client.capabilities():raise WorkFailure('Launcher '+host['host']+' lacks stream-work-v1; accepted work retained for recovery')
-            recovered=recovered_by_host[host['host']][index::(slots or {}).get(host['host'],1)]
-            while not stopped() and not fatal.is_set():
-                report()
-                row=recovered.pop(0) if recovered else None
-                if row is None:
-                    if not client.call('worker.policy')['accepting_jobs']:return
-                    if not queue.snapshot().get('queued'):return
-                    available=client.call('resource.capacity')
-                    if (available.get('available_cpus',float('inf'))<minimum_resources.get('cpus',1)
-                            or available.get('available_mb',float('inf'))<minimum_resources.get('memory_mb',0)):
-                        time.sleep(.25);continue
-                    with guard:row=queue.claim(host['host'],available)
-                    if row is None:
-                        if not queue.snapshot().get('queued'):return
-                        time.sleep(.25);continue
-                    try:spec=prepare(json.loads(row['spec']),host)
-                    except Exception as error:
-                        queue.update(row['id'],state='queued',host=None,error=str(error));raise
-                    queue.update(row['id'],state='accepted',task_id=spec['id'],request=canonical(spec))
-                else:spec=json.loads(row['request'])
-                try:
-                    result=client.run(spec,progress=lambda _:report())
-                    queue.update(row['id'],state='completed',result=canonical(result),error=None)
-                except WorkerPaused:
-                    queue.update(row['id'],state='queued',host=None,task_id=None,request=None);return
-                except IntegrityFailure as error:
-                    queue.update(row['id'],state='failed_integrity',error=str(error));fatal.set();return
-                except WorkFailure as error:
-                    queue.update(row['id'],state='failed',error=str(error));return
-                except InterruptedError:
-                    # Accepted work stays pinned to its launcher for later reattachment.
-                    if not fatal.is_set() and not stopped():raise
-                    return
-                finally:report(force=True)
-    work=[(h,n) for h in hosts for n in range((slots or {}).get(h['host'],1))]
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1,len(work))) as pool:
-        for future in [pool.submit(run,h,n) for h,n in work]:future.result()
+    def run(host):
+        try:
+            with StreamClient(host,lambda:stopped() or fatal.is_set()) as client:
+                if not client.capabilities():raise WorkFailure('Launcher '+host['host']+' lacks stream-work-v1; accepted work retained for recovery')
+                active={};closed=False
+                def checkpoint(ident,spec,pending):
+                    queue.update(ident,state='accepted',task_id=spec['id'],request=canonical({
+                        'spec':spec,'resources':spec.get('resources',{'cpus':1,'memory_mb':256}),
+                        'admission_pending':pending}))
+                for row in recovered_by_host[host['host']]:
+                    request=json.loads(row['request']);spec=request.get('spec',request)
+                    # Idempotent submission also handles a lost acknowledgement.
+                    client.submit(spec);checkpoint(row['id'],spec,True)
+                    active[row['id']]=(spec,True)
+                while not stopped() and not fatal.is_set():
+                    report()
+                    for ident,(spec,pending) in list(active.items()):
+                        try:
+                            result=client.status(spec['id'])
+                            if result['state']=='completed':
+                                queue.update(ident,state='completed',result=canonical(result),error=None)
+                                del active[ident];report(force=True)
+                            else:
+                                admission_pending=result['state']!='running'
+                                if admission_pending!=pending:
+                                    checkpoint(ident,spec,admission_pending)
+                                    active[ident]=(spec,admission_pending)
+                        except IntegrityFailure as error:
+                            queue.update(ident,state='failed_integrity',error=str(error));fatal.set();report(force=True);return
+                        except WorkFailure as error:
+                            queue.update(ident,state='failed',error=str(error));del active[ident];report(force=True)
+                    if fatal.is_set():return
+                    row=None
+                    if not closed and queue.snapshot().get('queued'):
+                        closed=not client.call('worker.policy')['accepting_jobs']
+                        if not closed:
+                            available=client.call('resource.capacity')
+                            row=queue.claim(host['host'],available,requirements=requirements)
+                    if row is not None:
+                        try:spec=prepare(json.loads(row['spec']),host)
+                        except Exception as error:
+                            queue.update(row['id'],state='queued',host=None,error=str(error));raise
+                        # Persist the full immutable request before contacting
+                        # the launcher, so uncertain acceptance is recoverable.
+                        checkpoint(row['id'],spec,True)
+                        try:client.submit(spec)
+                        except WorkerPaused:
+                            queue.update(row['id'],state='queued',host=None,task_id=None,request=None);closed=True
+                        else:active[row['id']]=(spec,True)
+                        continue
+                    if not active and (closed or not queue.snapshot().get('queued')):return
+                    time.sleep(.25)
+        except InterruptedError:
+            if not fatal.is_set() and not stopped():
+                fatal.set();raise
+        except Exception:
+            fatal.set();raise
+        finally:report(force=True)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1,len(hosts))) as pool:
+        for future in [pool.submit(run,h) for h in hosts]:future.result()
     result=queue.snapshot()
     if result.get('failed_integrity'):raise IntegrityFailure('Fleet work contains a rejected input or result')
     return result

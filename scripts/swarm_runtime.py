@@ -160,6 +160,10 @@ def observe_worker(host,name,lease,*,reconnect_seconds=180,poll_seconds=2):
 
 class MissingWorker(ValueError):
     """The enrolled node confirms the named execution no longer exists."""
+    def __init__(self,message,*,container=None,lease=None):
+        super().__init__(message)
+        self.container=container
+        self.lease=lease
 
 
 def observe_recorded_worker(client,host,name,lease,*,on_observed=None,reconnect_seconds=960,poll_seconds=2):
@@ -173,7 +177,7 @@ def observe_recorded_worker(client,host,name,lease,*,on_observed=None,reconnect_
             if not value.get('found'):
                 last=value.get('last_observation') or {}
                 if last.get('exit_code') is not None:return last
-                raise MissingWorker('Docker worker is missing; execution is not complete')
+                raise MissingWorker('Docker worker is missing; execution is not complete',container=name,lease=lease)
             if on_observed:on_observed(value)
             if value.get('exit_code') is not None:return value
             deadline=time.monotonic()+reconnect_seconds
@@ -218,6 +222,8 @@ def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_fo
     try:
         status=client.call('status')
         if status.get('machine')!=host['machine']:raise RuntimeError('Worker identity changed')
+        ram_only=status.get('storage_policy',{}).get('mode')=='ram-only'
+        if ram_only:client.call('worker.storage.validate',{'paths':[str(source) for source,_,_ in mounts]})
         # Older enrolled agents require this legacy wire name. It does not
         # select a scientific workload; generic workers carry their own group.
         prefix=container_prefix or ('swarm-job' if 'generic-workers' in status.get('capabilities',[]) else 'genomics')
@@ -226,8 +232,8 @@ def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_fo
         if 'renewable-resources' not in status.get('capabilities',[]):raise RuntimeError('Renewable leases unavailable')
         capacity=client.call('resource.capacity',{'group':group})
         if capacity['available_mb']<reservation and ('verified-ram-caches-v1' in status.get('capabilities',[]) or any(w.get('group')=='shared-cache' for w in status.get('workers',[]))):
-            from scripts.swarm_shared_cache import evict_unused
-            if evict_unused(host,keep=protected):
+            from scripts.swarm_shared_cache import reclaim_completed
+            if reclaim_completed(host,keep=protected,required_mb=reservation):
                 capacity=client.call('resource.capacity',{'group':group})
         if not wait_for_capacity and (capacity['available_mb']<reservation or capacity.get('available_cpus',0)<cpus):raise CapacityWait('Insufficient current signed capacity')
         request={'id':lease,'group':group,'cpus':cpus,'memory_mb':reservation,'container':name}
@@ -246,8 +252,8 @@ def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_fo
             if 'verified-ram-caches-v1' in status.get('capabilities',[]) and time.monotonic()-last_cache_reclaim>=10:
                 capacity=client.call('resource.capacity',{'group':group})
                 if capacity['available_mb']<reservation:
-                    from scripts.swarm_shared_cache import evict_unused
-                    evict_unused(host,keep=protected)
+                    from scripts.swarm_shared_cache import reclaim_completed
+                    reclaim_completed(host,keep=protected,required_mb=reservation)
                 last_cache_reclaim=time.monotonic()
             result=client.call('resource.acquire',request)
         # Transfers and admission waits can outlive an owner's policy change or
@@ -277,7 +283,10 @@ def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_fo
         detached=not host['local']
         argv=['docker','run','--pull=never','--name',name,'--label','org.lifetech.worker=true','--label','org.lifetech.job='+lease,'--label','org.lifetech.group='+group,'--network',network,'--read-only','--log-driver','local' if detached else 'none','--cpus',str(cpus),'--memory',str(memory_mb)+'m','--memory-swap',str(memory_mb)+'m','--pids-limit','32','--cap-drop','ALL','--security-opt','no-new-privileges','--ulimit','core=0:0','--ulimit','nofile=65536:65536','--user',host.get('container_user','1000:1000'),'-e','TMPDIR=/work/tmp','-w','/work']
         if reservation!=memory_mb:argv+=['--memory-reservation',str(reservation)+'m']
-        if detached:argv+=['--detach','--log-opt','max-size=8m','--log-opt','max-file=2']
+        if detached:
+            argv+=['--detach']
+            if ram_only:argv[argv.index('--log-driver')+1]='none'
+            else:argv+=['--log-opt','max-size=8m','--log-opt','max-file=2']
         argv+=['--label','org.lifetech.sink='+sink,'--label','org.lifetech.run='+(run_id or report.stem),
                 '--label','org.lifetech.accounting-file=/work/.swarm-execution-'+lease+'.json',
                 '--label','org.lifetech.agent-revision='+str(status.get('source_revision','unknown')),
@@ -307,7 +316,7 @@ def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_fo
             except (OSError, ValueError, IndexError, subprocess.SubprocessError) as error:
                 raise GpuUnavailable('GPU readiness changed before launch') from error
             if free.get(gpu['uuid'],0)<gpu['minimum_free_mib']:raise GpuUnavailable('GPU VRAM headroom changed before launch')
-            locks=str(Path(host['cache']).parent/'gpu-alignment-locks')
+            locks=str(Path('/dev/shm/jswarm-gpu-locks')/host['machine']) if ram_only else str(Path(host['cache']).parent/'gpu-alignment-locks')
             prepare="import pathlib,os,sys;p=pathlib.Path(sys.argv[1]);p.mkdir(mode=0o700,parents=True,exist_ok=True);assert p.stat().st_uid==os.getuid() and not p.stat().st_mode & 0o077"
             subprocess.run(shell_command(host,['python3','-c',prepare,locks]),check=True,timeout=15)
             from scripts.launcher_streams import gpu_container_args
@@ -366,7 +375,7 @@ def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_fo
         if code or errors:
             try:owner_paused=client.call('worker.policy').get('accepting_jobs') is False
             except (OSError,RuntimeError,ValueError):pass
-        result={'phase':'interrupted' if owner_paused else 'complete' if code==0 and not errors else 'failed','host':host['host'],'sink':sink,'container':name,'exit_code':code,'started':execution_started,'elapsed_seconds':time.monotonic()-execution_clock,'finished':stamp(),'command':command,'image':image,'profiling_context':profiling_context,'cpus':cpus,'memory_mb':memory_mb,'memory_reservation_mb':reservation,'container_state':detail,'lease_errors':errors,'ram_scratch_mounts':tmpfs or {},'gpu':gpu,'network':network}
+        result={'phase':'interrupted' if owner_paused else 'complete' if code==0 and not errors else 'failed','host':host['host'],'sink':sink,'container':name,'lease_id':lease,'exit_code':code,'started':execution_started,'elapsed_seconds':time.monotonic()-execution_clock,'finished':stamp(),'command':command,'image':image,'profiling_context':profiling_context,'cpus':cpus,'memory_mb':memory_mb,'memory_reservation_mb':reservation,'container_state':detail,'lease_errors':errors,'ram_scratch_mounts':tmpfs or {},'gpu':gpu,'network':network}
         from scripts.launcher_streams import MEMORY_ACCOUNTING_FIELDS
         accounting={k:observed[k] for k in ('started','finished','elapsed_seconds','cpu_core_seconds','cpu_sampled_at','cpu_throttled_seconds','cpu_measurement_basis','cpu_accounting_coverage',*MEMORY_ACCOUNTING_FIELDS) if observed and k in observed}
         if not accounting and host.get('local'):

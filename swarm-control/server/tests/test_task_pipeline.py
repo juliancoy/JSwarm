@@ -259,6 +259,31 @@ def test_enrollment_inventory_includes_idle_nodes_without_polling(tmp_path,monke
     assert module.snapshot(tmp_path/'no-work')['machines']==['julian-minipc.local']
 
 
+def test_vulkan_comparison_receipt_marks_actual_gpu_execution():
+    from task_pipeline import runtime_observation,gpu_execution_metadata
+    receipt={'execution_backend':'vulkan','method':'comparison','gpu_qualification':'qualified'}
+    observed=runtime_observation(None,receipt,'compai.local')
+    assert observed['gpu_used'] is True
+    assert observed['technologies']==['GPU comparison','Vulkan']
+    assert runtime_observation(None,{'execution_backend':'cpu','method':'comparison'},'compai.local')['gpu_used'] is False
+    assert runtime_observation(None,{'gpu_qualification':'qualified'},'compai.local')['gpu_used'] is False
+    metadata=gpu_execution_metadata({'gpu':{'uuid':'GPU-device','runtime_directory':'private-runtime'}})
+    assert metadata=={'gpu':True,'gpu_devices':['GPU-device']}
+    assert runtime_observation(metadata,{},'compai.local')['gpu_devices']==['GPU-device']
+
+
+def test_completed_gpu_comparison_keeps_submission_estimate_separate(tmp_path):
+    from submission_queue import SubmissionQueue
+    queue=SubmissionQueue('comparison',tmp_path/'queue')
+    queue.submit({'id':'compare','resources':{'cpus':2,'memory_mb':1280,'sink':'cpu'}})
+    claim=queue.claim('compai.local')
+    queue.update('compare',claim['token'],state='completed',result=json.dumps({'execution_backend':'vulkan','method':'comparison'}))
+    item=snapshot(tmp_path/'queue')['items'][0]
+    assert item['resources']['sink']=='gpu'
+    assert item['submission_resources']['sink']=='cpu'
+    assert item['runtime']['gpu_used'] is True
+
+
 def test_blocked_followup_explains_qualification_and_evidence_gates():
     from task_pipeline import blocked_detail
     assert 'qualification' in blocked_detail({},'waiting_implementation')
@@ -378,3 +403,16 @@ def test_completed_regional_preparation_uses_its_retained_extraction_attempt(tmp
     assert item['execution']['memory_peak_bytes']==456
     with sqlite3.connect(tmp_path/'q') as db:db.execute('UPDATE submissions SET request=?',(json.dumps({'directory':'/different-attempt','source_image':'tools'}),))
     assert snapshot(tmp_path/'q',tmp_path,tmp_path/'runtime')['items'][0]['runtime']['started'] is None
+
+
+def test_gpu_smoke_attempts_collapse_only_with_identical_scientific_specification():
+    from task_pipeline import collapse_test_attempts
+    base={'kind':'regional','job_id':'compare-region','validation_identity':'a'*64,'status':'failed','queue_state':'failed','worker':'intel','detail':'missing job.json','created':1,'updated':2,'id':'old/compare-region','parent':'intel-routing-smoke:old'}
+    newer={**base,'id':'new/compare-region','parent':'intel-routing-smoke:new','status':'completed','queue_state':'completed','created':3,'updated':4,'detail':None}
+    distinct={**newer,'id':'different/compare-region','parent':'intel-routing-smoke:different','validation_identity':'b'*64}
+    rows=collapse_test_attempts([base,newer,distinct])
+    assert len(rows)==2
+    recovered=next(r for r in rows if r['validation_identity']=='a'*64)
+    assert recovered['status']=='completed' and recovered['attempt_id']=='new/compare-region'
+    assert [a['status'] for a in recovered['attempts']]==['completed','failed']
+    assert recovered['attempts'][1]['detail']=='missing job.json'
