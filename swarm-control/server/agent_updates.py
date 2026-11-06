@@ -210,7 +210,9 @@ class LauncherUpdates:
         assets={str(path.relative_to(view)):base64.b64encode(path.read_bytes()).decode() for path in view.rglob('*') if path.is_file()}
         genome=(Path(root).parent if Path(root).name=='JSwarm' else Path(root))/'GenomeHarbor/web'
         assets.update({'genome/'+str(path.relative_to(genome)):base64.b64encode(path.read_bytes()).decode() for path in genome.rglob('*') if path.is_file()})
-        encoded=base64.b64encode(gzip.compress(json.dumps(assets,sort_keys=True).encode(),mtime=0)).decode()
+        compressed=bytearray(gzip.compress(json.dumps(assets,sort_keys=True).encode(),compresslevel=9,mtime=0))
+        compressed[9]=255  # Python 3.12/3.13 differ in the default gzip OS header.
+        encoded=base64.b64encode(compressed).decode()
         marker="if __name__=='__main__':main()"
         self.files['launcher_peers.py']=self.files['launcher_peers.py'].replace(marker,'PIPELINE_ASSETS_B64 = '+repr(encoded)+'\n\n'+marker)
         runtime=Path(root)/'ramtop/ramtop'
@@ -390,6 +392,25 @@ class LauncherUpdates:
         with deployment_lock(folder=folder.parent,operation='node rollout'):
             check_publication(folder,self.publication_artifact)
             yield
+
+    @contextmanager
+    def parallel_updates(self):
+        """Lend workers a scoped guard while the caller owns the fleet lock."""
+        import copy
+        with self._deployment_guard():
+            active=threading.Event();active.set()
+            def child():
+                instance=copy.copy(self)
+                @contextmanager
+                def guard():
+                    if not active.is_set():raise RuntimeError('Parallel deployment scope ended')
+                    folder=getattr(self,'publication_folder',None)
+                    if folder is not None:check_publication(folder,self.publication_artifact)
+                    yield
+                instance._deployment_guard=guard
+                return instance
+            try:yield child
+            finally:active.clear()
 
     def stage(self,host,status):
         with self._deployment_guard():return self._stage(host,status)

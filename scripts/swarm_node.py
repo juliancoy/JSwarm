@@ -67,6 +67,7 @@ def main(argv=None):
     parser.add_argument('--all',action='store_true',help='Apply a maintenance command to the enrolled fleet')
     parser.add_argument('--node',action='append',help='Select an enrolled node for maintenance; default is the fleet')
     parser.add_argument('--reason',default='Owner-requested maintenance')
+    parser.add_argument('--parallel',action='store_true',help='Update all selected nodes concurrently')
     parser.add_argument('--watch',action='store_true',help='Retry an update when a node is offline or busy')
     parser.add_argument('--address',help='Verified enrollment SSH address')
     parser.add_argument('--target',help='Enrollment target: user@hostname.local')
@@ -147,6 +148,7 @@ def main(argv=None):
     elif args.command=='update':
         from deploy_swarm_inputs import main as run
         forwarded=['--watch'] if args.watch else []
+        if args.parallel:forwarded+=['--parallel']
         for node in args.node or []:forwarded+=['--node',node]
     else:
         if not args.target:parser.error('enroll requires --target user@hostname.local')

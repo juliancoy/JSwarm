@@ -19,36 +19,45 @@ from input_runtime_release import InputRuntimeRelease
 RELEASES=Path.home()/'.local/state/swarm-control/node-releases'
 
 
-def sweep(nodes=None,wait_timeout=3600,published=None):
+def sweep(nodes=None,wait_timeout=3600,published=None,*,parallel=False):
     config=json.loads(CONFIG.read_text())
     updater=LauncherUpdates.published(published,lambda:False,lambda *args:None) if published else LauncherUpdates.desired()
     rows=[]
     selected=nodes or list(config['peers'])
     if any(name not in config['peers'] for name in selected):raise ValueError('Use an enrolled node name')
-    pending=None
-    for name,address in config['peers'].items():
-        if name not in selected:continue
-        if pending:
-            row={'node':name,'status':'pending','reason':'Waiting for '+pending+' to become ready'}
-            rows.append(row);print(json.dumps(row),flush=True);continue
+    def update(name,address,worker):
+        started=time.monotonic()
         host={'host':name,'local':name==config['name'],'lan_address':address,'agent_endpoint':'http://'+address+':8790'}
         client=AgentClient(host);row={'node':name}
         try:
             try:status=client.call('status',timeout=4)
             except (OSError,TimeoutError):
                 client.close()
-                status=updater.owner_status(host)
+                status=worker.owner_status(host)
             if status['node']!=name:raise ValueError('Agent identity mismatch')
-            options={'wait_timeout':wait_timeout}
-            status=updater.ensure(host,client,status,**options)
-            if status.get('source_revision')!=updater.revision or not status.get('ready'):
+            status=worker.ensure(host,client,status,wait_timeout=wait_timeout)
+            if status.get('source_revision')!=worker.revision or not status.get('ready'):
                 raise RuntimeError('Desired release is not ready: '+host.get('launcher_update',{}).get('reason',''))
             row.update(status='current',launcher_revision=status['source_revision'],ready=status['ready'])
-        except Exception as error:
-            row.update(status='pending',reason=str(error)[:180])
-            pending=name
+        except Exception as error:row.update(status='pending',reason=str(error)[:180])
         finally:client.close()
-        rows.append(row);print(json.dumps(row),flush=True)
+        row['seconds']=round(time.monotonic()-started,3)
+        print(json.dumps(row),flush=True)
+        return row
+    peers=[(name,address) for name,address in config['peers'].items() if name in selected]
+    if parallel:
+        from concurrent.futures import ThreadPoolExecutor
+        with updater.parallel_updates() as child:
+            with ThreadPoolExecutor(max_workers=min(5,len(peers)) or 1) as pool:
+                rows=list(pool.map(lambda peer:update(*peer,child()),peers))
+    else:
+        pending=None
+        for name,address in peers:
+            if pending:
+                row={'node':name,'status':'pending','reason':'Waiting for '+pending+' to become ready'}
+                rows.append(row);print(json.dumps(row),flush=True);continue
+            row=update(name,address,updater);rows.append(row)
+            if row['status']!='current':pending=name
     # Optional public-artifact paging is pinned in the fleet publication.
     components=getattr(updater,'components',None)
     if isinstance(components,dict) and 'public-pager' in components:
@@ -88,6 +97,7 @@ def main():
     parser.add_argument('--frozen-source',action='store_true',help=argparse.SUPPRESS)
     parser.add_argument('--expected-publication',help=argparse.SUPPRESS)
     parser.add_argument('--watch',action='store_true')
+    parser.add_argument('--parallel',action='store_true',help='Update up to five enrolled nodes concurrently under one pinned fleet lock')
     parser.add_argument('--continuous',action='store_true',help='Keep following validated publications after fleet convergence')
     actions=parser.add_mutually_exclusive_group()
     actions.add_argument('--status',action='store_true',help='Verify selected nodes against the published release without changes')
@@ -141,7 +151,7 @@ def main():
             check_publication(RELEASES,expected)
             import subprocess
             updater=LauncherUpdates(ROOT,lambda:False,lambda *args:None)
-            suites=['scripts/tests/test_launcher_routing.py','tests/test_launcher_routing_cleanup.py','tests/test_node_web.py','tests/test_worker_storage.py','tests/test_cache_lifetime.py','tests/test_cache_pressure_reclamation.py','tests/test_execution_accounting.py','tests/test_launcher_streams.py','tests/test_swarm_stream_work.py','scripts/tests/test_launcher_telemetry.py','tests/test_swarm_paged_cache.py','tests/test_swarm_shared_cache.py','tests/test_agent_cpu_overhead.py','tests/test_deployment_lock.py','tests/test_node_releases.py','tests/test_node_git_source.py','tests/test_swarm_node.py','tests/test_worker_journal.py','tests/test_ram_cache_inventory.py','tests/test_node_cache_manager.py','tests/test_ram_cache_cleanup_api.py','tests/test_swarm_cache_cleanup.py','tests/test_swarm_pressure_guard.py','tests/test_launcher_commands.py','tests/test_launcher_peer_supervisor.py','tests/test_resource_renewal.py','tests/test_swarm_runtime.py','tests/test_gpu_inventory.py','tests/test_node_execution.py','tests/test_swarm_gpu_runtime.py','tests/test_rolling_deployment.py','tests/test_docker_worker_restart.py','swarm-control/server/tests/test_agent_updates.py','swarm-control/server/tests/test_agent_sessions.py','swarm-control/server/tests/test_fleet_backups.py','tests/test_worker_maintenance.py']
+            suites=['scripts/tests/test_launcher_routing.py','tests/test_launcher_routing_cleanup.py','tests/test_node_web.py','tests/test_worker_storage.py','tests/test_cache_lifetime.py','tests/test_cache_pressure_reclamation.py','tests/test_execution_accounting.py','tests/test_launcher_streams.py','tests/test_swarm_stream_work.py','scripts/tests/test_launcher_telemetry.py','tests/test_swarm_paged_cache.py','tests/test_swarm_shared_cache.py','tests/test_agent_cpu_overhead.py','tests/test_deployment_lock.py','tests/test_node_releases.py','tests/test_node_git_source.py','tests/test_swarm_node.py','tests/test_worker_journal.py','tests/test_ram_cache_inventory.py','tests/test_node_cache_manager.py','tests/test_ram_cache_cleanup_api.py','tests/test_swarm_cache_cleanup.py','tests/test_swarm_cache_migrate.py','tests/test_swarm_pressure_guard.py','tests/test_launcher_commands.py','tests/test_launcher_peer_supervisor.py','tests/test_resource_renewal.py','tests/test_swarm_runtime.py','tests/test_gpu_inventory.py','tests/test_node_execution.py','tests/test_swarm_gpu_runtime.py','tests/test_rolling_deployment.py','tests/test_docker_worker_restart.py','swarm-control/server/tests/test_agent_updates.py','swarm-control/server/tests/test_agent_sessions.py','swarm-control/server/tests/test_fleet_backups.py','tests/test_worker_maintenance.py']
             project=Path(__file__).resolve().parents[1]
             env={**os.environ,'PYTHONPATH':os.pathsep.join(map(str,(project/'swarm-control/server',ROOT,project.parent/'GenomeHarbor/tests')))}
             subprocess.run([sys.executable,'-m','pytest','-q',*suites],cwd=project,env=env,check=True)
@@ -157,7 +167,7 @@ def main():
             if not args.continuous:raise SystemExit('No validated agent release has been published')
             time.sleep(30);continue
         try:
-            with deployment_lock(operation='fleet rollout',folder=RELEASES.resolve().parent):done=sweep(args.node,args.wait_timeout,RELEASES/'desired')
+            with deployment_lock(operation='fleet rollout',folder=RELEASES.resolve().parent):done=sweep(args.node,args.wait_timeout,RELEASES/'desired',**({'parallel':True} if args.parallel else {}))
         except RuntimeError:
             if not args.continuous:raise
             time.sleep(30);continue

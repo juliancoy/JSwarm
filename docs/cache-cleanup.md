@@ -83,3 +83,33 @@ The script requires the new node capability and fails explicitly on older nodes;
 there is no command-API or node-SSH fallback. Build with `./build.sh` and publish
 and update through the standard validated node release procedure before fleet
 use. The new API and controller-script tests are included in that release gate.
+
+## Migrating legacy holders into the singleton
+
+`python3 -m scripts.swarm_cache_migrate --output migration.json` previews the
+migration on the signing controller. Add `--apply` to perform it. This is a
+separate maintenance operation from terminal-only cleanup: it preserves unfinished
+jobs instead of treating their old bindings as eviction permission.
+
+Apply holds the standard deployment lock, stops `genomics-followup.service`,
+and acquires the existing plan controller locks. It restores the service even
+if migration fails. It scans every unfinished
+queue namespace and the reusable-object lookup records. Needed legacy payloads
+stream directly between Docker containers on the same node; the receiver and
+managed-cache seal both verify their immutable sizes and SHA-256 checksums. RAM
+budgets remain enforced, and the operation fails if retained objects exceed a
+node's budget or a pending input has no verified source.
+
+Verified target objects stay pinned during migration. Queue requests, reusable
+lookup records, and active attempt transport manifests are rebound to the managed
+volume subpaths without changing job state, attempt identity, or executor image.
+A metadata backup is written next to the migration report. Only after durable
+rebinding can a needed legacy holder be retired. Other unclaimed holders can be
+retired first to provide migration headroom.
+
+Retirement uses the enrolled signed command channel, validates the node identity,
+exact Docker owner ID, cache labels, tmpfs volume and expected mount, and refuses
+running or stopped readers and active execs. Queue writers are fenced during each
+node's retirement batch. No payload files are staged to disk and no global Docker
+prune runs. Interrupted migrations can be rerun: legacy sources remain until the
+verified replacement is published, and already sealed targets are reused.

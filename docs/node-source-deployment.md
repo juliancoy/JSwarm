@@ -49,3 +49,18 @@ bootstrap with the normal local runner before retrying.
 Dependency changes require updating the dependency image on each container host
 using `./build.sh` and recreating its node container; fleet code updates do not
 silently rebuild Docker images or install Python packages.
+
+## Parallel updates
+
+For an explicitly concurrent rollout, run `python -m scripts.swarm_node update
+--parallel`. All selected nodes update against one pinned publication under the
+same fleet lock, with up to five node updates in flight. A failed node is reported
+independently; other enrolled nodes can finish. Each node must still pass its
+identity, source revision and readiness checks. Per-node timings are recorded in
+the deployment receipt.
+
+Node activation updates the node process. GenomeHarbor orchestration is a
+separate running process: deploy its orchestration from the same managed Git
+workspace with `genomics_followup_controller.deploy_orchestration`. That procedure
+preserves the scientific executor binding and hands off existing queue claims;
+fetching a checkout alone does not update modules already loaded by a controller.

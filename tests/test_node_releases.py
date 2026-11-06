@@ -160,3 +160,16 @@ def test_pre_git_history_can_be_replaced_but_never_deployed_or_rolled_back(tmp_p
     assert source.generation==2
     with pytest.raises(ValueError,match='Git source provenance required'):LauncherUpdates.rollback(tmp_path)
     assert (tmp_path/'desired').resolve()==updated
+
+
+def test_asset_bundle_identity_is_independent_of_python_gzip_os_header(monkeypatch):
+    import gzip
+    compress=gzip.compress
+    def build(os_code):
+        def encoded(*args,**kwargs):
+            data=bytearray(compress(*args,**kwargs));data[9]=os_code;return bytes(data)
+        monkeypatch.setattr(gzip,'compress',encoded)
+        return release_source()
+    linux=build(3);portable=build(255)
+    assert linux.files==portable.files
+    assert linux.revision==portable.revision

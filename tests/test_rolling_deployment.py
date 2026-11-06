@@ -206,3 +206,21 @@ def test_removed_published_flag_is_rejected_before_deployment(monkeypatch):
     with pytest.raises(SystemExit) as stopped:deploy.main()
     assert stopped.value.code==2
     sweep.assert_not_called()
+
+
+def test_parallel_rollout_contacts_all_nodes_and_keeps_independent_failures(monkeypatch,tmp_path):
+    from contextlib import nullcontext
+    import threading
+    updater,clients=setup_deployment(monkeypatch,tmp_path)
+    updater.parallel_updates=lambda:nullcontext(lambda:updater)
+    together=threading.Barrier(2)
+    def ensure(host,client,status,**options):
+        together.wait(timeout=5)
+        if host['host']=='first':raise RuntimeError('first offline')
+        return {**status,'source_revision':'new'}
+    updater.ensure.side_effect=ensure
+    assert deploy.sweep(parallel=True) is False
+    assert len(clients)==2 and all(c.close.called for c in clients)
+    report=json.loads((tmp_path/'.local/state/swarm-control/input-deployment.json').read_text())
+    assert [r['status'] for r in report['nodes']]==['pending','current']
+    assert all('seconds' in r for r in report['nodes'])
