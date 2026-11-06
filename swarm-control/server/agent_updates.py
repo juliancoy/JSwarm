@@ -416,6 +416,10 @@ pending=base/'cancel.tmp';pending.unlink(missing_ok=True);pending.symlink_to(pre
         if result.returncode:raise RuntimeError('Cannot safely cancel staged node update')
 
     def ensure(self,host,client,status,allow_compatible=False,drain=False,wait_timeout=240):
+        # Ready-node observations cannot stage code. Keep job admission and
+        # monitoring available while a different process owns the fleet lock.
+        if status.get('ready') and (status.get('source_revision')==self.revision or allow_compatible):
+            return self._ensure(host,client,status,allow_compatible=allow_compatible,drain=drain,wait_timeout=wait_timeout)
         with self._deployment_guard():
             return self._ensure(host,client,status,allow_compatible=allow_compatible,drain=drain,wait_timeout=wait_timeout)
 

@@ -151,3 +151,14 @@ def test_loading_resolves_the_publication_once_even_if_desired_advances(tmp_path
         pinned=updates.LauncherUpdates.published(desired,lambda:False,Mock())
     assert pinned.publication_artifact==first.name
     with pytest.raises(RuntimeError,match='advanced during preparation'):pinned.stage({}, {})
+
+
+def test_ready_node_observations_do_not_block_job_admission_on_the_fleet_lock(tmp_path,source):
+    source.publish(tmp_path)
+    source._deployment_guard=Mock(side_effect=AssertionError('Read-only observations must not acquire the fleet lock'))
+    current={'ready':True,'source_revision':source.revision}
+    assert source.ensure({},Mock(),current)==current
+    compatible={'ready':True,'source_revision':'older','capabilities':[]};host={}
+    assert source.ensure(host,Mock(),compatible,allow_compatible=True)==compatible
+    assert host['launcher_update']['status']=='deferred'
+    source._deployment_guard.assert_not_called()
