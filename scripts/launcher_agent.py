@@ -27,7 +27,7 @@ class NvidiaSampler:
     """One node-owned utility process; readers never wait for Docker startup."""
     def __init__(self,changed=lambda:None):
         self.lock=threading.Lock();self.stopped=threading.Event();self.thread=None
-        self.rows=[];self.changed=changed;self.retry_at=0
+        self.rows=[];self.changed=changed;self.retry_at=0;self.last_error=None
 
     def command(self,name):
         code="""import json,subprocess,time
@@ -72,6 +72,7 @@ while True:
             rows=[{**row,'sampled_at':sample} for row in nvidia_allocation_rows(value.get('output',''))]
         with self.lock:
             previous={r['uuid']:r.get('memory_free_mib') for r in self.rows};self.rows=rows
+            if rows:self.last_error=None
         # Wake admission when inventory first becomes usable or disappears.
         if previous!={r['uuid']:r.get('memory_free_mib') for r in rows}:self.changed()
 
@@ -97,7 +98,7 @@ while True:
                     if len(pending)>65536:raise ValueError('Oversized NVIDIA inventory')
                     while b'\n' in pending:
                         line,pending=pending.split(b'\n',1);self.accept(line);last=time.monotonic();deadline=12
-        except (OSError,ValueError,RuntimeError,subprocess.SubprocessError):pass
+        except (OSError,ValueError,RuntimeError,subprocess.SubprocessError) as error:self.last_error=type(error).__name__
         finally:
             if process is not None and process.poll() is None:
                 process.terminate()
@@ -112,6 +113,16 @@ while True:
                 self.rows=[]
                 if self.retry_at!=float('inf'):self.retry_at=time.monotonic()+2
             self.changed()
+
+    def health(self):
+        with self.lock:
+            sample=max((row['sampled_at'] for row in self.rows),default=None)
+            running=self.thread is not None and self.thread.is_alive()
+            status=('closed' if self.stopped.is_set() else 'cleanup_pending' if self.retry_at==float('inf') else
+                    'fresh' if sample is not None and -5<=time.time()-sample<=10 else
+                    'stale' if sample is not None else 'starting' if running else
+                    'backoff' if self.retry_at>time.monotonic() else 'idle')
+            return {'status':status,'sampled_at':sample,'last_error':self.last_error}
 
     def close(self):
         self.stopped.set()
@@ -3068,6 +3079,7 @@ finally:v.vkDestroyInstance(instance,None)
             row.update(workers['devices'].get(row.get('uuid'),{'active_workers':0,'private_commitment_mib':0,'exclusive_worker_present':False}))
             row['workers_known']=workers['known']
         self.gpu_resource_cache={'machine':machine,'sampled_at':memory_sampled,'gpus':rows,
+            'nvidia_sampler':self.nvidia_sampler.health() if hasattr(self,'nvidia_sampler') else None,
             'host_memory':{'total_mib':memory.get('MemTotal',0)/1024,'available_mib':memory.get('MemAvailable',0)/1024,
                            'sampled_at':memory_sampled,
                            'source':'kernel MemTotal/MemAvailable; GPU allocations are not added'},

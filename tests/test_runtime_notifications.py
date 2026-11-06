@@ -22,8 +22,10 @@ def test_background_sampler_coalesces_readers_and_stops_its_process():
         assert all(not t.is_alive() for t in threads)
         assert changed.wait(3) and len(calls)==1
         assert sampler.snapshot()[0]['memory_free_mib']==8192
+        assert sampler.health()['status']=='fresh'
         with sampler.lock:sampler.rows[0]['sampled_at']=time.time()-11
         assert sampler.snapshot()==[]  # Healthy process does not make stale data fresh.
+        assert sampler.health()['status']=='stale'
     finally:sampler.close()
     assert not sampler.thread.is_alive() and sampler.rows==[]
 
