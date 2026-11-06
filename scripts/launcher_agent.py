@@ -679,6 +679,8 @@ def nvidia_allocation_rows(output):
         def number(value):
             try:return float(value)
             except ValueError:return None
+        pci=re.fullmatch(r'([0-9a-fA-F]{4,8}):([0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7])',ident)
+        if pci:ident=f'{int(pci[1],16):04x}:'+pci[2].lower()
         rows.append({'uuid':uuid,'pci_id':ident,'vendor':'NVIDIA','name':name,'backend':'CUDA candidate',
                      'memory_domain':'driver-reserved-vram','memory_source':'NVIDIA driver','gpu_allocation_added_to_host_ram':False,
                      'memory_total_mib':number(total),'memory_free_mib':number(free),
@@ -1729,6 +1731,7 @@ class DockerWorkerJournal:
         value={'job':job,'container':name,'container_id':item['Id'],'run':labels.get('org.lifetech.run'),
                'image':item['Image'],'controller_report':labels.get('org.lifetech.report'),'agent_revision':labels.get('org.lifetech.agent-revision'),
                'group':labels.get('org.lifetech.group'),'sink':labels.get('org.lifetech.sink'),
+               'gpu_allocation':labels.get('org.lifetech.accelerator'),
                'cpus':limits.get('NanoCpus',0)/1e9,'memory_mb':limits.get('Memory',0)//1024**2,
                'status':state['Status'],'running':bool(state.get('Running') or state.get('Restarting')),
                'exit_code':state.get('ExitCode') if state['Status'] in ('exited','dead') else None,

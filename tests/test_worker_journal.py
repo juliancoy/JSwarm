@@ -30,6 +30,14 @@ def test_restart_keeps_existing_job_and_container_ids_and_terminal_result(tmp_pa
     assert terminal['cpus']==2 and terminal['memory_mb']==1024
 
 
+def test_gpu_allocation_identity_survives_journal_restart_without_claiming_kernel_use(tmp_path):
+    journal=DockerWorkerJournal(tmp_path/'workers.sqlite');item=container()
+    item['Config']['Labels'].update({'org.lifetech.accelerator':'GPU-one','org.lifetech.sink':'gpu'})
+    journal.record(item)
+    row=DockerWorkerJournal(journal.path).get(JOB)
+    assert row['gpu_allocation']=='GPU-one' and row['sink']=='gpu' and not row.get('gpu_used')
+
+
 def test_journal_rejects_reused_identity_and_unowned_containers(tmp_path):
     journal=DockerWorkerJournal(tmp_path/'workers.sqlite');journal.record(container())
     with pytest.raises(ValueError,match='reused'):journal.record(container(ident='e'*64))

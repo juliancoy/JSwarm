@@ -87,14 +87,14 @@ function drawMachine(host,data){
  const badges=node('div');badges.className='inspector-badges';badges.append(badge);
  for(const tag of machineStateTags(data?.control)){const chip=node('span',tag.label);chip.className='technology-badge node-state-'+tag.tone;if(tag.title)chip.title=tag.title;badges.append(chip);}
  const content=[badges,machineControlPanel(host,data)];
- const notice=node('p',data?.error||'Measurements fetched from this machine’s JSwarm node.');notice.className='inspector-hint';content.push(notice);
+ const notice=node('p',data?.error||(data?.status==='stale'?'Measurements are stale; waiting for fresh node telemetry.':'Measurements fetched from this machine’s JSwarm node.'));notice.className='inspector-hint';content.push(notice);
  if(activeGpu){
  $('detail-title').textContent=activeGpu.label;
  const names=JSON.parse(activeGpu.key.slice(4));
  const all=data?.gpus||[];const matched=all.filter(g=>names.some(n=>[g.name,g.uuid,g.pci_id].includes(n)));
  const gpus=matched.length?matched:all.length===1?all:[];
  content.push(node('p',host.replace(/\.local$/,'')));
- for(const gpu of gpus){const card=node('section');card.className='inspector-section';card.append(node('h3',gpu.name),capacityBar('GPU engine',gpu.available_percent,'Available engine headroom · '+gpu.basis));if(gpu.memory)card.append(capacityBar('VRAM',gpu.memory.available_percent,byteSize(gpu.memory.available_bytes)+' available of '+byteSize(gpu.memory.total_bytes)));else card.append(node('p','VRAM measurement unavailable'));
+ for(const gpu of gpus){const card=node('section');card.className='inspector-section';card.append(node('h3',gpu.name),capacityBar('GPU engine',gpu.available_percent,(gpu.status==='stale'?'Stale measurement · ':'Available engine headroom · ')+gpu.basis));if(gpu.memory)card.append(capacityBar('VRAM',gpu.memory.available_percent,byteSize(gpu.memory.available_bytes)+' available of '+byteSize(gpu.memory.total_bytes)));else card.append(node('p',gpu.memory_domain==='shared-system-memory'?'Uses shared system RAM; no separate VRAM pool':'VRAM measurement unavailable'));card.append(node('p',(gpu.sampled_at?'GPU observed '+new Date(gpu.sampled_at*1000).toLocaleTimeString():'GPU measurement time unavailable')+' · '+(gpu.status||'unknown')));
  const list=node('dl');for(const [label,value] of [['Vendor',gpu.vendor],['Backend',gpu.backend],['Device UUID',gpu.uuid],['PCI address',gpu.pci_id]]){if(value){const row=node('div');row.append(node('dt',label),node('dd',value));list.append(row);}}card.append(list);content.push(card);}
  if(!gpus.length)content.push(node('p',data?.status==='loading'?'Loading GPU measurements…':'This execution device could not be matched to node telemetry.'));
  const count=items.filter(i=>i.status==='running'&&computerName(i.worker)===host&&executionGroup(i).key===activeGpu.key).length;
@@ -106,7 +106,7 @@ function drawMachine(host,data){
  capacity('RAM',data?.ram);
  for(const disk of data?.disks||[])capacity('Disk · '+disk.name,disk);
  if(!data?.disks?.length)capacity('Disk',null);
- for(const gpu of data?.gpus||[]){resources.append(capacityBar(gpu.name,gpu.available_percent,'GPU engine headroom · '+gpu.basis));if(gpu.memory)capacity('VRAM · '+gpu.name,gpu.memory);}
+ for(const gpu of data?.gpus||[]){resources.append(capacityBar(gpu.name,gpu.available_percent,(gpu.status==='stale'?'Stale GPU measurement · ':'GPU engine headroom · ')+gpu.basis));if(gpu.memory)capacity('VRAM · '+gpu.name,gpu.memory);}
  if(!data?.gpus?.length)resources.append(node('p',data?.status==='loading'?'Loading GPUs…':'No GPUs reported by this node.'));
  content.push(cpuBars(data?.cpu),resources);
  const speed=data?.speed||{},network=node('section');network.className='inspector-section';network.append(node('h3','Tested speed'));

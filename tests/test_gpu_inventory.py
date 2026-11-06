@@ -77,6 +77,7 @@ def test_nvidia_inventory_parses_driver_uuid_and_allocated_vram():
     row=agent.nvidia_allocation_rows('GPU-11111111-1111-1111-1111-111111111111, 00000000:04:00.0, RTX, 12288, 8192, 10, 50')[0]
     assert row['uuid'].startswith('GPU-') and row['memory_total_mib']==12288
     assert row['memory_free_mib']==8192 and row['gpu_allocation_added_to_host_ram'] is False
+    assert row['pci_id']=='0000:04:00.0'
 
 
 def test_nvidia_probe_timestamps_measurement_after_container_startup(tmp_path,monkeypatch):

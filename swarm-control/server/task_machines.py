@@ -55,7 +55,14 @@ def capacity(available,total):
     return {'available_bytes':available,'total_bytes':total,'available_percent':round(100*available/total,1)}
 
 
-def project(name,status,metrics,runtime=None):
+def pci_key(value):
+    try:
+        domain,bus,slot=value.lower().split(':')
+        return f'{int(domain,16):04x}:{bus}:{slot}'
+    except (AttributeError,ValueError):return value
+
+
+def project(name,status,metrics,runtime=None,gpu_inventory=None):
     memory=metrics.get('performance',{}).get('memory',{})
     total=memory.get('total_bytes',metrics.get('ram_total_bytes'))
     available=memory.get('available_bytes')
@@ -72,14 +79,25 @@ def project(name,status,metrics,runtime=None):
         storage=hardware.get('storage') or {};c=capacity(storage.get('free_bytes'),storage.get('total_bytes'))
         if c:disks.append({'name':'JSwarm storage','path':storage.get('path'),**c})
     ram=capacity(available,total)
-    gpus=[]
-    for gpu in hardware.get('gpus',[]):
+    gpus=[];now=time.time()
+    measured={pci_key(g.get('pci_id')):g for g in hardware.get('gpus',[])}
+    inventory=gpu_inventory.get('gpus',[]) if gpu_inventory is not None else hardware.get('gpus',[])
+    for raw in inventory:
+        gpu={**measured.get(pci_key(raw.get('pci_id')),{}),**raw}
+        sampled=gpu.get('sampled_at',hardware.get('sampled_at',metrics.get('sampled_at')))
+        fresh=finite(sampled) and -5<=now-sampled<=15
         busy=gpu.get('utilization_percent');total=gpu.get('memory_total_mib');free=gpu.get('memory_free_mib')
+        utilization_at=sampled if 'utilization_percent' in raw else hardware.get('sampled_at',metrics.get('sampled_at'))
+        if not finite(utilization_at) or not -5<=now-utilization_at<=15:busy=None
+        if not fresh:busy=total=free=None
         gpus.append({**{key:gpu.get(key) for key in ('uuid','pci_id','vendor','backend')},'name':gpu.get('name') or gpu.get('vendor') or 'GPU',
+                     'sampled_at':sampled,'status':'live' if fresh else 'stale',
+                     'memory_domain':gpu.get('memory_domain'),'active_workers':gpu.get('active_workers'),
+                     'shared_memory_available_bytes':gpu.get('shared_memory_available_mib',0)*2**20 if fresh and gpu.get('memory_domain')=='shared-system-memory' else None,
                      'available_percent':round(100-busy,1) if finite(busy) and busy<=100 else None,
                      'basis':gpu.get('utilization_basis') or 'Reported GPU engine utilization',
                      'memory':capacity(free*2**20,total*2**20) if finite(free) and finite(total) else None})
-    return {'host':name,'status':'live' if metrics.get('status')=='live' else 'stale',
+    return {'host':name,'status':'live' if metrics.get('status')=='live' and finite(metrics.get('sampled_at')) and -5<=now-metrics['sampled_at']<=30 else 'stale',
             'sampled_at':metrics.get('sampled_at'),'fetched_at':time.time(),
             'ram':ram,'disks':disks,'gpus':gpus,
             'node_revision':status.get('source_revision'),'commit':(runtime or {}).get('commit'),
@@ -156,6 +174,8 @@ def collect(host,source,previous):
         status=client.call('status',timeout=4)
         if status.get('node')!=name:raise ValueError('JSwarm node identity differs')
         metrics=client.call('metrics',timeout=4)
+        try:gpu_inventory=client.call('resource.gpus',timeout=4)
+        except Exception:gpu_inventory=None
         runtime=previous.get('_runtime') or {}
         runtime_at=previous.get('_runtime_at',0)
         if time.time()-runtime_at>=60:
@@ -164,7 +184,7 @@ def collect(host,source,previous):
         if runtime.get('started_at'):
             try:runtime={**runtime,'uptime_seconds':max(0,time.time()-datetime.datetime.fromisoformat(runtime['started_at'].replace('Z','+00:00')).timestamp())}
             except (ValueError,TypeError):pass
-        value=project(name,status,metrics,runtime)
+        value=project(name,status,metrics,runtime,gpu_inventory)
         value.update(_runtime=runtime,_runtime_at=runtime_at)
         try:value['cpu']=cpu_usage(client)
         except Exception:value['cpu']=None
@@ -194,5 +214,9 @@ def snapshot(name):
             row['busy']=True
             POOL.submit(collect,host,config['name'],row['value'])
         value={**{key:value for key,value in row['value'].items() if not key.startswith('_')},'refreshing':row['busy']}
+        now=time.time()
+        if value.get('status')=='live' and now-value.get('sampled_at',0)>30:value['status']='stale'
+        value['gpus']=[{**g,'status':'stale','available_percent':None,'memory':None,'shared_memory_available_bytes':None}
+                       if not finite(g.get('sampled_at')) or not -5<=now-g['sampled_at']<=15 else g for g in value.get('gpus',[])]
     from machine_controls import snapshot as control_snapshot
     return {**value,'control':control_snapshot(name)}

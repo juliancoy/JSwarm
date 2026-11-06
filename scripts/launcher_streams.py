@@ -372,6 +372,13 @@ def validate_execution(definition):
         if type(cache['shm_mb']) is not int or cache['shm_mb']!=required or type(cache['memory_mb']) is not int or cache['memory_mb']<required:raise ValueError('Shared reference budget differs')
 
 
+def ram_only_memory_mb(scratch_mb, application_mb=0):
+    """RAM envelope satisfying the stream scratch guard and private working set."""
+    if type(scratch_mb) is not int or scratch_mb < 1 or type(application_mb) is not int or application_mb < 0:
+        raise ValueError('Invalid RAM-only working set')
+    return max(scratch_mb+application_mb, (8*(scratch_mb+2)+6)//7)
+
+
 def validate(request,registry=None):
     registry=registry or {}
     if not isinstance(request,dict) or set(request)-{'id','recipe','image','inputs','parameters','resources','buffer_bytes','label','namespace','storage','output','priority','lifecycle'}:raise ValueError('Invalid streaming work declaration')

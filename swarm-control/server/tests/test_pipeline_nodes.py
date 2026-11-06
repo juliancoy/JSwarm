@@ -46,3 +46,34 @@ def test_collector_uses_encrypted_gateway_and_no_coordinator_telemetry():
     assert create.call_args.args[0]['agent_route']=='webrtc'
     assert [call.args[0] for call in client.call.call_args_list]==['status','worker.records','stream.timings']
     assert pipeline.CACHE['node.local']['value']['status']=='live'
+
+
+def test_verified_gpu_receipt_survives_node_merge_and_allocation_is_not_kernel_proof():
+    row={'controller_report':'/owned/execution.json','running':False,'exit_code':0,'observed_at':100,'sink':'gpu','gpu_allocation':'GPU-one'}
+    source={**item(),'queue_state':'completed','status':'completed','runtime':{'gpu_used':True,'gpu_devices':['GPU-one'],'technologies':['GPU comparison','Vulkan']}}
+    value=pipeline.merge_item(source,{'status':'live','records':{'job':row}})
+    assert value['runtime']['gpu_used'] and value['runtime']['gpu_devices']==['GPU-one']
+    assert 'Vulkan' in value['runtime']['technologies']
+    unverified=pipeline.merge_item(item(),{'status':'live','records':{'job':row}})
+    assert not unverified['runtime']['gpu_used'] and unverified['runtime']['gpu_devices']==['GPU-one']
+
+
+def test_batch_members_join_shared_stream_and_keep_scope():
+    source={**item(),'task_id':'batch-one','shared_execution':{'id':'batch-one','members':20}}
+    value=pipeline.merge_item(source,{'status':'live','streams':{'batch-one':{'state':'running','cpu_core_seconds':12,'resources':{'cpus':2}}}})
+    assert value['status']=='running' and 'do not sum' in value['runtime']['accounting_scope']
+
+
+def test_queue_projects_verified_gpu_receipt_and_batch_identity_without_paths(tmp_path):
+    import json
+    from submission_queue import SubmissionQueue
+    from node_pipeline_api import queue_snapshot
+    q=SubmissionQueue('workflow',tmp_path/'queue');q.submit_many([{'id':'shard'}])
+    request={'gpu_batch':{'id':'shared-batch','manifest':'/private/manifest','members':['shard','other']},'accelerator':{'gpu':{'uuid':'GPU-one'}}}
+    receipt={'receipt_sha256':'a'*64,'execution_backend':'vulkan','method':'comparison','directory':'/private/results'}
+    with q.connect() as db:db.execute('UPDATE submissions SET state=?,host=?,request=?,result=?',('completed','node.local',json.dumps(request),json.dumps(receipt)))
+    row=queue_snapshot(q.path,'master')['items'][0]
+    assert row['task_id']=='shared-batch' and row['runtime']['gpu_used'] and row['runtime']['gpu_devices']==['GPU-one']
+    assert row['shared_execution']['members']==2 and '/private' not in json.dumps(row)
+    with q.connect() as db:db.execute('UPDATE submissions SET result=?',(json.dumps({**receipt,'receipt_sha256':None}),))
+    assert not queue_snapshot(q.path,'master')['items'][0]['runtime']
