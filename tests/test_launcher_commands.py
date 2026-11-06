@@ -364,3 +364,18 @@ def test_persistent_owner_service_runs_native_process_with_real_exit_and_binary_
             time.sleep(.01)
         assert output==b'abc\x00xyz' and value['exit_code']==7
     finally:service.close()
+
+
+def test_command_stdin_reader_cancels_with_open_input_and_full_queue():
+    import os,queue,threading
+    from scripts.swarm_command import input_reader
+    read,write=os.pipe();stopped=threading.Event();inputs=queue.Queue(maxsize=1)
+    thread=threading.Thread(target=input_reader,args=(read,inputs,stopped))
+    try:
+        thread.start();os.write(write,b'first')
+        assert inputs.get(timeout=2)==b'first'
+        inputs.put(b'occupied');os.write(write,b'next')
+        stopped.set();thread.join(timeout=2)
+        assert not thread.is_alive()
+    finally:
+        stopped.set();os.close(write);thread.join(timeout=2);os.close(read)

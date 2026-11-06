@@ -548,7 +548,7 @@ if progress is not None:
         writer_args[6]=str(offset)
     reader="import shutil,sys;s=open(sys.argv[1],'rb');s.seek(int(sys.argv[2]));shutil.copyfileobj(s,sys.stdout.buffer,8388608)"
     source_command=['python3','-c',reader,receipt['path'],str(offset)] if offset else ['cat','--',receipt['path']]
-    producer=subprocess.Popen(shell_command(source,source_command),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    producer=subprocess.Popen(shell_command(source,source_command),stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     consumer=None
     try:
         consumer=subprocess.Popen(shell_command(destination,writer_args),stdin=producer.stdout,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
@@ -576,7 +576,7 @@ def stream_command(source,source_command,destination,destination_command):
     The receiving application must bound and verify the stream before using it.
     Its stdout is an operational result, never the input payload.
     """
-    producer=subprocess.Popen(shell_command(source,source_command),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    producer=subprocess.Popen(shell_command(source,source_command),stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     consumer=None
     try:
         consumer=subprocess.Popen(shell_command(destination,destination_command),stdin=producer.stdout,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
