@@ -24,6 +24,7 @@ class CacheTopology:
             status=client.call('status',timeout=10)
             if status.get('node')!=host['host'] or status.get('machine')!=host['machine']:
                 raise ValueError('Cache peer identity changed')
+            host['capabilities']=status.get('capabilities',[])
             inventory=client.call('resource.caches',timeout=120)
             rows=[]
             for cache in inventory['caches']:

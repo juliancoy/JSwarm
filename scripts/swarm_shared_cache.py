@@ -333,9 +333,9 @@ def finished_cache_keys(host,path=None):
 def remove_unused(host,cache,*,terminal=None):
     """Delete terminal job data only when the existing queue permits it."""
     if is_managed(cache):
-        client=AgentClient(host)
-        try:return client.call('resource.cache.drop', {'key':cache['key'], 'machine':host['machine']}, timeout=120).get('removed',False)
-        finally:client.close()
+        # Completion releases the runtime/transfer pin. Retain reusable bytes
+        # within the node budget; pressure or explicit cleanup evicts them.
+        return False
     if terminal not in ('completed','failed','cancelled'):return False
     if cache['key'] not in finished_cache_keys(host):return False
     return _remove_unreferenced(host,cache)
@@ -394,7 +394,7 @@ def evict_unused(host,keep=None,*,keys=None,required_mb=None):
 def reclaim_completed(host,keep=None,*,required_mb=None):
     # Legacy terminal-only owners remain compatible during a rolling migration.
     removed = _reclaim_completed(host,keep,required_mb=required_mb)
-    if 'node-cache-v1' not in host.get('capabilities',[]):return removed
+    if required_mb is None or 'node-cache-v1' not in host.get('capabilities',[]):return removed
     client = AgentClient(host)
     try:
         args = {}

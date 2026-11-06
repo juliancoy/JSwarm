@@ -13,7 +13,7 @@ import tarfile
 import tempfile
 
 FOLLOWUP=('genomics_followup_controller.py','genomics_followup_gpu_routing.py',
-          'genomics_region_staging.py','wgs_preparation_queue.py','swarm_runtime.py','launcher_streams.py','swarm_shared_cache.py')
+          'genomics_region_staging.py','wgs_preparation_queue.py','swarm_runtime.py','launcher_streams.py','launcher_cache.py','swarm_shared_cache.py')
 FINALIZER=('wgs_preparation_queue.py','wgs_bounded_finalize.py','wgs_finalize.py',
            'wgs_recall.py','wgs_call_summary.py','wgs_reference_confidence.py')
 
@@ -45,8 +45,8 @@ print(json.dumps({'agent_revision':u.revision,'component_hashes':{k:v['sha256'] 
         release=json.loads(subprocess.check_output([sys.executable,'-c',program],cwd=target,env=env,text=True))
         for kind,names in (('followup',FOLLOWUP),('finalizer',FINALIZER)):
             source=target/'GenomeHarbor/scripts'
-            hashes={name:hashlib.sha256((source/name).read_bytes()).hexdigest() for name in names}
-            for name in names:compile((source/name).read_bytes(),name,'exec')
+            hashes={name:hashlib.sha256(next(p for p in (source/name,target/'JSwarm/scripts'/name) if p.exists()).read_bytes()).hexdigest() for name in names}
+            for name in names:compile(next(p for p in (source/name,target/'JSwarm/scripts'/name) if p.exists()).read_bytes(),name,'exec')
             release[kind+'_sources']=hashes
         if tests:
             suites=['JSwarm/tests/test_execution_accounting.py','JSwarm/tests/test_shard_runtime_sampler.py',

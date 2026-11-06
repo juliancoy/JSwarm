@@ -222,6 +222,7 @@ def _run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_f
     try:
         status=client.call('status')
         if status.get('machine')!=host['machine']:raise RuntimeError('Worker identity changed')
+        host['capabilities']=status.get('capabilities',[])
         ram_only=status.get('storage_policy',{}).get('mode')=='ram-only'
         if ram_only:client.call('worker.storage.validate',{'paths':[str(source) for source,_,_ in mounts]})
         # Older enrolled agents require this legacy wire name. It does not
