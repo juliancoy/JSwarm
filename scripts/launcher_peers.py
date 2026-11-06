@@ -49,6 +49,112 @@ def telemetry_tcp_socket(address_info):
         sock.close();raise
 
 
+def pipeline_configuration(settings):
+    import ipaddress,re
+    peers={name:(value['address'] if isinstance(value,dict) else value) for name,value in settings['peers'].items()}
+    own=settings['name'];master=settings.get('master') or 'compai.local'
+    if own not in peers or master not in peers:raise ValueError('Local node and coordinator must be enrolled')
+    aliases={'jswarm.localhost':own,'map.local':master}
+    for name,address in peers.items():
+        short=name.removesuffix('.local')
+        if not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?',short):raise ValueError('Invalid enrolled machine name')
+        ip=ipaddress.ip_address(address)
+        if ip.version!=4 or not ip.is_private or ip.is_loopback or ip.is_unspecified:raise ValueError('Expected an enrolled LAN IPv4 address')
+        aliases[short+'.jswarm.localhost']=name
+    # Friendly names are optional; the full enrolled name always remains valid.
+    for name in peers:
+        short=name.removesuffix('.local').removeprefix('julian-')
+        alias=short+'.jswarm.localhost'
+        if alias not in aliases:aliases[alias]=name
+    return {'name':own,'peers':peers,'aliases':aliases,'coordinator':master}
+
+
+def pipeline_target(config,authority):
+    from urllib.parse import urlsplit
+    host=urlsplit('http://'+authority)
+    if host.username or host.password or host.path or host.query or host.fragment:raise ValueError('Invalid Host')
+    if host.port not in (None,80,8790,8791):raise ValueError('Unexpected web port')
+    if host.hostname in ('localhost','127.0.0.1','::1'):return config['name']
+    name=config['aliases'].get(host.hostname)
+    if name:return name
+    for name,address in config['peers'].items():
+        if host.hostname in (name,address):return name
+    raise ValueError('Unknown node web hostname')
+
+
+
+def pipeline_assets():
+    """Public UI assets are covered by the existing immutable node release."""
+    import base64,gzip
+    bundled=globals().get('PIPELINE_ASSETS_B64')
+    if bundled:
+        return {name:base64.b64decode(body) for name,body in json.loads(gzip.decompress(base64.b64decode(bundled))).items()}
+    view=Path(__file__).resolve().parents[1]/'swarm-control/server/view'
+    assets={str(path.relative_to(view)):path.read_bytes() for path in view.rglob('*') if path.is_file()}
+    genome=view.parents[3]/'GenomeHarbor/web'
+    assets.update({'genome/'+str(path.relative_to(genome)):path.read_bytes() for path in genome.rglob('*') if path.is_file()})
+    return assets
+
+
+class NodePipelineWeb:
+    """Pipeline routes in the existing node HTTP applications; no extra service."""
+    def __init__(self,agent):
+        self.agent=agent;self.assets=pipeline_assets()
+
+    async def handle(self,request):
+        import ipaddress,mimetypes
+        from aiohttp import web,ClientSession,ClientTimeout
+        config=pipeline_configuration(json.loads(self.agent.config.read_text()))
+        try:
+            remote=ipaddress.ip_address(request.remote)
+            legacy_map=request.host.split(':')[0]=='map.local' and config['name']==config['coordinator'] and remote in ipaddress.ip_network(config['peers'][config['coordinator']]+'/24',strict=False)
+            if not (remote.is_loopback or request.remote in config['peers'].values() or legacy_map):
+                raise web.HTTPForbidden(text='Enrolled LAN clients only')
+            node=pipeline_target(config,request.host)
+            origin=request.headers.get('Origin')
+            mcp=request.path=='/mcp' or request.path.startswith('/mcp/')
+            if origin and origin!='http://'+request.host or request.method not in ('GET','HEAD','OPTIONS') and not origin and not mcp:
+                raise web.HTTPForbidden(text='Same-origin request required')
+        except ValueError:raise web.HTTPMisdirectedRequest()
+        if node==config['name']:
+            if request.path=='/api/jswarm-web' and request.method=='GET':
+                nodes=[{'name':name,'url':'http://'+name.removesuffix('.local')+'.jswarm.localhost/pipeline.html',
+                        'direct_url':'http://'+address+'/pipeline.html'} for name,address in config['peers'].items()]
+                return web.json_response({'node':config['name'],'nodes':nodes},headers={'Cache-Control':'no-store','X-JSwarm-Node':config['name']})
+            if not request.path.startswith('/api/') and not mcp:
+                if request.method not in ('GET','HEAD'):raise web.HTTPMethodNotAllowed(request.method,['GET','HEAD'])
+                if request.path=='/':raise web.HTTPFound('/pipeline.html')
+                if request.path=='/tests':raise web.HTTPFound('/tests.html'+('?' + request.query_string if request.query_string else ''))
+                body=self.assets.get(request.path.lstrip('/'))
+                if body is None:raise web.HTTPNotFound()
+                return web.Response(body=body,headers={'Content-Type':mimetypes.guess_type(request.path)[0] or 'application/octet-stream',
+                    'Cache-Control':'no-store','X-JSwarm-Node':config['name']})
+            authority='map.local'
+            if config['name']==config['coordinator']:
+                address='127.0.0.1'
+                port=8792 if request.path.startswith('/api/tasks') else 8795 if request.path=='/api/resources' or request.path.startswith('/api/v1/swarm/') or request.path=='/api/worker-controls' else 8089
+                if request.path.startswith('/api/v1/master/codex/'):raise web.HTTPForbidden()
+            else:
+                address=config['peers'][config['coordinator']];port=8790
+                authority=config['coordinator']+':8790'
+        else:address=config['peers'][node];port=8790;authority=request.host
+        if request.headers.get('Transfer-Encoding') or len(request.headers.getall('Content-Length',[]))>1:raise web.HTTPBadRequest()
+        excluded={'connection','keep-alive','proxy-authenticate','proxy-authorization','te','trailer','transfer-encoding','upgrade','host','origin','forwarded','x-forwarded-for','x-forwarded-host','accept-encoding'}
+        headers={key:value for key,value in request.headers.items() if key.lower() not in excluded}
+        headers['Host']=authority
+        if origin:headers['Origin']='http://'+authority
+        try:
+            async with ClientSession(timeout=ClientTimeout(total=60,connect=5),trust_env=False,auto_decompress=False) as session:
+                async with session.request(request.method,'http://'+address+':'+str(port)+str(request.rel_url),
+                        data=await request.read(),headers=headers,allow_redirects=False) as upstream:
+                    response=web.StreamResponse(status=upstream.status,headers={key:value for key,value in upstream.headers.items()
+                        if key.lower() not in {'connection','keep-alive','transfer-encoding','upgrade'}})
+                    await response.prepare(request)
+                    async for chunk in upstream.content.iter_chunked(65536):await response.write(chunk)
+                    await response.write_eof();return response
+        except (OSError,asyncio.TimeoutError):raise web.HTTPBadGateway(text='Node pipeline unavailable')
+
+
 class Mesh:
     def __init__(self, config, prefix, agent=None):
         self.agent = agent
@@ -209,7 +315,9 @@ class Mesh:
         from aiohttp import web, ClientSession, ClientTimeout, TCPConnector
         app = web.Application(client_max_size=2*1024**2)
         app.router.add_post('/offer', self.offer)
-        if self.agent:app.router.add_post('/agent/v1',self.agent.handle)
+        if self.agent:
+            app.router.add_post('/agent/v1',self.agent.handle)
+            app.router.add_route('*','/{path:.*}',NodePipelineWeb(self.agent).handle)
         self.runner = web.AppRunner(app, access_log=None)
         await self.runner.setup()
         from launcher_discovery import Discovery
@@ -729,8 +837,12 @@ class JobGateway:
         app.router.add_get('/swarm-node',self.browser)
         app.router.add_get('/launcher/status',self.browser)
         for route in ('policy','request','master','enroll','reconnect','phone-pair','owner-unlock','jobs-stop'):app.router.add_post('/launcher/'+route,self.browser)
+        app.router.add_route('*','/{path:.*}',NodePipelineWeb(self.agent).handle)
         self.runner=web.AppRunner(app,access_log=None);await self.runner.setup()
         await web.TCPSite(self.runner,'127.0.0.1',8791).start()
+        import socket
+        if socket.has_ipv6:
+            await web.TCPSite(self.runner,'::1',8791).start()
 
 
 class EnrollmentPoller:
@@ -894,7 +1006,7 @@ async def maintain_routing(agent,stopped):
     while not stopped.is_set():
         try:
             config=json.loads(agent.config.read_text())
-            agent.routing_status=await asyncio.to_thread(configure_launcher_routing,config.get('peers',{}))
+            agent.routing_status=await asyncio.to_thread(configure_launcher_routing,config.get('peers',{}),config.get('name'))
         except Exception as error:
             agent.routing_status={'status':'unavailable','error':str(error)[-600:]}
             logging.warning('Launcher routing reconciliation unavailable: %s',type(error).__name__)

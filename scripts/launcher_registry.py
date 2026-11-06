@@ -144,21 +144,57 @@ def reconcile_lan_routing(peers):
             'scheduler':'kernel','connections':subprocess.check_output(['ss','-Mani'],text=True,timeout=5)[-12000:]}
 
 
-def configure_launcher_routing(peers):
+def reconcile_node_web_ports(address):
+    """Own only these NAT tables; HTTP stays in the unprivileged main node."""
+    import hashlib,ipaddress,json,subprocess
+    address=str(ipaddress.IPv4Address(address))
+    if not ipaddress.ip_address(address).is_private or ipaddress.ip_address(address).is_loopback:
+        raise ValueError('Expected an enrolled LAN address')
+    definitions={
+        'ip':f'chain prerouting {{ type nat hook prerouting priority dstnat; policy accept; ip daddr {address} tcp dport 80 dnat to {address}:8790; }}\n'
+             f'chain output {{ type nat hook output priority dstnat; policy accept; ip daddr 127.0.0.1 tcp dport 80 redirect to :8791; ip daddr {address} tcp dport 80 dnat to {address}:8790; }}',
+        'ip6':'chain output { type nat hook output priority dstnat; policy accept; ip6 daddr ::1 tcp dport 80 redirect to :8791; }'}
+    marker='jswarm-node-ui:'+hashlib.sha256(json.dumps(definitions,sort_keys=True).encode()).hexdigest()
+    def nft(*args,input=None):
+        return subprocess.run(['/usr/sbin/nft',*args],input=input,text=True,capture_output=True,check=True,timeout=10).stdout
+    tables=json.loads(nft('-j','list','tables'))['nftables']
+    batch=[]
+    for family,definition in definitions.items():
+        exists=any(row.get('table',{}).get('name')=='jswarm_node_web' and row['table']['family']==family for row in tables)
+        if exists:
+            rows=json.loads(nft('-j','list','table',family,'jswarm_node_web'))['nftables']
+            table=next(row['table'] for row in rows if 'table' in row)
+            comment=table.get('comment','')
+            if not comment.startswith('jswarm-node-ui:'):raise RuntimeError('Port forwarding table is owned by another application')
+            if comment==marker:continue
+            batch.append(f'delete table {family} jswarm_node_web')
+        batch.append(f'table {family} jswarm_node_web {{ comment "{marker}";\n{definition}\n}}')
+    if batch:nft('-f','-',input='\n'.join(batch)+'\n')
+    return {'port':80,'address':address,'status':'configured'}
+
+
+def configure_launcher_routing(peers,node_name=None):
     """Use a short-lived, narrowly privileged helper; the launcher stays unprivileged."""
     import inspect
     import docker
     source=inspect.getsource(lan_paths)+'\n'+inspect.getsource(reconcile_lan_routing)
-    source+='\nimport json\nprint(json.dumps(reconcile_lan_routing('+repr(dict(peers))+')))\n'
+    source+='\nimport json\n'
+    if node_name:
+        address=peers[node_name]
+        if isinstance(address,dict):address=address['address']
+        source+=inspect.getsource(reconcile_node_web_ports)+'\nreconcile_node_web_ports('+repr(address)+')\n'
+    source+='print(json.dumps(reconcile_lan_routing('+repr(dict(peers))+')))\n'
     client=docker.from_env(timeout=20)
     container=None
     try:
         # The launcher image is already provisioned locally. No pull or host
-        # filesystem/socket mount is needed by this network-only helper.
+        # socket mount is needed by this network-only helper. Host nft and its
+        # libraries are mounted read-only when maintaining the public port.
         if any('rootless' in option for option in client.info().get('SecurityOptions',[])):
             return {'status':'unavailable','error':'Rootless Docker cannot configure host LAN routing; host network configuration is required'}
         container=client.containers.create('organization-launcher:webrtc-1',
-            ['python','-c',source],detach=True,network_mode='host',user='0:0',
+            ['/usr/bin/python3' if node_name else 'python','-c',source],detach=True,network_mode='host',user='0:0',
+            volumes={'/usr':{'bind':'/usr','mode':'ro'}} if node_name else {},
             cap_drop=['ALL'],cap_add=['NET_ADMIN'],read_only=True,
             security_opt=['no-new-privileges'],pids_limit=32,mem_limit='96m',
             labels={'organization.container-class':'launcher-routing'})

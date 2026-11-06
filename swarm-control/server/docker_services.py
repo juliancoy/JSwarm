@@ -60,7 +60,9 @@ def main(argv=None):
     parser.add_argument('--recreate', action='store_true')
     parser.add_argument('--dry-run', action='store_true', help='Print Docker argument arrays without executing them')
     args = parser.parse_args(argv)
-    services = args.services or ['traffic', 'view']
+    services = args.services or (['traffic'] if args.action=='up' else ['traffic','view'])
+    if args.action=='up' and 'view' in services:
+        parser.error('The web UI is served by swarm-node; deploy the standard published node release')
     # Validate all configurations before changing any containers.
     commands = {service: run_command(service) for service in services} if args.action == 'up' else {}
     for service in services:

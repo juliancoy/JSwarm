@@ -220,44 +220,24 @@ Node status is polled independently of resource and transfer diagnostics about
 once a second. State bubbles show observed admission, policy, power and update
 states; unavailable observations are marked stale instead of treated as success.
 
-## Pipeline addresses on each machine
+## Pipeline UI in the node
 
-Each enrolled machine can serve the packaged pipeline UI through the independent
-`swarm-node-web` container. Build with `cd JSwarm && ./build.sh`, then install from
-the Organization workspace using `python JSwarm/scripts/node_web.py install`.
-For fleet installation, transfer the same built image to the coordinator using
-the shared image resolver, then run `python JSwarm/scripts/node_web.py deploy
---image sha256:IMAGE_ID` there. This uses the existing enrollment, owner SSH
-transport, deployment lock and image resolver, replacing one web frontend at a
-time. The web component uses system Docker for host-network listeners, even
-when a node runs compute in rootless Docker. It records
-`~/.local/state/swarm-control/node-web/deployment.json`.
+The existing `swarm-node` process serves `pipeline.html` and its machine links.
+There is no separate node web container or web deployment registry. Public assets
+are bundled into the immutable launcher publication and covered by its checksum.
+Use `./build.sh` and the standard validated fleet publication/update procedure.
 
-The installer pins the image ID and a public configuration derived from existing
-enrollment, verifies readiness and retains a deployment receipt under
-`~/.local/share/jswarm-web/`. Reinstallation replaces only this web component;
-node agents and compute workers retain their lifecycles. A failed replacement
-restores the previous web container. No launcher publication is changed.
+`http://jswarm.localhost/pipeline.html` opens the local node's page on
+port 80. Machine links such as
+`http://compai.jswarm.localhost/pipeline.html` route through that same node
+process to the selected enrolled node. The existing routing helper maintains
+port 80 forwarding to the main node’s unprivileged listeners; it adds no web server. Direct links
+such as `http://compai.local/pipeline.html` also work. The page identifies
+its serving node and links to the other machines. Shared queue APIs use the
+existing coordinator. Host and Origin checks remain enforced; private keys and
+enrollment configuration are never returned to the browser.
 
-On a machine with this component installed:
-
-- `http://jswarm.localhost/pipeline.html` serves that machine's packaged UI.
-- `http://compai.jswarm.localhost/pipeline.html` routes to CompAI's web service.
-- Every enrolled hostname has the same form, for example
-  `http://julian-minipc.jswarm.localhost/pipeline.html`; the unambiguous short
-  alias `http://minipc.jswarm.localhost/pipeline.html` is also supported.
-- `http://MACHINE_LAN_IP:8797/pipeline.html` reaches a node directly, including
-  from an enrolled machine without the local hostname gateway.
-
-The page identifies its serving node and links to the other nodes. Each node
-serves its own assets; shared queue and telemetry APIs use the enrolled
-coordinator. An unavailable serving node returns an error instead of silently
-showing another node's page. Loopback names need no custom DNS. The web service
-accepts loopback and enrolled LAN clients, validates Host and request Origin,
-and forwards control requests only to the existing coordinator APIs. It has no
-Docker socket, enrollment secrets or controller signing keys.
-
-On the coordinator, the existing nginx view can also own IPv6 port 80. The web
-installer adds a loopback-only `*.jswarm.localhost` virtual host there, validates
-nginx before reload, and retains a rollback copy. The same virtual host is part
-of the checked-in nginx configuration for subsequent normal view deployments.
+For a node whose jobs use rootless Docker, the existing node service runs a
+short-lived host network helper before startup. Its only capability is
+`NET_ADMIN`; it maintains the same port 80 rules without exposing the system
+Docker socket to the node or running another HTTP process.

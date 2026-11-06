@@ -1,5 +1,5 @@
 [Unit]
-Description=Swarm Control network collectors and local dashboard
+Description=Swarm Control network collectors
 After=docker.service swarm-control.service
 PartOf=swarm-control.target
 
@@ -9,8 +9,8 @@ Environment=SWARM_STATE_DIR={{STATE}}
 Type=oneshot
 RemainAfterExit=true
 WorkingDirectory={{SOURCE}}/server
-ExecStart={{PYTHON}} {{SOURCE}}/server/docker_services.py up
-ExecStop={{PYTHON}} {{SOURCE}}/server/docker_services.py down
+ExecStart={{PYTHON}} {{SOURCE}}/server/docker_services.py up traffic
+ExecStop={{PYTHON}} {{SOURCE}}/server/docker_services.py down traffic
 
 [Install]
 WantedBy=swarm-control.target

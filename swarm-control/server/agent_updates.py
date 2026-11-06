@@ -151,6 +151,14 @@ class LauncherUpdates:
         folder=Path(root)/'scripts'
         self.supervisor_source=(folder/'launcher_peer_supervisor.py').read_text()
         self.files={name:(folder/name).read_text() for name in (*FILES,'launcher_update.py')}
+        import base64,gzip
+        view=Path(root)/'swarm-control/server/view'
+        assets={str(path.relative_to(view)):base64.b64encode(path.read_bytes()).decode() for path in view.rglob('*') if path.is_file()}
+        genome=(Path(root).parent if Path(root).name=='JSwarm' else Path(root))/'GenomeHarbor/web'
+        assets.update({'genome/'+str(path.relative_to(genome)):base64.b64encode(path.read_bytes()).decode() for path in genome.rglob('*') if path.is_file()})
+        encoded=base64.b64encode(gzip.compress(json.dumps(assets,sort_keys=True).encode(),mtime=0)).decode()
+        marker="if __name__=='__main__':main()"
+        self.files['launcher_peers.py']=self.files['launcher_peers.py'].replace(marker,'PIPELINE_ASSETS_B64 = '+repr(encoded)+'\n\n'+marker)
         runtime=Path(root)/'ramtop/ramtop'
         bundle=runpy.run_path(str(runtime/'bundle.py'))['encoded_runtime'](runtime)
         self.files['launcher_agent.py'] += '\n# Built-in monitor source is covered by the existing atomic release checksum.\nPERFORMANCE_RUNTIME_B64 = '+repr(bundle)+'\n'
