@@ -52,6 +52,7 @@ print(json.dumps({'agent_revision':u.revision,'component_hashes':{k:v['sha256'] 
             suites=['JSwarm/tests/test_execution_accounting.py','JSwarm/tests/test_shard_runtime_sampler.py',
                     'JSwarm/swarm-control/server/tests/test_task_pipeline.py',
                     'GenomeHarbor/tests/test_genomics_followup_controller.py',
+                    'GenomeHarbor/tests/test_genomics_retirement_recovery.py',
                     'GenomeHarbor/tests/test_genomics_followup_gpu_routing.py',
                     'GenomeHarbor/tests/test_genomics_region_staging.py',
                     'GenomeHarbor/tests/test_wgs_preparation_queue.py']
