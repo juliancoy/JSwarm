@@ -217,7 +217,7 @@ def ensure(host,image,files,load,metrics=None):
         raise CapacityWait('Shared cache is being prepared')
     if owner and not _remove_unreferenced(host,cache,expected_owner=owner['Id']):raise CapacityWait('Previous shared cache is still attached to workers')
     if not owner and volume and users(host,cache):raise CapacityWait('Previous shared cache is still attached to workers')
-    client=AgentClient(host);created=None
+    client=AgentClient(host);created=None;published=False
     try:
         status=client.call('status')
         if status['machine']!=host['machine']:raise ValueError('Cache node identity changed')
@@ -242,12 +242,13 @@ def ensure(host,image,files,load,metrics=None):
         proof={k:cache[k] for k in ('key','files')};proof.update(container_id=owner['Id'],started_at=owner['State']['StartedAt'])
         command(host,['docker','exec',cache['container'],'python3','-c',SEAL,json.dumps(proof)],timeout=180)
         if not ready(host,cache,owner):raise RuntimeError('Cache did not become verified')
+        published=True
         park_verified_owner(host,cache,owner)
         if metrics is not None:metrics.update(cache_hit=False,loaded_bytes=sum(r['bytes'] for r in files.values()))
         return cache
     except BaseException as error:
         owner=inspect(host,'container',cache['container'])
-        if created and owner and owner['Id']==created:
+        if created and not published and owner and owner['Id']==created:
             # A losing creator never removes the winning loader or releases
             # its admission. Only our own unpublished attempt is disposable.
             _remove_unreferenced(host,cache,expected_owner=created)

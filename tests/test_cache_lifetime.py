@@ -98,3 +98,20 @@ def test_losing_loader_does_not_remove_or_release_winning_loader(monkeypatch):
     monkeypatch.setattr(caches,'command',command)
     with pytest.raises(caches.CapacityWait):caches.ensure(host,image,files,lambda _:pytest.fail('Losing creator loaded payload'))
     assert not any(call.args[0]=='resource.release' for call in client.call.call_args_list)
+
+
+def test_verified_cache_survives_failure_after_publication(monkeypatch):
+    from unittest.mock import Mock
+    image='sha256:'+'b'*64;host={'host':'node','machine':'machine'}
+    files={'input':{'bytes':1,'sha256':'c'*64}}
+    owner={'Id':'winner','State':{'StartedAt':'now'}}
+    observations=iter([None,None,owner,owner])
+    monkeypatch.setattr(caches,'inspect',lambda *args:next(observations))
+    client=Mock();client.call.side_effect=[{'machine':'machine','worker_policy':{'accepting_jobs':True}},{'acquired':True},{}]
+    monkeypatch.setattr(caches,'AgentClient',lambda _:client)
+    monkeypatch.setattr(caches,'command',lambda host,args,**kw:'winner' if args[:2]==['docker','run'] else '')
+    monkeypatch.setattr(caches,'ready',lambda *args:True)
+    monkeypatch.setattr(caches,'park_verified_owner',Mock(side_effect=RuntimeError('Connection lost after seal')))
+    remove=Mock();monkeypatch.setattr(caches,'_remove_unreferenced',remove)
+    with pytest.raises(caches.CapacityWait):caches.ensure(host,image,files,lambda _:None)
+    remove.assert_not_called()
