@@ -109,6 +109,64 @@ def test_seal_rejects_modified_contents_and_foreign_paths(keeper):
     assert manager.dispatch('inventory',{})['items'][0]['phase']=='loading'
 
 
+def test_expired_load_is_reaped_and_metrics_survive_agent_replacement(keeper):
+    manager,image=keeper;cache=binding(image,b'abandoned');token='b'*64
+    manager.dispatch('begin',{'cache':cache,'token':token})
+    manager.docker(['exec',manager.name,'python3','-c',
+        'import json,pathlib; p=pathlib.Path("/cache/.state.json"); s=json.loads(p.read_text()); '
+        '[v.update(pins={}) for v in s.values()]; p.write_text(json.dumps(s))'])
+    successor=module.CacheManager(capacity=manager.capacity,machine=manager.machine,name=manager.name)
+    result=successor.dispatch('inventory',{})
+    assert result['items']==[] and result['used_mb']==0
+    assert result['metrics']['counters']['evictions_expired_load']==1
+    assert result['metrics']['counters']['load_starts']==1
+    assert successor.owner()['HostConfig']['Memory']==128*1024**2
+    load(successor,cache,b'abandoned')
+    assert load(successor,cache,b'abandoned')['state']=='ready'
+    result=successor.dispatch('inventory',{})
+    assert result['metrics']['counters']['begin_hits']==1
+    assert result['metrics']['counters']['bytes_loaded']==len(b'abandoned')
+    assert result['metrics']['counters']['reuse_bytes']==len(b'abandoned')
+
+
+def test_inventory_uses_physical_limits_without_admission_scan_or_noop_update(keeper):
+    manager,image=keeper;load(manager,binding(image,b'one'),b'one')
+    manager.memory_mb=lambda:1024
+    manager.capacity=lambda:pytest.fail('Inventory acquired the admission pool')
+    calls=[];run=manager.run
+    def recorded(args,**kwargs):calls.append(args);return run(args,**kwargs)
+    manager.run=recorded
+    result=manager.dispatch('inventory',{})
+    assert result['budget_mb']==64
+    assert not any(args[1]=='update' for args in calls)
+    assert result['control_metrics']['operations']['inventory']['calls']==1
+    assert manager.owner()['HostConfig']['NanoCpus']==1000000000
+
+
+def test_transfer_counters_are_bounded_idempotent_and_validate_bytes(keeper):
+    manager,image=keeper;cache=binding(image,b'one');load(manager,cache,b'one')
+    event={'key':cache['key'],'transfer_id':'c'*64,'direction':'sent','bytes':3}
+    manager.dispatch('transfer',event);manager.dispatch('transfer',event)
+    result=manager.dispatch('inventory',{})
+    assert result['metrics']['counters']['peer_bytes_sent']==3
+    assert result['metrics']['counters']['peer_transfers_sent']==1
+    with pytest.raises(RuntimeError,match='byte count differs'):
+        manager.dispatch('transfer',{**event,'bytes':4})
+    assert manager.dispatch('inventory',{})['metrics']['counters']['errors']==1
+
+
+def test_budget_pressure_evicts_cold_objects_and_preserves_hot_data(keeper):
+    manager,image=keeper;objects=[binding(image,bytes([i])) for i in range(4)]
+    for i,cache in enumerate(objects[:3]):load(manager,cache,bytes([i]))
+    load(manager,objects[0],b'\x00')
+    load(manager,objects[3],b'\x03')
+    result=manager.dispatch('inventory',{})
+    keys={i['key'] for i in result['items']}
+    assert objects[0]['key'] in keys and objects[1]['key'] not in keys
+    assert result['used_mb']<=result['budget_mb']
+    assert result['metrics']['counters']['evictions_pressure']==1
+
+
 def test_managed_client_reuses_objects_and_pins_runtime_until_failure_cleanup(monkeypatch, tmp_path):
     from scripts import swarm_runtime as runtime
     image='sha256:'+'e'*64;data=b'input'

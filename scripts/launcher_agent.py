@@ -504,6 +504,12 @@ class ResourceLease:
         return limits
 
     @classmethod
+    def host_capacity(cls):
+        """Physical/shared-cgroup limits without worker or admission scans."""
+        probe=cls.__new__(cls);probe.limits=None
+        return probe.capacity()
+
+    @classmethod
     def pool_capacity(cls, directory=None, group=None, *, locked=False):
         """Read admission headroom under the pool lock, without making a reservation."""
         probe=cls.__new__(cls)
@@ -2147,6 +2153,32 @@ class Agent:
             if changed:self.busy()
             return workers
 
+    def worker_observation(self):
+        """Bounded advisory status; admission still observes Docker synchronously."""
+        with self.lock:
+            snapshot=getattr(self,'worker_snapshot',None)
+            if snapshot is None:
+                snapshot={'workers':[],'info':{},'sampled_at':None,'attempted':float('-inf'),'refreshing':False,'error':None}
+                self.worker_snapshot=snapshot
+            now=time.monotonic()
+            if not snapshot['refreshing'] and now-snapshot['attempted']>=5:
+                snapshot.update(refreshing=True,attempted=now)
+                def refresh():
+                    try:
+                        workers=self.reconcile_resources()
+                        with self.client() as client:info=client.info()
+                        with self.lock:snapshot.update(workers=workers,info=info,sampled_at=time.monotonic(),error=None)
+                    except Exception as error:
+                        with self.lock:snapshot['error']=type(error).__name__+': '+str(error)[:200]
+                    finally:
+                        with self.lock:snapshot['refreshing']=False
+                self.worker_observation_thread=threading.Thread(target=refresh,daemon=True,name='worker-observation')
+                self.worker_observation_thread.start()
+            age=None if snapshot['sampled_at'] is None else max(0,now-snapshot['sampled_at'])
+            metadata={'status':'live' if age is not None and age<=15 else 'unavailable' if age is None else 'stale',
+                      'age_seconds':age,'refreshing':snapshot['refreshing'],'error':snapshot['error']}
+            return list(snapshot['workers']),dict(snapshot['info']),metadata
+
     def expire_resource(self,ident,token=None):
         # Explicit owner cancellation only; workers never expire on agent exit.
         with self.lock:
@@ -2291,8 +2323,10 @@ class Agent:
                     if not hasattr(self, 'cache_manager'):
                         self.cache_manager = load_cache_runtime().CacheManager(
                             capacity=lambda: ResourceLease.pool_capacity(directory=os.getenv('SWARM_RESOURCE_DIR',str(self.root/'.resources'))),
+                            memory_mb=lambda: ResourceLease.host_capacity()['memory_mb'],
                             machine=hashlib.sha256(Path('/etc/machine-id').read_bytes()).hexdigest(),
                             accepting=lambda: worker_policy(self.config)['accepting_jobs'])
+                        self.cache_manager.start_maintenance()
             if op=='resource.cache.begin':
                 # Grow the singleton's commitment atomically with ordinary job
                 # admission. A warm keeper cannot borrow its future payload RAM.
@@ -2447,23 +2481,22 @@ class Agent:
             policy=worker_policy(self.config)
             config = json.loads(self.config.read_text())
             import socket
-            with self.client() as client:
-                info = client.info()
+            workers,info,worker_inventory=self.worker_observation()
             machine = Path('/etc/machine-id')
             if not machine.exists():raise RuntimeError('Host machine identity is not mounted')
             rows = json.loads(subprocess.check_output(['ip','-j','addr'],text=True,timeout=5))
             addresses = [a['local'].split('%')[0] for row in rows if row['ifname'].startswith(('en','eth','wl')) for a in row.get('addr_info',[]) if a.get('scope')!='host']
             try:update_state=json.loads(Path('/tmp/launcher-agent-update.json').read_text())
             except (OSError,ValueError):update_state={}
-            return {'service':'swarm-node','update':update_state,'lifecycle':'updating' if policy['mode']=='draining' else 'ready' if policy['accepting_jobs'] else 'paused','protocol':VERSION,'source_revision':self.source_revision,'node':config['name'],'ready':bool(shutil.which('docker')) and not Path('/tmp/launcher-agent-draining').exists(),'time':time.time(),
+            return {'service':'swarm-node','update':update_state,'lifecycle':'updating' if policy['mode']=='draining' else 'ready' if policy['accepting_jobs'] else 'paused','protocol':VERSION,'source_revision':self.source_revision,'node':config['name'],'ready':bool(shutil.which('docker')) and worker_inventory['status']=='live' and not Path('/tmp/launcher-agent-draining').exists(),'time':time.time(),
                     'machine':hashlib.sha256(machine.read_bytes()).hexdigest(),'hostname':socket.gethostname(),
-                    'addresses':addresses,'platform':info['OSType']+'/'+info['Architecture'],
+                    'addresses':addresses,'platform':info.get('OSType','unknown')+'/'+info.get('Architecture','unknown'),
                     'routing':getattr(self,'routing_status',{'status':'pending'}),
-                    'worker_policy':policy,'capabilities':['controller-signature','github-jobs','p2p-browser','cancel','events','layer-pull','registry-read','peer-layer-cache','mptcp-transport','file-queue','snapshot-stage','event-wait','shared-resources','renewable-resources','docker-workers','durable-docker-workers-v1','execution-accounting-v1','persistent-command-pipes-v1','generic-workers','encrypted-backup','gpu-kernel','telemetry-push','performance-v1','builtin-monitor','stream-work-v1','independent-job-sinks-v1','node-command-v1','gpu-resource-inventory-v1','resource-events-v1','node-maintenance-recipes-v1','verified-ram-caches-v1','cache-cleanup-v1','node-cache-v1','worker-storage-v1','node-web-v1'],
+                    'worker_policy':policy,'capabilities':['controller-signature','github-jobs','p2p-browser','cancel','events','layer-pull','registry-read','peer-layer-cache','mptcp-transport','file-queue','snapshot-stage','event-wait','shared-resources','renewable-resources','docker-workers','durable-docker-workers-v1','execution-accounting-v1','persistent-command-pipes-v1','generic-workers','encrypted-backup','gpu-kernel','telemetry-push','performance-v1','builtin-monitor','stream-work-v1','independent-job-sinks-v1','node-command-v1','gpu-resource-inventory-v1','resource-events-v1','node-maintenance-recipes-v1','verified-ram-caches-v1','cache-cleanup-v1','node-cache-v1','cache-metrics-v1','worker-storage-v1','node-web-v1'],
                     'cache_summary':getattr(getattr(self,'cache_manager',None),'summary',{}),'enrolled_peers':sorted(config['peers']),'storage':self.storage_status,'storage_policy':self.worker_storage_policy(),
                     'hardware':self.hardware(info),
                     'preparations':[key for key,j in self.jobs.items() if j['status']=='running' and j.get('prepare_only')],
-                    'active_commands':self.commands.active() if hasattr(self,'commands') else 0,'active_jobs':[key for key,j in self.jobs.items() if j['status']=='running' and not j.get('prepare_only')],'active_image_transfers':self.registry_transfers,'active_uploads':len(self.uploads),'active_resource_leases':len(self.pending_resources),'workers':self.reconcile_resources()}
+                    'active_commands':self.commands.active() if hasattr(self,'commands') else 0,'active_jobs':[key for key,j in self.jobs.items() if j['status']=='running' and not j.get('prepare_only')],'active_image_transfers':self.registry_transfers,'active_uploads':len(self.uploads),'active_resource_leases':len(self.pending_resources),'workers':workers,'worker_inventory':worker_inventory}
         if op.startswith('backup.'):
             return self.backup(op,args)
         if op.startswith('upload.'):

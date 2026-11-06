@@ -11,6 +11,49 @@ selects idle objects in LRU order until their recorded allocation reaches N.
 That allocation is a selection budget, not proof of physical RAM reclaimed.
 Callers recheck actual admission headroom after each pass.
 
+## Health and counters
+
+`cache-metrics-v1` nodes return `metrics` and `control_metrics` from
+`resource.cache.inventory`; the latest sample also appears in `status.cache_summary`.
+Cache counters live beside the objects in RAM and survive agent replacement.
+They reset when the keeper's RAM volume is recreated. Control-method timings
+reset with the agent; both sections include their `since` timestamp.
+
+- `begin_hits`, `begin_misses`, `load_starts`, `load_waits`, `capacity_waits`,
+  `loads_sealed`, `bytes_loaded`, and `reuse_bytes` distinguish lookup attempts,
+  actual loads and reused logical payload bytes. A waiting/rejected begin is a
+  miss, not an additional completed load. `check_hits`/`check_misses` count seal
+  checks separately so a warm begin followed by a check is not counted twice.
+- `evictions`, `evicted_allocated_mb`, and `evictions_*` distinguish capacity
+  pressure, explicit cleanup and expired loading objects.
+- `peer_bytes_sent`/`peer_bytes_received` and `peer_transfers_*` count verified
+  direct TLS payloads reported by the transfer helper. The signed
+  `resource.cache.transfer` mutation takes `key`, `transfer_id` (64 hex),
+  `direction` (`sent` or `received`), `bytes`, and the normal `machine` identity.
+  Duplicate event IDs are ignored within a bounded 2,048-event replay window.
+  Missing telemetry acknowledgements never cause payload transfers to repeat.
+- `operations` exposes call counts, total and maximum seconds. Keeper timings
+  cover metadata execution; `control_metrics.operations` also covers manager
+  lock wait and Docker commands, with a separate error count.
+
+An expired loading pin no longer strands its object. Inventories and the
+agent's 30-second maintenance sweep remove abandoned loading entries only when
+no pins, Docker mounts or in-flight keeper execs protect them. Ready objects
+retain ordinary bounded LRU behaviour; near-full cache allocation alone is not
+evidence of thrashing. Budget-pressure tests verify that hot objects survive.
+
+Cache inventories use effective host/shared-cgroup RAM limits without scanning
+the admission pool. Growth still obtains the shared admission lock and uses
+fresh worker observations. Helpers have one CPU of burst allowance even when
+idle; the sleeping keeper does not consume that CPU continuously. Memory and
+swap limits still move together, so container swap remains disabled. Warm hits
+and unchanged inventories avoid repeated Docker updates and inventory execs.
+
+Node `status.worker_inventory` reports the freshness/error of its background
+Docker observation. Status does not wait for a stuck Docker inspection. A cold
+or stale observation makes `ready` false; actual admission continues to use
+synchronous, authoritative worker state. Running jobs are left intact.
+
 The fleet cleanup script below handles managed objects and legacy owners in one
 pass. Managed cleanup works without a controller queue file. Legacy objects still
 require readable terminal ownership and retain the safeguards described below.

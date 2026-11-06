@@ -125,10 +125,30 @@ def validate_job(cpus,memory_mb,group,tmpfs,labels,container_prefix):
 
 def cleanup_container(host,name):
     """Prove a job container absent even if its controller transport already exited."""
-    removed=subprocess.run(shell_command(host,['docker','rm','-f',name]),capture_output=True,text=True,timeout=30)
-    if removed.returncode==0:return True
-    inspected=subprocess.run(shell_command(host,['docker','container','inspect',name]),capture_output=True,text=True,timeout=20)
-    return inspected.returncode==1 and ('no such object:' in inspected.stderr.lower() or 'no such container:' in inspected.stderr.lower())
+    try:
+        removed=subprocess.run(shell_command(host,['docker','rm','-f',name]),capture_output=True,text=True,timeout=30)
+        if removed.returncode==0:return True
+    except subprocess.TimeoutExpired:
+        pass  # Docker may still be removing it after the command channel times out.
+    deadline=time.monotonic()+120
+    while time.monotonic()<deadline:
+        try:
+            inspected=subprocess.run(shell_command(host,['docker','container','inspect',name]),capture_output=True,text=True,timeout=20)
+            if inspected.returncode==1 and ('no such object:' in inspected.stderr.lower() or 'no such container:' in inspected.stderr.lower()):return True
+            if inspected.returncode==0:
+                rows=json.loads(inspected.stdout)
+                if len(rows)!=1 or rows[0].get('Name','').lstrip('/')!=name:return False
+                item=rows[0];state=item.get('State',{})
+                # Fresh inspection authorizes retirement of this exact stopped
+                # instance. Never blindly repeat a force-removal by name.
+                if not state.get('Running') and not state.get('Restarting') and re.fullmatch('[a-f0-9]{64}',item.get('Id','')):
+                    retired=subprocess.run(shell_command(host,['docker','rm',item['Id']]),capture_output=True,text=True,timeout=20)
+                    if retired.returncode==0:return True
+                elif state.get('Running') or state.get('Restarting'):return False
+        except (subprocess.TimeoutExpired,ValueError):
+            pass
+        time.sleep(1)
+    return False
 
 
 def observe_worker(host,name,lease,*,reconnect_seconds=180,poll_seconds=2):

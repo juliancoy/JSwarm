@@ -162,4 +162,19 @@ def _copy(source, source_cache, destination, destination_cache, receive, *, time
 def copy(source, source_cache, destination, destination_cache, receive, *, timeout=90):
     from scripts.swarm_shared_cache import pin
     with pin(source, source_cache):
-        return _copy(source, source_cache, destination, destination_cache, receive, timeout=timeout)
+        result = _copy(source, source_cache, destination, destination_cache, receive, timeout=timeout)
+        # Count verified payload bytes, never estimated link throughput. A lost
+        # telemetry reply must not turn a successful immutable transfer into a retry.
+        transfer_id = secrets.token_hex(32)
+        errors = {}
+        from scripts.swarm_runtime import AgentClient
+        for host, cache, direction in ((source,source_cache,'sent'),(destination,destination_cache,'received')):
+            if cache.get('layout') != 'node-cache-v1':continue
+            client = AgentClient(host)
+            try:
+                client.call('resource.cache.transfer',{'machine':host['machine'],'key':cache['key'],
+                    'transfer_id':transfer_id,'direction':direction,'bytes':result['bytes']},timeout=5)
+            except Exception as error:errors[host['host']]=type(error).__name__
+            finally:client.close()
+        if errors:result['telemetry_errors']=errors
+        return result

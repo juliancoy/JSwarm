@@ -50,6 +50,26 @@ class TransferTests(unittest.TestCase):
                 self.assertEqual(Path(result['path']).read_bytes(),b'expected!')
 
 class CleanupTests(unittest.TestCase):
+    def test_lost_removal_reply_is_confirmed_without_repeating_force_remove(self):
+        import subprocess
+        from scripts.swarm_runtime import cleanup_container
+        missing=subprocess.CompletedProcess([],1,'','Error: No such container: swarm-job-test')
+        with patch('scripts.swarm_runtime.subprocess.run',side_effect=[subprocess.TimeoutExpired('docker rm',30),missing]) as run:
+            self.assertTrue(cleanup_container({'local':True},'swarm-job-test'))
+        self.assertEqual(len(run.call_args_list),2)
+        self.assertEqual(run.call_args_list[1].args[0][:3],['docker','container','inspect'])
+
+    def test_cleanup_retires_only_freshly_observed_stopped_instance(self):
+        import json,subprocess
+        from scripts.swarm_runtime import cleanup_container
+        ident='a'*64;name='swarm-job-test'
+        denied=subprocess.CompletedProcess([],1,'','removal in progress')
+        observed=subprocess.CompletedProcess([],0,json.dumps([{'Id':ident,'Name':'/'+name,'State':{'Running':False,'Restarting':False}}]),'')
+        removed=subprocess.CompletedProcess([],0,ident,'')
+        with patch('scripts.swarm_runtime.subprocess.run',side_effect=[denied,observed,removed]) as run:
+            self.assertTrue(cleanup_container({'local':True},name))
+        self.assertEqual(run.call_args_list[-1].args[0],['docker','rm',ident])
+
     def test_dead_ssh_still_removes_container_before_releasing_lease(self):
         from functools import partial
         from scripts.swarm_runtime import run_job

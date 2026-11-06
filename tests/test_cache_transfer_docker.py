@@ -5,6 +5,7 @@ from pathlib import Path
 import socket
 import subprocess
 import uuid
+from contextlib import nullcontext
 
 import pytest
 from scripts import swarm_cache_transfer as transfer
@@ -24,6 +25,29 @@ with tarfile.open(fileobj=sys.stdin.buffer,mode='r|') as stream:
   (root/member.name).write_bytes(payload);seen.add(member.name)
 assert seen==set(expected)
 '''
+
+
+def test_managed_peer_metrics_share_an_id_and_never_retry_successful_payload(monkeypatch):
+    import scripts.swarm_runtime as runtime
+    import scripts.swarm_shared_cache as shared
+    monkeypatch.setattr(shared,'pin',lambda *args:nullcontext())
+    monkeypatch.setattr(transfer,'_copy',lambda *args,**kw:{'bytes':3,'transport':'direct-pinned-tls'})
+    events=[]
+    class Client:
+        def __init__(self,host):self.host=host
+        def call(self,op,args,**kwargs):events.append((self.host['host'],op,args))
+        def close(self):pass
+    monkeypatch.setattr(runtime,'AgentClient',Client)
+    source={'host':'source','machine':'a'*64};destination={'host':'destination','machine':'b'*64}
+    cache={'key':'c'*64,'layout':'node-cache-v1'}
+    result=transfer.copy(source,cache,destination,cache,'receiver')
+    assert result['bytes']==3
+    assert [event[2]['direction'] for event in events]==['sent','received']
+    assert len({event[2]['transfer_id'] for event in events})==1
+    def unavailable(*args,**kwargs):raise TimeoutError('Telemetry reply lost')
+    monkeypatch.setattr(Client,'call',unavailable)
+    result=transfer.copy(source,cache,destination,cache,'receiver')
+    assert result['bytes']==3 and set(result['telemetry_errors'])=={'source','destination'}
 
 
 def test_direct_cache_transfer_stays_in_ram_and_verifies_contents(tmp_path,monkeypatch):
