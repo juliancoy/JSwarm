@@ -65,6 +65,14 @@ For a single existing node:
 python3 scripts/deploy_swarm_inputs.py --published --node compai.local --wait-timeout 180
 ```
 
+Updates travel through the running node's signed owner-command API, including
+local nodes. The existing persistent command service keeps the installer and its
+acknowledged byte windows alive across agent replacement. The installer checks
+the enrolled node and machine identity, source checksums and pinned controller
+key before staging the release. Deployment does not fall back to SSH: if the
+API is unavailable, start or recover that existing node through its normal local
+bootstrap, then retry the published rollout.
+
 Only one rollout can hold the deployment lock. Each node must report the exact
 target revision and its existing machine identity before the next is updated.
 A pending or offline node leaves later nodes untouched. Existing Docker workers

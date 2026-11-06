@@ -10,7 +10,7 @@ class LauncherUpdateTests(unittest.TestCase):
         self.progress=Mock()
         self.updates=LauncherUpdates(Path(__file__).resolve().parents[3],lambda:False,self.progress)
         self.host={'host':'worker','lan_address':'10.42.0.2'}
-        self.status={'node':'worker','machine':'machine','ready':True,'source_revision':'old','active_jobs':[]}
+        self.status={'node':'worker','machine':'a'*64,'ready':True,'source_revision':'old','active_jobs':[],'capabilities':['node-command-v1']}
 
     def test_stream_and_command_runtimes_are_in_the_verified_release(self):
         import ast,hashlib
@@ -28,13 +28,15 @@ class LauncherUpdateTests(unittest.TestCase):
             self.assertIs(self.updates.ensure(self.host,Mock(),status),status)
         stage.assert_not_called()
 
-    def test_verified_ipv4_endpoint_overrides_an_ambient_ipv6_only_ssh_setting(self):
+    def test_staging_uses_signed_api_and_ignores_ambient_ssh_settings(self):
         with patch('agent_updates.subprocess.run',return_value=Mock(returncode=0)) as run, patch('agent_client.CONFIG') as config:
             config.read_text.return_value='{"controller_public_key":"'+'ab'*32+'","peers":{"worker":"10.42.0.2"}}'
             self.updates.stage(self.host,self.status)
         command=run.call_args.args[0]
-        self.assertIn('AddressFamily=any',command)
-        self.assertIn('HostKeyAlias=worker.local',command)
+        self.assertTrue(command[1].endswith('swarm_command.py'))
+        self.assertIn('http://10.42.0.2:8790',command)
+        self.assertIn('a'*64,command)
+        self.assertNotIn('ssh',command)
         import json
         self.assertEqual(json.loads(run.call_args.kwargs['input'])['peers'],{'worker':'10.42.0.2'})
 
@@ -110,7 +112,7 @@ class LauncherUpdateTests(unittest.TestCase):
             self.updates.ensure(self.host,client,status)
         stage.assert_called_once_with(self.host,status)
 
-    def test_supervisor_fix_is_part_of_standard_ssh_deployment(self):
+    def test_supervisor_fix_is_part_of_standard_api_deployment(self):
         import json,hashlib
         with patch('agent_updates.subprocess.run',return_value=Mock(returncode=0)) as run,patch('agent_client.CONFIG') as config:
             config.read_text.return_value=json.dumps({'controller_public_key':'ab'*32,'peers':{'worker':'10.42.0.2'}})
@@ -169,3 +171,45 @@ def test_legacy_bridge_reopens_admission_only_after_supervisor_selects_target(tm
         gate.touch();status.write_text(json.dumps({'active':active}))
         exec(code,{})
         assert gate.exists()==closed
+
+
+def test_update_command_rejects_changed_identity_and_missing_api_capability(monkeypatch):
+    import json,pytest
+    updates=LauncherUpdates.__new__(LauncherUpdates)
+    monkeypatch.setattr('agent_client.CONFIG',Mock(read_text=lambda:json.dumps({'peers':{'worker':'10.42.0.2'}})))
+    status={'node':'worker','machine':'a'*64,'capabilities':['node-command-v1']}
+    with pytest.raises(ValueError,match='identity'):
+        updates.command({'host':'worker'},'pass',status={**status,'node':'other'})
+    with pytest.raises(ValueError,match='identity'):
+        updates.command({'host':'worker','machine':'b'*64},'pass',status=status)
+    with pytest.raises(RuntimeError,match='command API unavailable'):
+        updates.command({'host':'worker'},'pass',status={**status,'capabilities':[]})
+
+
+def test_offline_update_never_falls_back_to_local_process_or_ssh(monkeypatch):
+    import json,pytest
+    updates=LauncherUpdates.__new__(LauncherUpdates);client=Mock();client.call.side_effect=OSError('Offline')
+    monkeypatch.setattr('agent_client.CONFIG',Mock(read_text=lambda:json.dumps({'peers':{'worker':'10.42.0.2'}})))
+    monkeypatch.setattr('agent_client.AgentClient',Mock(return_value=client))
+    execute=Mock(side_effect=AssertionError('Offline update attempted a subprocess'))
+    monkeypatch.setattr('agent_updates.subprocess.run',execute)
+    with pytest.raises(OSError,match='Offline'):updates.command({'host':'worker','local':True},'pass')
+    execute.assert_not_called();client.close.assert_called_once()
+
+
+def test_api_staging_preserves_attested_host_routes_in_owner_pid_namespace(tmp_path,monkeypatch):
+    import json,hashlib,os,pathlib
+    from agent_updates import INSTALL
+    compile(INSTALL,'node-update-installer','exec')
+    config=tmp_path/'config/peers.json';config.parent.mkdir()
+    bulk=tmp_path/'.local/state/lifetech-launcher/bulk-transport';bulk.mkdir(parents=True)
+    machine='a'*64;name='worker';routing={'machine':machine,'name':name}
+    (bulk/'config.json').write_text(json.dumps(routing))
+    routes=[{'container':'/session','host':'/home/owner/session'}]
+    descriptor=config.parent/'bulk-streams.json';descriptor.write_text(json.dumps({'config':routing,'host_paths':routes}))
+    code=INSTALL[INSTALL.index("bulk_root=pathlib.Path.home()"):INSTALL.index("files=payload['files']")]
+    # A persistent command owner cannot see the bootstrap's host PID namespace.
+    code=code.replace("pathlib.Path('/proc').glob('[0-9]*')","[]")
+    monkeypatch.setattr(pathlib.Path,'home',lambda:tmp_path)
+    exec(code,{'pathlib':pathlib,'json':json,'os':os,'subprocess':Mock(),'config':config,'settings':{'name':name},'payload':{'machine':machine}})
+    assert json.loads(descriptor.read_text())['host_paths']==routes

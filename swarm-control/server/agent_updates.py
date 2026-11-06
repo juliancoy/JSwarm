@@ -1,4 +1,4 @@
-"""Stage the Start request's launcher sources through existing authenticated SSH."""
+"""Stage published node updates through the existing signed owner-command API."""
 import hashlib
 import ast
 import fcntl
@@ -28,11 +28,11 @@ def deployment_lock(wait=False):
 INSTALL = '''import hashlib,json,os,pathlib,runpy,sys,tempfile,subprocess
 payload=json.load(sys.stdin)
 if hashlib.sha256(pathlib.Path('/etc/machine-id').read_bytes()).hexdigest()!=payload['machine']:
- raise RuntimeError('SSH host differs from the authenticated agent machine')
+ raise RuntimeError('Update owner differs from the authenticated agent machine')
 config=pathlib.Path(os.environ.get('LIFETECH_PEER_CONFIG',str(pathlib.Path.home()/'.config/lifetech-launcher/peers.json')))
 settings=json.loads(config.read_text())
 if settings['name']!=payload['node']:
- raise RuntimeError('SSH account is not the enrolled launcher owner')
+ raise RuntimeError('Update command is not running as the enrolled launcher owner')
 public_key=payload['controller_public_key']
 if len(bytes.fromhex(public_key))!=32:raise RuntimeError('Invalid controller public key')
 import ipaddress,re
@@ -47,6 +47,19 @@ if hashlib.sha256(supervisor.encode()).hexdigest()!=payload['supervisor_sha256']
 compile(supervisor,'launcher_peer_supervisor.py','exec')
 targets=[pathlib.Path.home()/'.local/share/organization-node/scripts/launcher_peer_supervisor.py']
 replacement_containers=[]
+# The persistent API command owner may use rootless Docker while the node runs
+# on system Docker. Its enrollment-attested routing map still identifies the
+# existing writable bootstrap sources without host-PID or SSH access.
+routing=config.parent/'bulk-streams.json'
+if routing.exists():
+ mapped=json.loads(routing.read_text())
+ if mapped.get('config',{}).get('machine')!=payload['machine'] or mapped.get('config',{}).get('name')!=settings['name']:
+  raise RuntimeError('Bootstrap routing identity differs from enrolled node')
+ for mount in mapped.get('host_paths',[]):
+  source=pathlib.Path(mount['host'])
+  if not source.is_absolute() or '..' in source.parts:raise RuntimeError('Invalid bootstrap source mapping')
+  for candidate in (source/'launcher_peer_supervisor.py',source/'scripts/launcher_peer_supervisor.py'):
+   if candidate.is_file():targets.append(candidate.resolve())
 settings['peers']=dict(peers)
 settings['controller_public_key']=public_key
 pending=config.with_suffix('.controller.tmp');pending.write_text(json.dumps(settings,indent=2)+'\\n');pending.chmod(0o600);pending.replace(config)
@@ -96,6 +109,11 @@ if (bulk_root/'config.json').exists():
     if source.is_absolute() and target.is_absolute() and '..' not in source.parts and '..' not in target.parts:
      host_paths.append({'container':str(target),'host':str(source)})
   except (OSError,ValueError,UnicodeError):pass
+ if not host_paths and descriptor.exists():
+  prior=json.loads(descriptor.read_text())
+  if prior.get('config',{}).get('machine')!=payload['machine'] or prior.get('config',{}).get('name')!=settings['name']:
+   raise RuntimeError('Existing streaming routing identity differs')
+  host_paths=prior.get('host_paths',[])
  temporary.write_text(json.dumps({'root':str(bulk_root),'config_dir':str(config.parent),'config':bulk,'host_paths':host_paths}));temporary.chmod(0o600);temporary.replace(descriptor)
 files=payload['files']
 expected=('launcher_peers.py','launcher_discovery.py','launcher_registration.py','launcher_agent.py','launcher_registry.py')
@@ -231,13 +249,17 @@ class LauncherUpdates:
         return release
 
     def owner_status(self,host):
-        """Recover an unavailable agent through the existing pinned owner transport."""
-        code="import hashlib,json,os,pathlib; p=pathlib.Path(os.environ.get('LIFETECH_PEER_CONFIG',str(pathlib.Path.home()/'.config/lifetech-launcher/peers.json'))); print(json.dumps({'node':json.loads(p.read_text())['name'],'machine':hashlib.sha256(pathlib.Path('/etc/machine-id').read_bytes()).hexdigest(),'ready':False}))"
-        result=subprocess.run(self.command(host,code),capture_output=True,text=True,timeout=30)
-        if result.returncode:raise RuntimeError('Cannot verify enrolled owner for agent recovery')
-        status=json.loads(result.stdout)
-        if status.get('node')!=host['host'] or len(bytes.fromhex(status.get('machine','')))!=32:
-            raise ValueError('Recovery owner identity differs from enrolled node')
+        """Verify the enrolled node through its API; deployment never falls back to SSH."""
+        from agent_client import AgentClient,CONFIG
+        settings=json.loads(CONFIG.read_text())
+        if host['host'] not in settings['peers']:raise ValueError('Use an enrolled node name')
+        endpoint=host.get('agent_endpoint') or 'http://'+settings['peers'][host['host']]+':8790'
+        client=AgentClient({**host,'agent_endpoint':endpoint})
+        try:status=client.call('status',timeout=10)
+        finally:client.close()
+        if status.get('node')!=host['host'] or not isinstance(status.get('machine'),str) or len(bytes.fromhex(status['machine']))!=32:
+            raise ValueError('Update API identity differs from enrolled node')
+        if host.get('machine') and host['machine']!=status['machine']:raise ValueError('Update machine identity changed')
         return status
 
     def stage(self,host,status):
@@ -246,29 +268,33 @@ class LauncherUpdates:
         public_key=json.loads(CONFIG.read_text())['controller_public_key']
         if len(bytes.fromhex(public_key))!=32:raise ValueError('Invalid pinned controller key')
         payload={'supervisor_source':self.supervisor_source,'supervisor_sha256':hashlib.sha256(self.supervisor_source.encode()).hexdigest(),'machine':status['machine'],'node':status['node'],'revision':self.revision,'files':self.files,'controller_public_key':public_key,'peers':json.loads(CONFIG.read_text())['peers']}
-        command=self.command(host,INSTALL)
+        command=self.command(host,INSTALL,status=status)
         try:result=subprocess.run(command,input=json.dumps(payload),capture_output=True,text=True,timeout=180)
         except subprocess.TimeoutExpired:raise RuntimeError('Launcher staging timed out; existing jobs preserved and retry is safe') from None
         if result.returncode:
             # No source payload, fleet keys or account configuration enter run logs.
-            raise RuntimeError('Launcher staging failed over '+('local access' if host.get('local') else 'SSH')+
-                               '; check saved access, host keys and enrolled account. '+result.stderr[-400:])
+            raise RuntimeError('Launcher staging failed through the signed node API: '+result.stderr[-400:])
 
-    def command(self,host,code):
-        if host.get('local'):
-            command=[sys.executable,'-c',code]
-        else:
-            inventory=Path.home()/'.local/state/orgportal/lan-ssh-devices.json'
-            accounts=json.loads(inventory.read_text()).get('accounts',{}) if inventory.exists() else {}
-            alias=host['host'] if host['host'].endswith('.local') else host['host']+'.local'
-            command=['ssh','-o','AddressFamily=any','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=8',
-                     '-o','ForwardAgent=no','-o','HostName='+host['lan_address'],'-o','HostKeyAlias='+alias]
-            key=Path.home()/'.ssh/orgportal_lan_ed25519'
-            if key.exists():command+=['-i',str(key)]
-            user=accounts.get(alias)
-            if user:command+=['-l',user]
-            command += [alias,'python3 -c '+shlex.quote(code)]
-        return command
+    def command(self,host,code,*,status=None):
+        """Run in the enrolled owner's persistent command service over the node API.
+
+        Command IDs and acknowledged byte windows survive agent replacement.
+        An unavailable API is a pending deployment, never permission to switch
+        transport or to act on another machine using ambient SSH configuration.
+        """
+        from agent_client import CONFIG
+        from scripts.swarm_runtime import shell_command
+        settings=json.loads(CONFIG.read_text());name=host['host']
+        if name not in settings['peers']:raise ValueError('Use an enrolled node name')
+        status=self.owner_status(host) if status is None else status
+        if status.get('node')!=name or not isinstance(status.get('machine'),str) or len(bytes.fromhex(status['machine']))!=32:
+            raise ValueError('Update API identity differs from enrolled node')
+        if host.get('machine') and host['machine']!=status['machine']:raise ValueError('Update machine identity changed')
+        if 'node-command-v1' not in status.get('capabilities',[]):
+            raise RuntimeError('Signed node command API unavailable; enroll or recover the node explicitly')
+        owner={**host,'local':False,'machine':status['machine'],
+               'agent_endpoint':host.get('agent_endpoint') or 'http://'+settings['peers'][name]+':8790'}
+        return shell_command(owner,['python3','-c',code])
 
     def cancel_pending(self,host,status):
         """Undo only our staged pointer, preserving the existing node and jobs."""
@@ -282,7 +308,7 @@ if current.resolve().name!=p['desired'] or not previous.is_symlink() or previous
 pending=base/'cancel.tmp';pending.unlink(missing_ok=True);pending.symlink_to(previous.resolve().name);pending.replace(current)
 """
         payload={'node':host['host'],'machine':status['machine'],'desired':self.revision,'active':status['source_revision']}
-        result=subprocess.run(self.command(host,code),input=json.dumps(payload),capture_output=True,text=True,timeout=30)
+        result=subprocess.run(self.command(host,code,status=status),input=json.dumps(payload),capture_output=True,text=True,timeout=30)
         if result.returncode:raise RuntimeError('Cannot safely cancel staged node update')
 
     def ensure(self,host,client,status,allow_compatible=False,drain=False,wait_timeout=240):
