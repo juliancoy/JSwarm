@@ -86,7 +86,7 @@ class SubmissionQueue:
             self.begin(db)
             if db.execute('UPDATE submissions SET priority=?,updated=? WHERE namespace=? AND id=?',(priority,time.time(),self.namespace,ident)).rowcount!=1:raise KeyError(ident)
 
-    def claim(self,host,capacity=None,eligible=None,requirements=None,preparation_resources=None):
+    def claim(self,host,capacity=None,eligible=None,requirements=None,preparation_resources=None,affinity=None):
         """Skip nonfitting jobs, without letting a large/GPU job block CPU work."""
         capacity=dict(capacity or {});eligible=None if eligible is None else set(eligible)
         if preparation_resources is not None:
@@ -103,7 +103,11 @@ class SubmissionQueue:
                 reserved=request.get('preparation_resources',request['resources']) if request.get('inputs_ready') is False else request['resources']
                 if capacity.get('cpu_admission_mode')!='timeshare':capacity['available_cpus']=capacity.get('available_cpus',float('inf'))-reserved.get('cpus',0)
                 capacity['available_mb']=capacity.get('available_mb',float('inf'))-reserved.get('memory_mb',0)
-            for row in db.execute("SELECT * FROM submissions WHERE namespace=? AND state='queued' ORDER BY priority DESC,created,id",(self.namespace,)):
+            rows=db.execute("SELECT * FROM submissions WHERE namespace=? AND state='queued' ORDER BY priority DESC,created,id",(self.namespace,))
+            if affinity:
+                if any(type(v) is not int or v<0 for v in affinity.values()):raise ValueError('Invalid cache affinity')
+                rows=sorted(rows,key=lambda row:(-row['priority'],-affinity.get(row['id'],0),row['created'],row['id']))
+            for row in rows:
                 if eligible is not None and row['id'] not in eligible:continue
                 spec=json.loads(row['spec']);resources=spec.get('resources',{})
                 estimate=(requirements or {}).get(row['id'],{})
