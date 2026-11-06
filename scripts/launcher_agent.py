@@ -1186,6 +1186,20 @@ def load_command_runtime():
     return sys.modules[name]
 
 
+CACHE_RUNTIME_SOURCE = ''
+
+
+def load_cache_runtime():
+    import types
+    source = CACHE_RUNTIME_SOURCE or (Path(__file__).resolve().parent/'launcher_cache.py').read_text()
+    name = 'launcher_cache_' + hashlib.sha256(source.encode()).hexdigest()
+    if name not in sys.modules:
+        module = types.ModuleType(name)
+        exec(compile(source, name, 'exec'), module.__dict__)
+        sys.modules[name] = module
+    return sys.modules[name]
+
+
 STREAM_RUNTIME_SOURCE = ''
 
 
@@ -2134,6 +2148,15 @@ class Agent:
         if op=='resource.gpus':
             if args:raise ValueError('GPU inventory accepts no arguments')
             return self.gpu_resources()
+        if op.startswith('resource.cache.'):
+            if not hasattr(self, 'cache_manager'):
+                with self.lock:
+                    if not hasattr(self, 'cache_manager'):
+                        self.cache_manager = load_cache_runtime().CacheManager(
+                            capacity=lambda: ResourceLease.pool_capacity(directory=os.getenv('SWARM_RESOURCE_DIR',str(self.root/'.resources'))),
+                            machine=hashlib.sha256(Path('/etc/machine-id').read_bytes()).hexdigest(),
+                            accepting=lambda: worker_policy(self.config)['accepting_jobs'])
+            return self.cache_manager.dispatch(op.removeprefix('resource.cache.'), args)
         if op=='resource.caches.inspect':
             if args:raise ValueError('Cache cleanup inventory accepts no arguments')
             return {'items':cache_cleanup_inventory(),'ownership_authority':'controller-submission-queue'}
@@ -2141,7 +2164,12 @@ class Agent:
             return cleanup_ram_cache(args)
         if op=='resource.caches':
             if args:raise ValueError('RAM cache inventory accepts no arguments')
-            return verified_ram_caches()
+            legacy = verified_ram_caches()
+            managed = self.dispatch('resource.cache.inventory', {})
+            legacy['caches'].extend(i for i in managed['items'] if i['phase']=='ready')
+            legacy['pending_caches'].extend(i['key'] for i in managed['items'] if i['phase']!='ready')
+            legacy['manager'] = {k:managed[k] for k in ('budget_mb','used_mb')}
+            return legacy
         if op=='resource.capacity':
             if set(args)-{'group','include_gpus'} or 'include_gpus' in args and type(args['include_gpus']) is not bool:raise ValueError('Invalid capacity request')
             with self.lock:
@@ -2280,8 +2308,8 @@ class Agent:
                     'machine':hashlib.sha256(machine.read_bytes()).hexdigest(),'hostname':socket.gethostname(),
                     'addresses':addresses,'platform':info['OSType']+'/'+info['Architecture'],
                     'routing':getattr(self,'routing_status',{'status':'pending'}),
-                    'worker_policy':policy,'capabilities':['controller-signature','github-jobs','p2p-browser','cancel','events','layer-pull','registry-read','peer-layer-cache','mptcp-transport','file-queue','snapshot-stage','event-wait','shared-resources','renewable-resources','docker-workers','durable-docker-workers-v1','execution-accounting-v1','persistent-command-pipes-v1','generic-workers','encrypted-backup','gpu-kernel','telemetry-push','performance-v1','builtin-monitor','stream-work-v1','independent-job-sinks-v1','node-command-v1','gpu-resource-inventory-v1','node-maintenance-recipes-v1','verified-ram-caches-v1','cache-cleanup-v1','worker-storage-v1','node-web-v1'],
-                    'enrolled_peers':sorted(config['peers']),'storage':self.storage_status,'storage_policy':self.worker_storage_policy(),
+                    'worker_policy':policy,'capabilities':['controller-signature','github-jobs','p2p-browser','cancel','events','layer-pull','registry-read','peer-layer-cache','mptcp-transport','file-queue','snapshot-stage','event-wait','shared-resources','renewable-resources','docker-workers','durable-docker-workers-v1','execution-accounting-v1','persistent-command-pipes-v1','generic-workers','encrypted-backup','gpu-kernel','telemetry-push','performance-v1','builtin-monitor','stream-work-v1','independent-job-sinks-v1','node-command-v1','gpu-resource-inventory-v1','node-maintenance-recipes-v1','verified-ram-caches-v1','cache-cleanup-v1','node-cache-v1','worker-storage-v1','node-web-v1'],
+                    'cache_summary':getattr(getattr(self,'cache_manager',None),'summary',{}),'enrolled_peers':sorted(config['peers']),'storage':self.storage_status,'storage_policy':self.worker_storage_policy(),
                     'hardware':self.hardware(info),
                     'preparations':[key for key,j in self.jobs.items() if j['status']=='running' and j.get('prepare_only')],
                     'active_commands':self.commands.active() if hasattr(self,'commands') else 0,'active_jobs':[key for key,j in self.jobs.items() if j['status']=='running' and not j.get('prepare_only')],'active_image_transfers':self.registry_transfers,'active_uploads':len(self.uploads),'active_resource_leases':len(self.pending_resources),'workers':self.reconcile_resources()}

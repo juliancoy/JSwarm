@@ -18,8 +18,9 @@ second ownership registry, lease transfer system or job-count gate.
    receipts, correct resource accounting, and continued scheduling. A running
    job's lifetime must not depend on its controller client's connection.
 
-For a node update, use the published deployment procedure in
-[Swarm Control](../swarm-control/README.md#node-and-job-lifecycle). The supervisor
+For a node update, use the [Git-backed deployment procedure](node-source-deployment.md).
+Publish committed source and run `python -m scripts.swarm_node update`; code-only
+updates use mounted Git worktrees and reuse the dependency image. The supervisor
 replaces the node process and reconciles Docker-owned workers before readiness.
 Only the prelaunch admission gate is briefly closed; running workers continue.
 

@@ -198,3 +198,11 @@ def test_stream_deploy_can_skip_offline_preflight_before_replacement(monkeypatch
     rows=stream.deploy([{'host':'first','machine':'machine'},{'host':'second','machine':'machine'}],progress=lambda _:None)
     assert [row['status'] for row in rows]==['failed','updated']
     assert updater.ensure.call_count==1 and updater.ensure.call_args.args[0]['host']=='second'
+
+
+def test_removed_published_flag_is_rejected_before_deployment(monkeypatch):
+    monkeypatch.setattr(deploy.sys,'argv',['deploy_swarm_inputs.py','--published'])
+    sweep=Mock();monkeypatch.setattr(deploy,'sweep',sweep)
+    with pytest.raises(SystemExit) as stopped:deploy.main()
+    assert stopped.value.code==2
+    sweep.assert_not_called()

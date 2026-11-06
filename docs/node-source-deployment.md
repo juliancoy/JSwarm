@@ -41,8 +41,11 @@ it does not reset a developer checkout or rebuild an image.
 Git operations are noninteractive. Missing repository credentials, unreachable
 origins, missing commits or modified managed worktrees stop staging and leave
 running agents and jobs in place. Enrollment must supply Git access separately
-from controller signing credentials. Old publications without Git provenance
-retain their legacy source-staging path; republish committed source to migrate.
+from controller signing credentials. Publications without Git provenance are rejected for deployment and rollback.
+Run `--publish` from committed source to replace an old desired publication. Old
+receipts are retained only for audit history and generation ordering. The updater
+does not bridge or restart legacy draining supervisors; recover an unsupported
+bootstrap with the normal local runner before retrying.
 Dependency changes require updating the dependency image on each container host
 using `./build.sh` and recreating its node container; fleet code updates do not
 silently rebuild Docker images or install Python packages.

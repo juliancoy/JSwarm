@@ -13,24 +13,22 @@ CACHE = {}
 def project(host, status, observed):
     if status.get('node') != host:
         raise ValueError('JSwarm node identity differs')
-    items = []
-    for worker in status.get('workers', [])[:4096]:
-        if worker.get('group') != 'shared-cache' or worker.get('active') is not True:
-            continue
-        ident = worker.get('id')
-        if not isinstance(ident, str) or not ident:
-            continue
-        resources = {k: worker[k] for k in ('cpus', 'memory_mb')
-                     if type(worker.get(k)) in (int, float) and worker[k] > 0}
-        items.append({'id': 'node-cache/' + host + '/' + ident,
-                      'job_id': worker.get('job'), 'name': 'Shared cache · ' + str(worker.get('container') or ident),
-                      'parent': 'Node infrastructure', 'kind': 'shared-cache', 'run_type': 'cache',
-                      'status': 'running', 'queue_state': 'node-observed', 'worker': host,
-                      'resources': resources, 'worker_resources': resources,
-                      'resident_mb': worker.get('resident_mb'), 'container': worker.get('container'),
-                      'created': worker.get('created') or observed, 'updated': observed,
-                      'detail': 'Persistent shared-cache worker observed through the authenticated node API. Reserved RAM is separate from measured resident RAM.'})
-    return items
+    workers = [w for w in status.get('workers', [])[:4096]
+               if w.get('group') == 'shared-cache' and w.get('active') is True]
+    if not workers:return []
+    resources = {k:sum(w.get(k,0) for w in workers if type(w.get(k)) in (int,float))
+                 for k in ('cpus','memory_mb')}
+    resident = [w.get('resident_mb') for w in workers]
+    summary = status.get('cache_summary') or {}
+    return [{'id':'node-cache/'+host, 'name':'Shared cache · '+host,
+             'parent':'Node infrastructure', 'kind':'shared-cache', 'run_type':'cache',
+             'status':'running', 'queue_state':'node-observed', 'worker':host,
+             'resources':resources, 'worker_resources':resources,
+             'resident_mb':sum(resident) if all(type(v) in (int,float) for v in resident) else None,
+             'container':workers[0].get('container') if len(workers)==1 else None,
+             'cache_workers':len(workers), **{k:summary[k] for k in ('objects','pinned_objects','budget_mb','used_mb') if k in summary},
+             'created':min(w.get('created') or observed for w in workers), 'updated':observed,
+             'detail':'Node shared RAM cache. Objects are pinned while loading, executing or transferring; idle managed objects are evictable. Reserved RAM is separate from measured resident RAM.'}]
 
 
 def collect(host, address):

@@ -26,7 +26,7 @@ def main():
         sources={name:(folder/name).read_bytes() for name in FILES}
         # Match enrollment bundles: installed releases contain only FILES, so
         # the stream runtime must travel inside the agent source.
-        for filename,constant in (('launcher_streams.py','STREAM_RUNTIME_SOURCE'),('launcher_commands.py','COMMAND_RUNTIME_SOURCE')):
+        for filename,constant in (('launcher_streams.py','STREAM_RUNTIME_SOURCE'),('launcher_commands.py','COMMAND_RUNTIME_SOURCE'),('launcher_cache.py','CACHE_RUNTIME_SOURCE')):
             runtime=folder/filename
             if runtime.is_file():
                 sources['launcher_agent.py']+=('\n'+constant+' = '+repr(runtime.read_text())+'\n').encode()

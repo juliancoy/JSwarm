@@ -78,7 +78,7 @@ def discover(required_image=None, names=None):
             client=AgentClient(host);status=client.call('status',timeout=15)
             if not eligible(status):raise RuntimeError('Agent is unavailable or declining jobs')
             if address not in status.get('addresses',[]):raise RuntimeError('Agent address attestation failed')
-            host['machine']=status['machine']
+            host['machine']=status['machine'];host['capabilities']=status.get('capabilities',[])
             if 'node-command-v1' not in status.get('capabilities',[]):raise RuntimeError('Launcher command transport unavailable; update required')
             limits=subprocess.check_output(shell_command(host,['docker','info','--format','{{json .MemoryLimit}} {{json .SwapLimit}}']),text=True,stderr=subprocess.DEVNULL,timeout=30).split()
             if limits!=['true','true']:raise RuntimeError('Docker memory/swap isolation unavailable')
@@ -187,7 +187,7 @@ def observe_recorded_worker(client,host,name,lease,*,on_observed=None,reconnect_
         time.sleep(poll_seconds)
 
 
-def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_for_capacity=False,on_admitted=None,tmpfs=None,labels=None,container_prefix=None,gpu=None,network='none',shared_cache=None,memory_reservation_mb=None,profiling_context=None,gpu_compute_complete_file=None,run_id=None,shared_caches=None):
+def _run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_for_capacity=False,on_admitted=None,tmpfs=None,labels=None,container_prefix=None,gpu=None,network='none',shared_cache=None,memory_reservation_mb=None,profiling_context=None,gpu_compute_complete_file=None,run_id=None,shared_caches=None):
     """Docker RAM, including bounded tmpfs scratch, fits the acquired lease."""
     validate_job(cpus,memory_mb,group,tmpfs,labels,container_prefix)
     if run_id is not None and (not isinstance(run_id,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',run_id)):
@@ -322,7 +322,7 @@ def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_fo
             # within this worker's already acquired CPU/RAM reservation.
             parent='/dev/shm' if ram_only else str(Path(locks).parent)
             relative=str(Path(locks).relative_to(parent))
-            prepare="import pathlib,os,sys\np=pathlib.Path('/gpu-parent')\nfor part in pathlib.Path(sys.argv[1]).parts:\n p=p/part\n assert not p.is_symlink()\n p.mkdir(mode=0o700,exist_ok=True)\n assert p.stat().st_uid==os.getuid() and not p.stat().st_mode & 0o077"
+            prepare="import pathlib,os,sys\np=pathlib.Path('/gpu-parent')\nfor part in pathlib.Path(sys.argv[1]).parts:\n p=p/part\n assert not p.is_symlink()\n p.mkdir(mode=0o700,exist_ok=True)\n assert (p.stat().st_uid==os.getuid() or os.getuid()==0) and not p.stat().st_mode & 0o077"
             setup=name+'-gpu-setup'
             helper=['docker','run','--rm','--pull=never','--name',setup,'--network','none','--read-only',
                     '--cap-drop','ALL','--security-opt','no-new-privileges','--cpus',str(min(cpus,.25)),
@@ -425,6 +425,24 @@ def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_fo
             else:raise RuntimeError('Container cleanup unconfirmed; resource lease retained until authenticated expiry cleanup')
         finally:client.close()
 
+
+
+def run_job(*args, **kwargs):
+    """Pin managed input objects from admission until Docker cleanup completes."""
+    from contextlib import ExitStack
+    from scripts.swarm_shared_cache import pin, is_managed
+    host = args[0] if args else kwargs['host']
+    caches = list((kwargs.get('shared_caches') or {}).values())
+    if kwargs.get('shared_cache'):caches.append(kwargs['shared_cache'])
+    with ExitStack() as stack:
+        for cache in {c['key']:c for c in caches if is_managed(c)}.values():
+            stack.enter_context(pin(host, cache))
+        return _run_job(*args, **kwargs)
+
+
+# Keep the public execution signature available to tooling and callers.
+import functools as _functools
+run_job = _functools.wraps(_run_job)(run_job)
 
 def copy_verified_file(source,destination,receipt,resume=False):
     """Prefer direct mutual TLS for large objects; retain a verified encrypted launcher-pipe fallback."""

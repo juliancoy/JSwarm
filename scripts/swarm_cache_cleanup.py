@@ -52,7 +52,7 @@ def status_summary(client, name):
     available = capacity.get('available_mb')
     if not isinstance(available, (int, float)) or isinstance(available, bool) or not math.isfinite(available) or available < 0:
         raise ValueError('Admission headroom unavailable')
-    return {'machine': status['machine'], 'cache_workers': len(caches),
+    return {'machine': status['machine'], 'managed_cache': 'node-cache-v1' in status.get('capabilities', []), 'cache_workers': len(caches),
             'other_workers': sum(worker.get('active') is True and worker.get('group') != 'shared-cache' for worker in workers),
             'available_mb': available}
 
@@ -64,7 +64,9 @@ def clean_node(name, client, policy, queue, apply=False, min_free_mb=None):
         inventory = client.call('resource.caches.inspect', timeout=120)['items']
         eligible, uses = policy._ownership_for({'host': name}, queue)
         row['inventory'] = classify(inventory, eligible, uses)
-        row['eligible_at_inspection'] = sum(cache['eligible'] for cache in row['inventory'])
+        managed = client.call('resource.cache.inventory', {}, timeout=120) if row['before']['managed_cache'] else {'items':[]}
+        row['managed_inventory'] = managed['items']
+        row['eligible_at_inspection'] = sum(cache['eligible'] for cache in row['inventory']) + sum(not c['pinned'] for c in managed['items'])
         if not apply:
             row['status'] = 'preview'
             return row
@@ -96,6 +98,18 @@ def clean_node(name, client, policy, queue, apply=False, min_free_mb=None):
             else:
                 row['skipped'].append({'key': cache['key'], 'reason': outcome.get('reason', 'not_removed'),
                                        'owner_removed': outcome.get('owner_removed', False)})
+        if row['before']['managed_cache']:
+            # Node-local pins and Docker consumers authorize managed eviction;
+            # queued jobs and unrelated legacy requests cannot block it.
+            while True:
+                args = {}
+                if min_free_mb is not None:
+                    available = client.call('resource.capacity', timeout=20)['available_mb']
+                    if available >= min_free_mb:break
+                    args['required_mb'] = max(1, math.ceil(min_free_mb-available))
+                outcome = client.call('resource.cache.prune', args, timeout=120)
+                row['removed'].extend(outcome['removed'])
+                if min_free_mb is None or not outcome['removed']:break
         row['after'] = status_summary(client, name)
         if row['after']['machine'] != row['before']['machine']:
             raise ValueError('Machine identity changed after cleanup')

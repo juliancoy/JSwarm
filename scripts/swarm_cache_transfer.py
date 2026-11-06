@@ -32,15 +32,18 @@ for endpoint in dict.fromkeys(sockets):
  r=subprocess.run(prefix+['inspect',cache['container']],capture_output=True,text=True,timeout=10)
  if r.returncode:continue
  row=json.loads(r.stdout)[0]
- if (row['Name'].lstrip('/')!=cache['container'] or row['Image']!=cache['image'] or not row['State']['Running']
-     or (row['Config'].get('Labels') or {}).get('org.lifetech.cache-owner')!=cache['key']):raise ValueError('Cache owner changed')
+ labels=row['Config'].get('Labels') or {}
+ managed=cache['container']=='swarm-node-cache'
+ if (row['Name'].lstrip('/')!=cache['container'] or not row['State']['Running']
+     or (managed and labels.get('org.lifetech.node-cache')!=p['machine'])
+     or (not managed and (row['Image']!=cache['image'] or labels.get('org.lifetech.cache-owner')!=cache['key']))):raise ValueError('Cache owner changed')
  matches[row['Id']]=(prefix,row)
 if len(matches)!=1:raise ValueError('Unique cache engine unavailable')
 prefix,row=next(iter(matches.values()))
 def worker(argv):return prefix+['exec','-i',cache['container'],*argv]
 if p['mode']=='send':
  expected={k:cache[k] for k in ('key','files')};expected.update(container_id=row['Id'],started_at=row['State']['StartedAt'])
- check=subprocess.run(worker(['python3','-c',p['check'],json.dumps(expected)]),capture_output=True,text=True,timeout=20)
+ check=subprocess.run(worker(['python3','-c',p['check'],json.dumps(expected),cache.get('path','/dev/shm')]),capture_output=True,text=True,timeout=20)
  if check.returncode or not isinstance(json.loads(check.stdout),dict):raise ValueError('Source cache is no longer sealed')
  # Ephemeral TLS keys live only on the owner's bounded RAM scratch mount.
  mounts=pathlib.Path('/proc/self/mountinfo').read_text().splitlines()
@@ -63,7 +66,7 @@ if p['mode']=='send':
        token+=part
       if not hmac.compare_digest(token,p['token'].encode()):continue
       accepted=True;connection.settimeout(20)
-      process=subprocess.Popen(worker(['tar','-C','/dev/shm','-cf','-',*cache['files']]),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+      process=subprocess.Popen(worker(['tar','-C',cache.get('path','/dev/shm'),'-cf','-',*cache['files']]),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
       try:
        while block:=process.stdout.read(256*1024):connection.sendall(block)
        if process.wait(timeout=10):raise RuntimeError('Cache source stream failed')
@@ -82,7 +85,7 @@ else:
   raw.settimeout(10);raw.connect((p['address'],p['port']))
   with context.wrap_socket(raw,server_hostname=p['address']) as connection:
    connection.settimeout(20);connection.sendall(p['token'].encode())
-   process=subprocess.Popen(worker(['python3','-c',p['receive'],'/dev/shm',json.dumps(cache['files'])]),stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+   process=subprocess.Popen(worker(['python3','-c',p['receive'],cache.get('path','/dev/shm'),json.dumps(cache['files'])]),stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
    try:
     while block:=connection.recv(256*1024):
      total+=len(block)
@@ -118,13 +121,15 @@ def certificate(address):
             key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()).decode())
 
 
-def copy(source, source_cache, destination, destination_cache, receive, *, timeout=90):
+def _copy(source, source_cache, destination, destination_cache, receive, *, timeout=90):
     from scripts.swarm_runtime import CONFIG
     settings=json.loads(CONFIG.read_text());address=settings['peers'][source['host']]
     for host,cache in ((source,source_cache),(destination,destination_cache)):
         if host['host'] not in settings['peers']:raise ValueError('Unenrolled cache transfer node')
         key,_=contract(cache['image'],cache['files'])
-        if cache.get('key')!=key or cache.get('container')!='swarm-job-'+key[:32]:raise ValueError('Cache transfer binding differs')
+        managed=cache.get('container')=='swarm-node-cache'
+        if (cache.get('key')!=key or (not managed and cache.get('container')!='swarm-job-'+key[:32])
+                or managed and cache.get('path')!='/cache/objects/'+key):raise ValueError('Cache transfer binding differs')
     if source_cache['files']!=destination_cache['files']:raise ValueError('Cache transfer objects differ')
     cert,key=certificate(address);common={'token':secrets.token_hex(32),'address':address,'certificate':cert}
     sender={**common,'mode':'send','machine':source['machine'],'cache':source_cache,'private_key':key,'check':CHECK}
@@ -152,3 +157,9 @@ def copy(source, source_cache, destination, destination_cache, receive, *, timeo
             except subprocess.TimeoutExpired:process.kill();process.wait()
         for stream in (process.stdin,process.stdout,process.stderr):
             if stream is not None:stream.close()
+
+
+def copy(source, source_cache, destination, destination_cache, receive, *, timeout=90):
+    from scripts.swarm_shared_cache import pin
+    with pin(source, source_cache):
+        return _copy(source, source_cache, destination, destination_cache, receive, timeout=timeout)

@@ -84,6 +84,7 @@ print(json.dumps(dict(host=socket.gethostname().lower()+'.local',home=str(pathli
     sources={name:(ROOT/'scripts'/name).read_text() for name in FILES}
     sources['launcher_agent.py'] += '\nPERFORMANCE_RUNTIME_B64 = '+repr(runpy.run_path(str(monitor/'bundle.py'))['encoded_runtime'](monitor))+'\n'
     sources['launcher_agent.py'] += '\nSTREAM_RUNTIME_SOURCE = '+repr((ROOT/'scripts/launcher_streams.py').read_text())+'\n'
+    sources['launcher_agent.py'] += '\nCACHE_RUNTIME_SOURCE = '+repr((ROOT/'scripts/launcher_cache.py').read_text())+'\n'
     payload = dict(config=remote_config, folder=destination,
                    files=sources,
                    public_key=key.with_suffix('.pub').read_text().strip() if key.with_suffix('.pub').exists() else '')

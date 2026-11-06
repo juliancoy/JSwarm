@@ -7,7 +7,7 @@ import threading
 import time
 
 from scripts.swarm_runtime import AgentClient
-from scripts.swarm_shared_cache import contract
+from scripts.swarm_shared_cache import contract,validate_binding
 
 
 class CacheTopology:
@@ -28,8 +28,7 @@ class CacheTopology:
             rows=[]
             for cache in inventory['caches']:
                 key,_=contract(cache['image'],cache['files'])
-                if cache.get('key')!=key or cache.get('container')!='swarm-job-'+key[:32]:
-                    raise ValueError('Cache inventory binding differs')
+                validate_binding(cache)
                 rows.append(cache)
             return self.clock(),rows
         finally:client.close()

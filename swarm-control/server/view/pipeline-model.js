@@ -24,7 +24,7 @@ export function runtimeProjection(item,items,now=Date.now()/1000){
  return {label:'Estimated remaining',value:e.extrapolated?'Overrun · estimate uncertain':duration(e.remaining_seconds),note:note+' · '+(e.extrapolated?'Past observed samples; tail extrapolation':duration(e.remaining_low_seconds)+'–'+duration(e.remaining_high_seconds)+' empirical range')};
 }
 export function inspectorSections(item,items){
- if(item.kind==='shared-cache')return [{title:'Shared cache',rows:[['Machine',item.worker],['Container',item.container],['Reserved RAM',byteSize((item.resources?.memory_mb||0)*2**20)],['Resident RAM',Number.isFinite(item.resident_mb)?byteSize(item.resident_mb*2**20):'Not measured'],['CPU quota',item.resources?.cpus],['Observed',new Date(item.updated*1000).toLocaleString()],['Purpose',item.detail]]}];
+ if(item.kind==='shared-cache')return [{title:'Shared cache',rows:[['Machine',item.worker],['Container',item.container],['Objects',item.objects],['Pinned objects',item.pinned_objects],['Cache budget',Number.isFinite(item.budget_mb)?byteSize(item.budget_mb*2**20):null],['Reserved RAM',byteSize((item.resources?.memory_mb||0)*2**20)],['Resident RAM',Number.isFinite(item.resident_mb)?byteSize(item.resident_mb*2**20):'Not measured'],['CPU quota',item.resources?.cpus],['Observed',new Date(item.updated*1000).toLocaleString()],['Purpose',item.detail]]}];
  const r=item.worker_resources||item.execution?.resources||item.placement_resources||item.submission_resources||{};
  const basis=item.worker_resources||item.execution?.resources?'Worker limit':item.placement_resources?'Placement budget':'Submission requirement';
  const projection=runtimeProjection(item,items);

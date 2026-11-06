@@ -215,6 +215,7 @@ class LauncherUpdates:
         bundle=runpy.run_path(str(runtime/'bundle.py'))['encoded_runtime'](runtime)
         self.files['launcher_agent.py'] += '\n# Built-in monitor source is covered by the existing atomic release checksum.\nPERFORMANCE_RUNTIME_B64 = '+repr(bundle)+'\n'
         self.files['launcher_agent.py'] += '\n# Durable streaming runtime is part of this same verified launcher release.\nSTREAM_RUNTIME_SOURCE = '+repr((folder/'launcher_streams.py').read_text())+'\n'
+        self.files['launcher_agent.py'] += '\n# Durable streaming runtime is part of this same verified launcher release.\nCACHE_RUNTIME_SOURCE = '+repr((folder/'launcher_cache.py').read_text())+'\n'
         self.files['launcher_agent.py'] += '\n# Signed command runtime shares this same verified release.\nCOMMAND_RUNTIME_SOURCE = '+repr((folder/'launcher_commands.py').read_text())+'\n'
         self.files['launcher_agent.py'] += '\n# The supervisor version is part of the published release identity.\nSUPERVISOR_SHA256 = '+repr(hashlib.sha256(self.supervisor_source.encode()).hexdigest())+'\n'
         self.capabilities=set()

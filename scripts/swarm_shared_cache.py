@@ -22,6 +22,102 @@ OWNER='org.lifetech.cache-owner'
 DEPENDENCY='org.lifetech.shared-cache'
 
 
+
+def is_managed(cache):
+    return cache.get('layout') == 'node-cache-v1'
+
+
+def validate_binding(cache):
+    if is_managed(cache):
+        from scripts.launcher_cache import validate
+        return validate(cache)
+    key, _ = contract(cache['image'], cache['files'])
+    if cache.get('key') != key or cache.get('container') != 'swarm-job-'+key[:32] or cache.get('volume') != 'swarm-cache-'+key[:32]:
+        raise ValueError('Invalid shared cache binding')
+    return cache
+
+
+def object_path(cache):
+    if is_managed(cache):
+        validate_binding(cache)
+        return cache['path']
+    return '/dev/shm'
+
+
+class pin:
+    """Bridge prepare-to-mount and protect transfers; Docker protects live mounts.
+
+    Pins expire after a dead controller exits. Running or stopped Docker
+    consumers remain protected independently of pin renewal or agent restart.
+    """
+    def __init__(self, host, cache, *, token=None, acquire=True):
+        import secrets
+        self.host, self.cache = host, cache
+        self.token = token or secrets.token_hex(32)
+        self.acquire = acquire
+        self.stop = threading.Event()
+        self.client = None
+        self.error = None
+
+    def __enter__(self):
+        if not is_managed(self.cache):return self
+        validate_binding(self.cache)
+        self.client = AgentClient(self.host)
+        try:
+            if self.acquire:
+                self.client.call('resource.cache.pin', {'key':self.cache['key'], 'token':self.token}, timeout=120)
+            self.thread = threading.Thread(target=self.renew, daemon=True, name='cache-pin')
+            self.thread.start()
+        except BaseException as error:
+            self.client.close()
+            raise CapacityWait('Cache miss; prepare inputs again') from error
+        return self
+
+    def renew(self):
+        while not self.stop.wait(30):
+            try:self.client.call('resource.cache.renew', {'key':self.cache['key'], 'token':self.token}, timeout=20)
+            except Exception as error:
+                self.error = error
+                return
+
+    def __exit__(self, *exc):
+        if self.client is None:return
+        self.stop.set()
+        self.thread.join(timeout=25)
+        try:self.client.call('resource.cache.release', {'key':self.cache['key'], 'token':self.token}, timeout=20)
+        except Exception:pass  # Expiry and actual Docker mounts remain authoritative.
+        finally:self.client.close()
+
+
+def _ensure_managed(host, image, files, load, metrics=None, on_bound=None):
+    import secrets
+    key, value = contract(image, files)
+    size = math.ceil(sum(r['bytes'] for r in value['files'].values()) / 1024**2) + 16
+    cache = {**value, 'host':host['host'], 'key':key, 'layout':'node-cache-v1',
+             'container':'swarm-node-cache', 'volume':'swarm-node-cache',
+             'path':'/cache/objects/'+key, 'subpath':'objects/'+key, 'memory_mb':size, 'shm_mb':size}
+    token = secrets.token_hex(32)
+    client = AgentClient(host)
+    try:
+        result = client.call('resource.cache.begin', {'cache':cache, 'token':token}, timeout=120)
+        if result['state'] in ('waiting', 'capacity'):
+            raise CapacityWait('Shared cache awaits loading or RAM headroom')
+        if on_bound:on_bound(cache)
+        if result['state'] == 'ready':
+            client.call('resource.cache.check', {'key':key}, timeout=120)
+            if metrics is not None:metrics.update(cache_hit=True, loaded_bytes=0)
+            return cache
+        with pin(host, cache, token=token, acquire=False):
+            load(cache['container'], cache['path'])
+            client.call('resource.cache.seal', {'key':key, 'token':token}, timeout=120)
+        if metrics is not None:metrics.update(cache_hit=False, loaded_bytes=sum(r['bytes'] for r in files.values()))
+        return cache
+    except CapacityWait:raise
+    except (RuntimeError, ValueError) as error:
+        raise CapacityWait('Shared cache preparation must retry: '+str(error)[:200]) from error
+    finally:client.close()
+
+
 def contract(image,files):
     if not re.fullmatch(r'sha256:[0-9a-f]{64}',image):raise ValueError('Cache requires a pinned image')
     records={}
@@ -70,7 +166,7 @@ p=root/'.ready.tmp';p.write_text(json.dumps({**v,'identities':identities}));p.ch
 '''
 CHECK=r'''
 import json,pathlib,sys
-root=pathlib.Path('/dev/shm');expected=json.loads(sys.argv[1]);p=root/'.ready.json'
+root=pathlib.Path(sys.argv[2] if len(sys.argv)>2 else '/dev/shm');expected=json.loads(sys.argv[1]);p=root/'.ready.json'
 if not p.exists():print('null');raise SystemExit
 v=json.loads(p.read_text())
 if any(v.get(k)!=expected[k] for k in ('key','files','container_id','started_at')):raise ValueError('Cache identity changed')
@@ -82,6 +178,14 @@ print(json.dumps(v))
 
 
 def ready(host,cache,row):
+    if is_managed(cache):
+        validate_binding(cache)
+        client=AgentClient(host)
+        try:
+            client.call('resource.cache.check', {'key':cache['key']}, timeout=120)
+            return True
+        except (RuntimeError,ValueError):return False
+        finally:client.close()
     labels=row['Config'].get('Labels') or {}
     if labels.get(OWNER)!=cache['key'] or row.get('Image')!=cache['image']:raise ValueError('Cache owner image or identity differs')
     if not row['State'].get('Running'):return False
@@ -92,6 +196,9 @@ def ready(host,cache,row):
 
 
 def users(host,cache):
+    if is_managed(cache):
+        # Used for diagnostics only; pin/eviction decisions belong to the node.
+        return command(host,['docker','ps','-a','--filter','volume='+cache['volume'],'--format','{{.Names}}']).splitlines()
     names=command(host,['docker','ps','-a','--filter','volume='+cache['volume'],'--format','{{.Names}}']).splitlines()
     return [n for n in names if n!=cache['container']]
 
@@ -225,6 +332,10 @@ def finished_cache_keys(host,path=None):
 
 def remove_unused(host,cache,*,terminal=None):
     """Delete terminal job data only when the existing queue permits it."""
+    if is_managed(cache):
+        client=AgentClient(host)
+        try:return client.call('resource.cache.drop', {'key':cache['key']}, timeout=120).get('removed',False)
+        finally:client.close()
     if terminal not in ('completed','failed','cancelled'):return False
     if cache['key'] not in finished_cache_keys(host):return False
     return _remove_unreferenced(host,cache)
@@ -281,7 +392,19 @@ def evict_unused(host,keep=None,*,keys=None,required_mb=None):
 
 
 def reclaim_completed(host,keep=None,*,required_mb=None):
-    return _reclaim_completed(host,keep,required_mb=required_mb)
+    # Legacy terminal-only owners remain compatible during a rolling migration.
+    removed = _reclaim_completed(host,keep,required_mb=required_mb)
+    if 'node-cache-v1' not in host.get('capabilities',[]):return removed
+    client = AgentClient(host)
+    try:
+        args = {}
+        if required_mb is not None:
+            available = client.call('resource.capacity')['available_mb']
+            if available >= required_mb:return removed
+            args['required_mb'] = max(1, math.ceil(required_mb-available))
+        # Runtime pins protect keep entries on managed nodes.
+        return removed + len(client.call('resource.cache.prune', args, timeout=120)['removed'])
+    finally:client.close()
 
 
 def park_verified_owner(host,cache,row):
@@ -294,8 +417,15 @@ def park_verified_owner(host,cache,row):
         command(host,['docker','update','--cpus','0.1',cache['container']])
 
 
-def ensure(host,image,files,load,metrics=None,*,on_bound=None):
+def ensure(host,image,files,load,metrics=None,*,on_bound=None,load_path=False):
     """Load once; callback streams files into the admitted owner container."""
+    if load_path:
+        client=AgentClient(host)
+        try:
+            host['capabilities']=client.call('status').get('capabilities',[])
+            managed='node-cache-v1' in host['capabilities']
+        finally:client.close()
+        if managed:return _ensure_managed(host,image,files,load,metrics,on_bound)
     key,value=contract(image,files);shm_mb=math.ceil(sum(r['bytes'] for r in files.values())/1024**2)+16
     cache={**value,'host':host['host'],'key':key,'container':'swarm-job-'+key[:32],'volume':'swarm-cache-'+key[:32],
            'memory_mb':shm_mb+128,'shm_mb':shm_mb}
@@ -358,6 +488,13 @@ def ensure(host,image,files,load,metrics=None,*,on_bound=None):
 
 
 def mount_args(host,cache,target='/dev/shm',primary=True):
+    if is_managed(cache):
+        validate_binding(cache)
+        if not ready(host,cache,None):raise CapacityWait('Cache miss; prepare inputs again')
+        path=Path(target)
+        if not path.is_absolute() or '..' in path.parts or str(path)!=target or not re.fullmatch(r'/[A-Za-z0-9_./-]+',target) or target=='/':raise ValueError('Invalid cache mount target')
+        return ['--mount','type=volume,src='+cache['volume']+',dst='+target+',readonly,volume-nocopy,volume-subpath='+cache['subpath'],
+                '--label',DEPENDENCY+'-'+cache['key'][:12]+'='+cache['key']]
     path=Path(target)
     if not path.is_absolute() or '..' in path.parts or str(path)!=target or not re.fullmatch(r'/[A-Za-z0-9_./-]+',target) or target=='/':raise ValueError('Invalid cache mount target')
     key,value=contract(cache['image'],cache['files'])
@@ -370,7 +507,7 @@ def mount_args(host,cache,target='/dev/shm',primary=True):
     return ['--mount','type=volume,src='+cache['volume']+',dst='+target+',readonly,volume-nocopy','--label',label+'='+cache['container']]
 
 
-def ensure_derived(host,image,identity,build,load,*,on_bound=None):
+def ensure_derived(host,image,identity,build,load,*,on_bound=None,load_path=False):
     """Materialize an immutable object once on its local owner, then reuse RAM.
 
     The lookup is metadata only; Docker names, seals and the existing pool remain
@@ -397,7 +534,10 @@ def ensure_derived(host,image,identity,build,load,*,on_bound=None):
             if not p.is_file() or p.is_symlink():raise ValueError('Derived objects must be flat regular files')
             with p.open('rb') as stream:digest=hashlib.file_digest(stream,'sha256').hexdigest()
             files[p.name]={'bytes':p.stat().st_size,'sha256':digest}
-        cache=ensure(host,image,files,lambda owner:load(owner,root,files),on_bound=on_bound)
+        if load_path:
+            cache=ensure(host,image,files,lambda owner,path='/dev/shm':load(owner,root,files,path),on_bound=on_bound,load_path=True)
+        else:
+            cache=ensure(host,image,files,lambda owner:load(owner,root,files),on_bound=on_bound)
     record={'identity':identity,'cache':cache}
     from scripts.swarm_runtime import atomic_json
     atomic_json(metadata,record)

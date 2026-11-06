@@ -44,7 +44,7 @@ Build the node image with `PYTHON=/path/to/python ./build.sh` from this director
 - `ramtop/`: node resource monitoring.
 - `peer-worker/`: peer transport service.
 - `Dockerfile.swarm-node`: current swarm node image, formerly the lifetech launcher.
-- `Dockerfile.launcher`: legacy launcher base image.
+- `Dockerfile.swarm-node`: dependency-only node image, built with `./build.sh`.
 - `run.py`, `swarm-node`: launcher and node entry points.
 
 Keep this repository beside `GenomeHarbor` in the Organization workspace. Compatibility links preserve deployed paths and shared `scripts.*` imports. Genome-specific scripts and UI assets are owned by GenomeHarbor. Existing image tags and enrollment identities are preserved.
@@ -113,61 +113,62 @@ cache reuse, payload rejection and alignment output parity.
 
 ## Fleet releases
 
-The authoritative launcher release is the immutable, checksummed artifact selected
-by `~/.local/state/swarm-control/node-releases/desired` on the coordinator.
-Manual deployment, streaming deployment, readiness checks, backups and maintenance
-use this publication. Workspace edits become deployable only after validation and
-publication; do not patch installed node releases or exclude nodes to retain a fix.
+Node application code comes from host-mounted Git source; the Docker image
+contains runtime dependencies and is reused for code-only updates. See
+[Git source deployment](docs/node-source-deployment.md) for mount layout, Git
+access requirements, initial provisioning and dependency changes.
 
-Run these commands from the Organization workspace with the configured Python environment:
-
-```bash
-python JSwarm/scripts/deploy_swarm_inputs.py --publish
-python JSwarm/scripts/deploy_swarm_inputs.py --status
-```
-
-Validation, publication, rollback and rolling deployment share the coordinator's
-`~/.local/state/swarm-control/input-deployment.lock`. A competing command fails
-with the holder's operation, host and PID; it does not queue an older publication.
-The OS releases the lock when its owner exits. Never delete the lock file to
-bypass a running deployment. Preparation also captures the desired artifact;
-publication refuses it if another release advanced while the source was frozen.
-
-Every changed publication has a strictly increasing deployment `generation`,
-reported by publication, status and rollout reports. Repeating the current
-publication is a no-op. Ordinary publication rejects previously superseded node
-code and artifacts; explicit rollback restores verified older code as a new,
-higher generation. Interrupted publications leave the selected release intact,
-and retries advance past any reserved generation.
-
-Publication runs the required release checks, verifies that bundled sources did not
-change during validation, and atomically selects the artifact. The existing
-`swarm-input-deployment.service` follows that publication and replaces one enrolled
-node at a time. It requires the exact published revision and readiness before
-continuing. An unavailable agent can be recovered through the existing pinned
-owner SSH transport after checking its enrolled node identity. Legacy supervisors
-stuck draining are restarted into the installed supervisor; worker containers
-remain independently owned. Docker workers retain their own lifecycle. Status is read-only and
-exits unsuccessfully if a selected node is unreachable, unready or on another
-revision. `--node NAME` selects an enrolled node for status or a manual rollout.
-
-To run the same rollout manually, use `python JSwarm/scripts/deploy_swarm_inputs.py`.
-The legacy `--published` flag remains compatible; published deployment is now the
-default. Use `--paged-cache-only` explicitly for paging-cache provisioning; it does not
-run during launcher releases or establish launcher readiness. Native resource monitors and application controller images
-have their own deployments; this artifact covers the launcher, supervisor and
-bundled command, streaming and performance runtimes.
+Commit and push Organization, JSwarm and GenomeHarbor to origins reachable by all
+nodes. From the Organization workspace:
 
 ```bash
-python JSwarm/scripts/deploy_swarm_inputs.py --rollback
-python JSwarm/scripts/deploy_swarm_inputs.py --status
+python -m scripts.deploy_swarm_inputs --publish
+python -m scripts.swarm_node update
+python -m scripts.deploy_swarm_inputs --status
 ```
 
-Rollback verifies the previous immutable publication before selecting it for the
-same rolling updater. Republishing the current release preserves the previous
-release. Publication, rollback and deployment share a lock. The deployment report
-is `~/.local/state/swarm-control/input-deployment.json`; service logs are available
-with `journalctl --user -u swarm-input-deployment.service`.
+Publication validates committed snapshots and atomically selects the checksummed
+artifact at `~/.local/state/swarm-control/node-releases/desired`. The updater uses
+each enrolled node's signed owner-command API to fetch those exact commits into
+dedicated detached worktrees. Nodes regenerate the runtime from Git and verify it
+against the publication before activation. Local edits are excluded. Deployment
+requires Git provenance and does not fall back to SSH or source-only staging.
+
+The existing `swarm-input-deployment.service` follows the same publication and
+updates one enrolled machine at a time. Each node must report the target revision,
+readiness and enrolled machine identity before rollout continues. `--node NAME`
+selects a machine. An offline node remains pending until its API is available.
+Admission briefly closes while the supervisor replaces the agent process;
+Docker-owned workers continue under their existing container IDs.
+
+Validation, publication, rollback and deployment share the coordinator's
+`~/.local/state/swarm-control/input-deployment.lock`. Competing commands report the
+lock holder. Never delete the lock file to bypass a running deployment. Changed
+publications have increasing `generation` numbers; repeating the current release
+is a no-op. Stale publication attempts cannot replace a newer selected release.
+
+To select and deploy the previous Git-backed release:
+
+```bash
+python -m scripts.deploy_swarm_inputs --rollback
+python -m scripts.swarm_node update
+python -m scripts.deploy_swarm_inputs --status
+```
+
+Publications lacking Git provenance cannot be deployed or selected for rollback.
+Republish committed source to replace an old desired publication. Historical
+receipts remain available for auditing and generation ordering. Unsupported old
+supervisors require recovery through the normal local bootstrap; the updater no
+longer bridges draining supervisors or restarts legacy containers.
+
+Use `./build.sh` from JSwarm for provisioning or changed runtime dependencies,
+then recreate the affected node container. Code-only updates do not build images
+or install Python packages. The optional public-pager component uses the same
+publication; `--paged-cache-only` provisions it without replacing launchers.
+Application controller images have their own releases.
+
+The rollout receipt is `~/.local/state/swarm-control/input-deployment.json`;
+inspect logs with `journalctl --user -u swarm-input-deployment.service`.
 
 
 ## Independent private source catalogue
@@ -201,8 +202,8 @@ inspect the container's Docker health status on its source machine.
 
 JSwarm's standard fleet publication includes the checksummed `public-pager`
 component. The normal deployer provisions it for every enrolled machine from
-that immutable snapshot. Legacy publications continue their existing behavior;
-deployment never imports an unpublished pager from the working directory.
+that validated Git-backed publication. Deployment never imports an unpublished
+pager from the working directory.
 
 An application explicitly publishes a public immutable artifact set through
 `scripts.swarm_paged_cache.publish`. Deployment verifies source checksums, sets
@@ -252,7 +253,8 @@ states; unavailable observations are marked stale instead of treated as success.
 The existing `swarm-node` process serves `pipeline.html` and its machine links.
 There is no separate node web container or web deployment registry. Public assets
 are bundled into the immutable launcher publication and covered by its checksum.
-Use `./build.sh` and the standard validated fleet publication/update procedure.
+Use the standard Git-backed publication/update procedure; rebuild with
+`./build.sh` only when runtime dependencies change.
 
 `http://jswarm.localhost/pipeline.html` opens the local node's page on
 port 80. Machine links such as
