@@ -265,6 +265,19 @@ def ensure_image(host,image):
     return actual
 
 
+def require_system_docker(host):
+    """Kernel mounts require rootful Docker, which rootless owners may not expose."""
+    code="""import json,subprocess
+r=subprocess.run(['docker','--host','unix:///var/run/docker.sock','info','--format','{{json .SecurityOptions}}'],capture_output=True,text=True,timeout=20)
+print(json.dumps({'available':r.returncode==0,'rootless':any('rootless' in s for s in json.loads(r.stdout or '[]')) if r.returncode==0 else False}))
+"""
+    result=subprocess.run(host_command(host,code),capture_output=True,text=True,timeout=30)
+    if result.returncode:raise RuntimeError('Cannot inspect the public pager Docker prerequisite through the node API')
+    engine=json.loads(result.stdout)
+    if not engine['available'] or engine['rootless']:
+        raise RuntimeError('Public kernel paging requires system Docker access; verified RAM-cache fallback remains available')
+
+
 def deploy_node(host,plan=None):
     plan=validate(plan or current_plan())
     if host['host'] not in plan['clients']:raise ValueError('Node is not in the public export allowlist')
@@ -272,6 +285,7 @@ def deploy_node(host,plan=None):
     try:status=client.call('status',timeout=15)
     finally:client.close()
     host={**host,'machine':status['machine']}
+    require_system_docker(host)
     execution_image=ensure_image(host,plan['image'])
     payload={'plan':plan,'execution_image':execution_image,'node':host['host'],'machine':host['machine'],'guard':GUARD,'client':CLIENT,'public_files':PUBLIC_FILES,'server_config':server_config(plan)}
     result=subprocess.run(host_command(host,BOOTSTRAP),input=json.dumps(payload),capture_output=True,text=True,timeout=max(180,60+sum(r['bytes'] for r in plan['files'].values())//(4*1024**2)))

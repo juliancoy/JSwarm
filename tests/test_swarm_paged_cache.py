@@ -51,6 +51,22 @@ def test_unavailable_pager_preserves_verified_fallback_for_node(tmp_path,monkeyp
     assert rows['target']['fallback']=='verified-complete-cache'
 
 
+@pytest.mark.parametrize('engine',[{'available':False,'rootless':False},{'available':True,'rootless':True}])
+def test_pager_checks_kernel_mount_prerequisite_before_image_transfer(monkeypatch,engine):
+    from types import SimpleNamespace
+    class Client:
+        def __init__(self,host):pass
+        def call(self,*args,**kwargs):return {'machine':'a'*64}
+        def close(self):pass
+    monkeypatch.setattr(pager,'AgentClient',Client)
+    monkeypatch.setattr(pager,'host_command',lambda host,code:['node-api-probe'])
+    monkeypatch.setattr(pager.subprocess,'run',lambda *args,**kwargs:SimpleNamespace(returncode=0,stdout=json.dumps(engine)))
+    def unexpected_transfer(*args):raise AssertionError('Image transfer started without kernel mount support')
+    monkeypatch.setattr(pager,'ensure_image',unexpected_transfer)
+    with pytest.raises(RuntimeError,match='verified RAM-cache fallback'):
+        pager.deploy_node({'host':'target'},plan())
+
+
 
 def test_source_guard_refuses_changed_source_before_starting_export(tmp_path,monkeypatch):
     import subprocess

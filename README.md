@@ -219,6 +219,10 @@ complete destination download. The source node maps its original verified files
 locally. System and existing rootless Docker engines are checked during node
 provisioning. Compute containers receive read-only file mounts and no mount
 privileges. Only the dedicated deployment helpers manage kernel mounts.
+Deployment checks system Docker access before distributing a paging helper image.
+A rootless API owner without that socket keeps the verified shared RAM-cache
+fallback; deployment does not grant it system Docker access or enable payload
+disk fallback. Its optional paging result records the missing prerequisite.
 
 For reclaimable mappings, `run_job(memory_reservation_mb=...)` separates the
 private RAM admission reservation from the larger no-swap container hard limit.
