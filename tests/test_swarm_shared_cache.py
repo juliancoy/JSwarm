@@ -54,7 +54,7 @@ def tool_image():
 
 
 def test_real_concurrent_bwa_shards_share_one_readonly_inode_and_load_once(tmp_path,admitted,tool_image):
-    rng=random.Random(137);sequence=''.join(rng.choices('ACGT',k=20000))
+    rng=random.Random(uuid.uuid4().int);sequence=''.join(rng.choices('ACGT',k=20000))
     (tmp_path/'reference.fa').write_text('>fixture\n'+sequence+'\n')
     complement=str.maketrans('ACGT','TGCA')
     for mate in (1,2):
@@ -107,7 +107,7 @@ print(json.dumps({'inode':[s.st_dev,s.st_ino],'sam_sha256':hashlib.sha256(data).
                 assert time.monotonic()<deadline
                 time.sleep(.1)
             assert cache.remove_unused(host,binding) is False
-            assert cache.evict_unused(host)==0
+            assert cache.evict_unused(host,keys={binding['key']})==0
             assert docker('exec',binding['container'],'touch','/dev/shm/.test-go').returncode==0
             results=[f.result() for f in jobs]
         for result in results:assert result.returncode==0,result.stderr.decode()
@@ -126,7 +126,8 @@ print(json.dumps({'inode':[s.st_dev,s.st_ino],'sam_sha256':hashlib.sha256(data).
 
 def test_corrupt_cache_is_rejected_and_removed(admitted,tool_image):
     host={'host':'fixture','local':True,'machine':uuid.uuid4().hex}
-    files={'index':{'bytes':4,'sha256':hashlib.sha256(b'good').hexdigest()}}
+    expected=uuid.uuid4().bytes
+    files={'index':{'bytes':len(expected),'sha256':hashlib.sha256(expected).hexdigest()}}
     key,_=cache.contract(tool_image,files)
     def load(container):
         assert docker('exec',container,'python3','-c','import pathlib;pathlib.Path("/dev/shm/index").write_bytes(b"evil")').returncode==0
@@ -138,11 +139,12 @@ def test_corrupt_cache_is_rejected_and_removed(admitted,tool_image):
 def test_stopped_ram_cache_is_reloaded_instead_of_restarted_empty(tmp_path,admitted,tool_image):
     import os
     host={'host':'fixture','local':True,'machine':uuid.uuid4().hex,'container_user':str(os.getuid())+':'+str(os.getgid())}
-    files={'index':{'bytes':3,'sha256':hashlib.sha256(b'abc').hexdigest()}}
+    payload=uuid.uuid4().bytes
+    files={'index':{'bytes':len(payload),'sha256':hashlib.sha256(payload).hexdigest()}}
     loads=[];binding=None
     def load(name):
         loads.append(name)
-        r=docker('exec','-i',name,'python3','-c','import pathlib,sys;pathlib.Path("/dev/shm/index").write_bytes(sys.stdin.buffer.read())',input=b'abc',timeout=15)
+        r=docker('exec','-i',name,'python3','-c','import pathlib,sys;pathlib.Path("/dev/shm/index").write_bytes(sys.stdin.buffer.read())',input=payload,timeout=15)
         assert r.returncode==0,r.stderr.decode()
     try:
         binding=cache.ensure(host,tool_image,files,load)
@@ -159,8 +161,8 @@ def test_stopped_ram_cache_is_reloaded_instead_of_restarted_empty(tmp_path,admit
 
 def test_derived_objects_build_once_and_mount_at_multiple_readonly_targets(tmp_path,admitted,tool_image):
     host={'host':'fixture','local':True,'machine':uuid.uuid4().hex,'container_user':'1000:1000'}
-    builds=[];binding=None
-    def build(root):builds.append(1);(root/'reference.fa').write_bytes(b'abc')
+    builds=[];binding=None;payload=uuid.uuid4().bytes
+    def build(root):builds.append(1);(root/'reference.fa').write_bytes(payload)
     def load(owner,root,files):
         p=docker('exec','-i',owner,'python3','-c',"import pathlib,sys;pathlib.Path('/dev/shm/reference.fa').write_bytes(sys.stdin.buffer.read())",input=(root/'reference.fa').read_bytes())
         assert p.returncode==0,p.stderr.decode()
@@ -169,7 +171,7 @@ def test_derived_objects_build_once_and_mount_at_multiple_readonly_targets(tmp_p
             results=list(pool.map(lambda _:cache.ensure_derived(host,tool_image,{'source':'sha','contig':'1'},build,load),range(2)))
         binding=results[0]['cache'];assert results[0]==results[1] and len(builds)==1
         args=cache.mount_args(host,binding,target='/references/one',primary=False)
-        p=docker('run','--rm','--network','none',*args,tool_image,'python3','-c',"import pathlib;assert pathlib.Path('/references/one/reference.fa').read_bytes()==b'abc'")
+        p=docker('run','--rm','--network','none',*args,tool_image,'python3','-c',"import pathlib;assert pathlib.Path('/references/one/reference.fa').read_bytes()=="+repr(payload))
         assert p.returncode==0,p.stderr.decode()
         assert 'dst=/references/one,readonly' in ' '.join(args)
         with pytest.raises(ValueError):cache.mount_args(host,binding,target='/')
