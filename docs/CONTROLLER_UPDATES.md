@@ -245,3 +245,10 @@ Do not add file and shared-memory counters together. Receipt flush and teardown
 are outside the measurement. SIGKILL/OOM can prevent the receipt: last observed
 counters survive journal restart as `sampled-partial`, or coverage is `unavailable`
 when no sample exists. Historical counters cannot be reconstructed.
+
+RAM-cache pressure eviction requires explicit candidate keys. An unattached volume
+may belong to a prepared queue attempt waiting for admission. Candidate eviction
+still checks attached containers and live readers; normal owner cleanup after
+verified completion remains available. When no candidates are identified, new
+work waits for memory rather than evicting uncertain inputs. The follow-up release
+seals this cache policy alongside its runtime.

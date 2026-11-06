@@ -184,3 +184,8 @@ def test_derived_objects_build_once_and_mount_at_multiple_readonly_targets(tmp_p
         time.sleep(3.2)
     finally:
         if binding:cache.remove_unused(host,binding)
+
+
+def test_unscoped_pressure_sweep_cannot_evict_prepared_queue_inputs(monkeypatch):
+    monkeypatch.setattr(cache,'command',lambda *a,**k:pytest.fail('Unscoped eviction enumerated caches without queue ownership'))
+    assert cache.evict_unused({'host':'fixture'},keep='other-object')==0

@@ -13,7 +13,7 @@ import tarfile
 import tempfile
 
 FOLLOWUP=('genomics_followup_controller.py','genomics_followup_gpu_routing.py',
-          'genomics_region_staging.py','wgs_preparation_queue.py','swarm_runtime.py','launcher_streams.py')
+          'genomics_region_staging.py','wgs_preparation_queue.py','swarm_runtime.py','launcher_streams.py','swarm_shared_cache.py')
 FINALIZER=('wgs_preparation_queue.py','wgs_bounded_finalize.py','wgs_finalize.py',
            'wgs_recall.py','wgs_call_summary.py','wgs_reference_confidence.py')
 

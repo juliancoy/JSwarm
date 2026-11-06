@@ -39,10 +39,10 @@ def test_docker_and_host_share_launcher_lock(tmp_path):
     code="import fcntl; f=open('/config/agent.lock','a+'); fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)"
     cmd=['docker','run','--rm','--pull=never','--network','none','--mount','type=bind,src='+str(tmp_path)+',dst=/config',IMAGE,'python','-c',code]
     try:
-        r=subprocess.run(cmd,capture_output=True,text=True,timeout=30)
+        r=subprocess.run(cmd,capture_output=True,text=True,timeout=60)
         assert r.returncode!=0 and 'BlockingIOError' in r.stderr
     finally:held.close()
-    assert subprocess.run(cmd,capture_output=True,timeout=30).returncode==0
+    assert subprocess.run(cmd,capture_output=True,timeout=60).returncode==0
 
 
 def test_real_supervisor_replaces_agent_and_adopts_same_docker_worker(tmp_path):

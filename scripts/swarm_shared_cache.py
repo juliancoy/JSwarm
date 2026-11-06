@@ -104,6 +104,9 @@ def remove_unused(host,cache):
 
 def evict_unused(host,keep=None,*,keys=None):
     """Reclaim only named RAM caches with no attached consumer containers."""
+    # An unattached cache may belong to a prepared attempt awaiting admission.
+    # Only an owner-selected candidate set establishes permission to reclaim it.
+    if keys is None:return 0
     keep={keep} if isinstance(keep,str) else set(keep or ())
     ids=command(host,['docker','ps','-aq','--filter','label='+OWNER]).split()
     if not ids:return 0
