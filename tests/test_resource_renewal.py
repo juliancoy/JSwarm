@@ -238,6 +238,21 @@ def test_resource_priorities_reach_physical_pool(tmp_path):
     finally:low.close();high.close()
 
 
+@pytest.mark.parametrize('blocked_priority',[0,100])
+def test_aged_nonfitting_gpu_job_does_not_hide_fitting_gpu_work(tmp_path,blocked_priority):
+    import time
+    limits={'cpus':4,'memory_mb':1024,'available_mb':256}
+    large=ResourceLease('large-gpu',2,512,directory=tmp_path,limits=limits,sink='gpu',priority=blocked_priority)
+    small=ResourceLease('small-gpu',1,128,directory=tmp_path,limits=limits,sink='gpu')
+    try:
+        large.row['created']=time.time()-60;large.write()
+        assert not large.try_acquire()
+        assert small.try_acquire()
+        small.close();limits['available_mb']=1024
+        assert large.try_acquire()  # It still progresses when its resources fit.
+    finally:small.close();large.close()
+
+
 def test_start_permit_is_short_and_renewable_without_expiring_running_jobs(tmp_path,monkeypatch):
     import time
     monkeypatch.setattr(module,'docker_workers',lambda:[])

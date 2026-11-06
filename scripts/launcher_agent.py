@@ -317,8 +317,8 @@ class ResourceLease:
 
     CPU and GPU sinks have independent queues over one physical CPU/RAM pool.
     Within each sink, waiting groups with the smallest
-    dominant resource share get the next fitting slot. After 30 seconds the
-    oldest waiter reserves headroom, preventing large jobs from starving.
+    dominant resource share get the next fitting slot. After 30 seconds CPU
+    waiters reserve headroom; GPU waiters age only among currently fitting jobs.
     """
     def __init__(self, group, cpus, memory_mb, container='', directory=None, limits=None, pids=512, sink=None, cpu_burst=False, priority=0):
         if not isinstance(group,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}',group):raise ValueError('Invalid resource group')
@@ -490,6 +490,11 @@ class ResourceLease:
             now=time.time()
             for sink in ('cpu','gpu'):
                 queue=[r for r in waiting if job_sink(r)==sink]
+                if not queue:continue
+                # A GPU request that cannot fit must not reserve the entire
+                # GPU queue's future headroom or hide fitting lower-priority
+                # work. Preserve priority and age among admissible requests.
+                if sink=='gpu':queue=[r for r in queue if fits(r)]
                 if not queue:continue
                 highest=max(r.get('priority',0) for r in queue)
                 queue=[r for r in queue if r.get('priority',0)==highest]
