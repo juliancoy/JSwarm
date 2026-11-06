@@ -245,7 +245,7 @@ def memory_budget(limits,active):
             # Unknown working sets must not be credited as free RAM.
             growth+=limit;continue
         used=min(limit,max(0,sample['used']))
-        if now-sample.get('first',now)<10:allowance=limit-used
+        if row.get('cache_keeper') or now-sample.get('first',now)<10:allowance=limit-used
         else:allowance=min(limit-used,max(64,used*.25)+max(0,sample.get('peak',used)-used)+sample.get('growth',0)*2)
         growth+=allowance
     safety=max(256,int(limits['memory_mb']*.05))
@@ -296,7 +296,7 @@ def docker_workers():
                  or any(str(device.get('PathInContainer','')).startswith(('/dev/dri/','/dev/nvidia')) for device in limits.get('Devices') or []))
         rows.append({'id':item['Id'],'container':name,'job':labels.get('org.lifetech.job',name.removeprefix('genomics-').removeprefix('swarm-job-')),
                      'run':labels.get('org.lifetech.run'),'sink':labels.get('org.lifetech.sink','gpu' if gpu else 'cpu'),
-                     'resident_mb':usage.get(item['Id'],0),'group':labels.get('org.lifetech.group','workers'),'cpus':cpu,'memory_mb':(memory+1024**2-1)//1024**2,'memory_limit_mb':(max(hard_memory,private_memory)+1024**2-1)//1024**2,
+                     'resident_mb':usage.get(item['Id'],0),'cache_keeper':bool(labels.get('org.lifetech.node-cache')),'group':labels.get('org.lifetech.group','workers'),'cpus':cpu,'memory_mb':(memory+1024**2-1)//1024**2,'memory_limit_mb':(max(hard_memory,private_memory)+1024**2-1)//1024**2,
                      'cpu_observation':_WORKER_CPU_CACHE.get(item['Id'],_WORKER_CPU_CACHE.get(name)),
                      'memory_observation':_WORKER_RAM_CACHE.get(item['Id'],_WORKER_RAM_CACHE.get(name)),
                      'pids':limits.get('PidsLimit') or 512,'active':True,'created':0})
@@ -397,14 +397,14 @@ class ResourceLease:
         return limits
 
     @classmethod
-    def pool_capacity(cls, directory=None, group=None):
+    def pool_capacity(cls, directory=None, group=None, *, locked=False):
         """Read admission headroom under the pool lock, without making a reservation."""
         probe=cls.__new__(cls)
         probe.limits=None
         probe.directory=Path(directory or os.getenv('SWARM_RESOURCE_DIR',str(Path.home()/'.local/state/swarm-control/resources')))
         probe.directory.mkdir(parents=True,exist_ok=True,mode=0o700)
         probe.path=probe.directory/'.capacity'
-        with probe.guard():
+        with contextlib.nullcontext() if locked else probe.guard():
             limits=probe.capacity();rows=probe.rows();active=[row for row in rows if row['active']]
             reserved=sum(row['memory_mb'] for row in active)
             # Host pressure and observed growth drive capacity; unknown starts
@@ -2160,6 +2160,19 @@ class Agent:
                             capacity=lambda: ResourceLease.pool_capacity(directory=os.getenv('SWARM_RESOURCE_DIR',str(self.root/'.resources'))),
                             machine=hashlib.sha256(Path('/etc/machine-id').read_bytes()).hexdigest(),
                             accepting=lambda: worker_policy(self.config)['accepting_jobs'])
+            if op=='resource.cache.begin':
+                # Grow the singleton's commitment atomically with ordinary job
+                # admission. A warm keeper cannot borrow its future payload RAM.
+                manager=self.cache_manager
+                with manager.lock:
+                    probe=ResourceLease.__new__(ResourceLease)
+                    probe.directory=Path(os.getenv('SWARM_RESOURCE_DIR',str(self.root/'.resources')))
+                    probe.directory.mkdir(parents=True,exist_ok=True,mode=0o700)
+                    with probe.guard():
+                        capacity=manager.capacity
+                        manager.capacity=lambda:ResourceLease.pool_capacity(directory=probe.directory,locked=True)
+                        try:return manager.dispatch('begin',args)
+                        finally:manager.capacity=capacity
             return self.cache_manager.dispatch(op.removeprefix('resource.cache.'), args)
         if op=='resource.caches.inspect':
             if args:raise ValueError('Cache cleanup inventory accepts no arguments')

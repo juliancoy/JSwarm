@@ -525,9 +525,15 @@ def ensure_derived(host,image,identity,build,load,*,on_bound=None,load_path=Fals
         record=json.loads(metadata.read_text());cache=record['cache']
         if record.get('identity')!=identity or cache.get('image')!=image:raise ValueError('Immutable object lookup changed')
         if on_bound:on_bound({**cache,'host':host['host']})
-        owner=inspect(host,'container',cache['container'])
-        if owner and ready(host,cache,owner):
-            return record
+        migrate=False
+        if load_path and not is_managed(cache):
+            client=AgentClient(host)
+            try:host['capabilities']=client.call('status').get('capabilities',[])
+            finally:client.close()
+            migrate='node-cache-v1' in host['capabilities']
+        if not migrate:
+            owner=inspect(host,'container',cache['container'])
+            if owner and ready(host,cache,owner):return record
     with tempfile.TemporaryDirectory(prefix='jswarm-object-',dir='/dev/shm') as temp:
         root=Path(temp);build(root)
         files={}

@@ -146,3 +146,67 @@ def test_cache_rpc_rejects_replaced_machine_before_docker():
     agent=launcher_agent.Agent.__new__(launcher_agent.Agent)
     with pytest.raises(ValueError,match='machine identity changed'):
         agent.dispatch('resource.cache.prune',{'machine':'wrong'})
+
+
+def test_derived_legacy_lookup_rebuilds_into_singleton_on_upgraded_node(tmp_path,monkeypatch):
+    image='sha256:'+'e'*64;identity={'reference':'original'};old=binding(image,b'input')
+    old={k:v for k,v in old.items() if k not in ('layout','path','subpath')}
+    old.update(container='swarm-job-'+old['key'][:32],volume='swarm-cache-'+old['key'][:32])
+    derived=hashlib.sha256(json.dumps({'identity':identity,'image':image},sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    folder=tmp_path/'.local/state/swarm-control/submission/shared-objects';folder.mkdir(parents=True)
+    (folder/(derived+'.json')).write_text(json.dumps({'identity':identity,'cache':old}))
+    monkeypatch.setattr(shared.Path,'home',lambda:tmp_path)
+    class Client:
+        def __init__(self,host):pass
+        def close(self):pass
+        def call(self,op):return {'capabilities':['node-cache-v1']}
+    monkeypatch.setattr(shared,'AgentClient',Client)
+    monkeypatch.setattr(shared,'inspect',lambda *a:pytest.fail('Legacy holder was reused'))
+    calls=[]
+    def ensure(host,image,files,loader,**kwargs):
+        assert kwargs['load_path'] is True and files==old['files']
+        calls.append('managed')
+        return binding(image,b'input')
+    monkeypatch.setattr(shared,'ensure',ensure)
+    def build(root):calls.append('rebuild');(root/'payload').write_bytes(b'input')
+    result=shared.ensure_derived({'host':'source','local':True},image,identity,build,lambda *a:None,load_path=True)
+    assert calls==['rebuild','managed'] and result['cache']['layout']=='node-cache-v1'
+
+
+def test_warm_keeper_cannot_lend_memory_promised_to_new_objects():
+    import time
+    from scripts.launcher_agent import memory_budget
+    now=time.monotonic()
+    limits={'memory_mb':8192,'available_mb':4096,'memory_pressure_some_percent':0,'memory_pressure_full_percent':0}
+    worker={'memory_mb':2048,'resident_mb':128,'cache_keeper':True,
+            'memory_observation':{'used':128,'first':now-100,'time':now,'peak':128,'growth':0}}
+    result=memory_budget(limits,[worker])
+    assert result['memory_growth_mb']==1920
+    assert result['available_mb']==4096-result['memory_safety_mb']-1920
+
+
+def test_cache_begin_holds_shared_admission_lock_until_commitment_is_visible(tmp_path,monkeypatch):
+    import fcntl
+    import threading
+    from pathlib import Path
+    from types import SimpleNamespace
+    from scripts import launcher_agent as module
+    machine=hashlib.sha256(Path('/etc/machine-id').read_bytes()).hexdigest()
+    original_capacity=lambda:{'memory_mb':1024,'available_mb':512}
+    manager=SimpleNamespace(lock=threading.RLock(),capacity=original_capacity)
+    agent=module.Agent.__new__(module.Agent);agent.root=tmp_path;agent.cache_manager=manager
+    monkeypatch.delenv('SWARM_RESOURCE_DIR',raising=False)
+    def capacity(**kwargs):
+        assert kwargs['locked'] is True
+        with (tmp_path/'.resources/pool.lock').open('a') as other:
+            with pytest.raises(BlockingIOError):fcntl.flock(other,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        return {'available_mb':512}
+    monkeypatch.setattr(module.ResourceLease,'pool_capacity',capacity)
+    def begin(op,args):
+        assert op=='begin' and manager.capacity()['available_mb']==512
+        return {'state':'loading'}
+    manager.dispatch=begin
+    assert agent.dispatch('resource.cache.begin',{'machine':machine})['state']=='loading'
+    assert manager.capacity is original_capacity
+    with (tmp_path/'.resources/pool.lock').open('a') as other:
+        fcntl.flock(other,fcntl.LOCK_EX|fcntl.LOCK_NB)
