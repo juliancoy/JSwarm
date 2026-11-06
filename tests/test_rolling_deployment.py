@@ -10,7 +10,7 @@ def setup_deployment(monkeypatch,tmp_path):
     config.write_text(json.dumps({'name':'first','peers':{'first':'10.42.0.1','second':'10.42.0.2'}}))
     monkeypatch.setattr(deploy,'CONFIG',config)
     monkeypatch.setattr(deploy.Path,'home',lambda:tmp_path)
-    updater=Mock(revision='new')
+    updater=Mock(revision='new',generation=1)
     monkeypatch.setattr(deploy,'LauncherUpdates',__import__('types').SimpleNamespace(desired=lambda:updater))
     monkeypatch.setattr(deploy,'InputRuntimeRelease',lambda *a:Mock(revision='inputs',stage=Mock(return_value={'status':'current'})))
     clients=[]
@@ -29,6 +29,7 @@ def test_next_node_waits_for_verified_revision(monkeypatch,tmp_path):
     assert len(clients)==1
     assert clients[0].close.called
     report=json.loads((tmp_path/'.local/state/swarm-control/input-deployment.json').read_text())
+    assert report['generation']==1
     assert [r['status'] for r in report['nodes']]==['pending','pending']
     assert report['nodes'][1]['reason']=='Waiting for first to become ready'
 
@@ -56,11 +57,16 @@ def test_named_selection_does_not_contact_other_nodes(monkeypatch,tmp_path):
 
 
 def test_existing_deployers_share_one_lock(monkeypatch,tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
     import agent_updates
     monkeypatch.setattr(agent_updates.Path,'home',lambda:tmp_path)
-    with agent_updates.deployment_lock():
-        with pytest.raises(RuntimeError,match='already running'):
-            agent_updates.deployment_lock()
+    def competing_deployment():
+        with agent_updates.deployment_lock():
+            pytest.fail('Competing deployment acquired the lock')
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with agent_updates.deployment_lock():
+            with pytest.raises(RuntimeError,match='Deployment locked by'):
+                executor.submit(competing_deployment).result(timeout=5)
     with agent_updates.deployment_lock():pass
 
 
@@ -131,7 +137,7 @@ def test_cli_defaults_to_published_release(monkeypatch,tmp_path):
     monkeypatch.setattr(deploy,'RELEASES',tmp_path)
     (tmp_path/'desired').write_text('{}')
     monkeypatch.setattr(deploy.sys,'argv',['deploy_swarm_inputs.py'])
-    monkeypatch.setattr(deploy,'deployment_lock',nullcontext)
+    monkeypatch.setattr(deploy,'deployment_lock',lambda **kwargs:nullcontext())
     sweep=Mock(return_value=True);monkeypatch.setattr(deploy,'sweep',sweep)
     deploy.main()
     sweep.assert_called_once_with(None,3600,tmp_path/'desired')
