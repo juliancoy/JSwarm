@@ -314,6 +314,37 @@ def test_docker_missing_object_case_is_not_an_admission_failure(engine,monkeypat
     assert s.Engine.inspect(engine,{'container':'worker'}) is None
 
 
+def test_gpu_inventory_wait_preserves_retries_and_original_queue_deadline(engine,monkeypatch):
+    e=engine;clock=[100.0];monkeypatch.setattr(s.time,'time',lambda:clock[0])
+    e.dispatch('stream.submit',request(lifecycle={'queue_seconds':30,'max_retries':0}))
+    original=e.launch
+    def waiting(row):
+        # Simulate the admission checkpoint before a device probe fails.
+        folder=e.root/'work'/row['id']/'1';folder.mkdir(parents=True,exist_ok=True)
+        e.store.update(row['id'],state='admitting',attempt=1,folder=str(folder),container='swarm-job-test')
+        e.pending[row['id']]=Lease()
+        pending.append(e.pending[row['id']])
+        raise s.GPUAdmissionWait('GPU inventory is stale')
+    pending=[];monkeypatch.setattr(e,'launch',waiting)
+    for now in (100.,103.,106.,109.):
+        clock[0]=now;e.tick();row=e.store.get('piece-1')
+        assert row['state']=='admitting' and row['retries']==0 and row['attempt']==1
+        assert not e.pending and pending[-1].closed
+    assert not e.commands
+    monkeypatch.setattr(e,'launch',original);clock[0]=112.;e.tick()
+    assert e.store.get('piece-1')['state']=='running'
+    assert len([c for c in e.commands if c[:2]==['docker','run']])==1
+
+
+def test_gpu_inventory_wait_does_not_extend_queue_deadline(engine,monkeypatch):
+    e=engine;clock=[100.];monkeypatch.setattr(s.time,'time',lambda:clock[0])
+    e.dispatch('stream.submit',request(lifecycle={'queue_seconds':5,'max_retries':0}))
+    def waiting(row):raise s.GPUAdmissionWait('GPU allocation is unknown')
+    monkeypatch.setattr(e,'launch',waiting);e.tick();clock[0]=106.;e.tick()
+    row=e.store.get('piece-1')
+    assert row['state'] in ('stopping','failed') and row['error']=='Queue deadline exceeded'
+
+
 def test_rootless_worker_uses_host_owner_mapping(engine):
     import contextlib
     e=engine

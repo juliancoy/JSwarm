@@ -280,11 +280,15 @@ def validate_drm_gpu(gpu):
     if not isinstance(files,dict) or not required<=set(files) or set(files)-allowed or any(not is_sha(v) for v in files.values()):raise ValueError('Invalid GPU runtime manifest')
 
 
+class GPUAdmissionWait(RuntimeError):
+    """No worker has started; wait for fresh, sufficient node resources."""
+
+
 def resolve_gpu_allocation(gpu,inventory,machine):
     """Resolve only a qualified identity, using the node's actual allocations."""
     if inventory.get('machine')!=machine:raise RuntimeError('GPU inventory machine identity changed')
     matches=[row for row in inventory.get('gpus',[]) if row.get('uuid')==gpu['uuid']]
-    if len(matches)!=1:raise RuntimeError('Qualified physical GPU is absent or ambiguous')
+    if len(matches)!=1:raise GPUAdmissionWait('Qualified physical GPU is absent or ambiguous')
     row=matches[0]
     # Device allocations and worker ownership may be sampled independently.
     # An unrelated GPU's slow probe must not age a fresh selected device;
@@ -293,15 +297,15 @@ def resolve_gpu_allocation(gpu,inventory,machine):
     if gpu.get('memory_domain')=='shared-system-memory':
         samples.append(inventory.get('host_memory',{}).get('sampled_at',inventory.get('sampled_at')))
     now=time.time()
-    if any(type(sample) not in (int,float) or not -5<=now-sample<=10 for sample in samples):raise RuntimeError('GPU inventory is stale')
-    if row.get('workers_known') is False:raise RuntimeError('GPU worker ownership is unknown')
+    if any(type(sample) not in (int,float) or not -5<=now-sample<=10 for sample in samples):raise GPUAdmissionWait('GPU inventory is stale')
+    if row.get('workers_known') is False:raise GPUAdmissionWait('GPU worker ownership is unknown')
     shared=gpu.get('memory_domain')=='shared-system-memory'
     if shared:
         if row.get('vendor')!='Intel' or row.get('device_type')!='integrated' or row.get('memory_domain')!='shared-system-memory':raise RuntimeError('Qualified integrated GPU memory domain changed')
         free=inventory.get('host_memory',{}).get('available_mib')
     else:free=row.get('memory_free_mib')
-    if (not shared and not row.get('allocation_known')) or not isinstance(free,(int,float)):raise RuntimeError('GPU allocation is unknown; host RAM is not a VRAM substitute')
-    if free<gpu['minimum_free_mib']+gpu.get('vram_mb',0)+row.get('private_commitment_mib',0):raise RuntimeError('Node reports insufficient GPU allocation headroom')
+    if (not shared and not row.get('allocation_known')) or not isinstance(free,(int,float)):raise GPUAdmissionWait('GPU allocation is unknown; host RAM is not a VRAM substitute')
+    if free<gpu['minimum_free_mib']+gpu.get('vram_mb',0)+row.get('private_commitment_mib',0):raise GPUAdmissionWait('Node reports insufficient GPU allocation headroom')
     result=dict(gpu);result.pop('max_concurrency',None)
     if gpu.get('render_device'):
         if row.get('pci_id')!=gpu['pci_id'] or row.get('vendor')!=('Intel' if shared else 'AMD') or row.get('memory_domain')!=('shared-system-memory' if shared else 'driver-reserved-vram'):raise RuntimeError('Qualified DRM device or memory domain changed')
@@ -1316,6 +1320,13 @@ class Engine:
                 except ValueError as error:
                     current=self.store.get(row['id']);self.store.update(row['id'],state='failed',error=str(error))
                     self.cleanup(current)
+                except GPUAdmissionWait as error:
+                    # Inventory/VRAM backpressure occurs before Docker launch.
+                    # Keep the original queue deadline and execution retries,
+                    # and release any pending host reservation for other work.
+                    lease=self.pending.pop(row['id'],None)
+                    if lease:lease.close()
+                    self.store.update(row['id'],due=time.time()+2,error=str(error))
                 except (OSError,RuntimeError,subprocess.SubprocessError):
                     current=self.store.get(row['id'])
                     if current['container'] and self.inspect(current):continue
