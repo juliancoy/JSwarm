@@ -49,6 +49,7 @@ def sync(repositories, base, *, checkout_root=None):
         cache=base/(name+'.git')
         if not cache.exists():
             subprocess.run(['git','init','--bare',str(cache)],check=True,capture_output=True,timeout=30)
+        git(cache,'config','remote.origin.url',spec['origin'])
         # No submodules, hooks, or arbitrary branch names from the manifest.
         git(cache,'-c','core.hooksPath=/dev/null','fetch','--no-tags','--',spec['origin'],spec['commit'])
         commit=git(cache,'rev-parse',spec['commit']+'^{commit}')

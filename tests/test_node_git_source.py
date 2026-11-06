@@ -25,6 +25,7 @@ def repositories(tmp_path):
 def test_git_update_is_pinned_and_preserves_previous_source_and_developer_edits(tmp_path):
     root=repositories(tmp_path);manifest=snapshot(root)
     first=workspace(manifest,tmp_path/'node-source')
+    assert snapshot(first)==manifest
     project=root/'JSwarm'
     (project/'source.py').write_text('version = 2\n')
     git(project,'commit','-qam','second')
