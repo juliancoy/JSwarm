@@ -87,16 +87,18 @@ def test_nvidia_probe_timestamps_measurement_after_container_startup(tmp_path,mo
     monkeypatch.setattr(agent,'gpu_worker_commitments',lambda:{'known':True,'devices':{}})
     def run(args,**kwargs):
         calls.append(args)
-        clock[0]=115.0
-        return SimpleNamespace(returncode=0,stderr='',stdout=json.dumps({'sampled_at':114.0,'output':'GPU-11111111-1111-1111-1111-111111111111, 00000000:04:00.0, RTX, 12288, 8192, 0, 40'}))
+        if args[1]=='run' and kwargs['timeout']<30:
+            raise agent.subprocess.TimeoutExpired(args,kwargs['timeout'])
+        clock[0]=130.0
+        return SimpleNamespace(returncode=0,stderr='',stdout=json.dumps({'sampled_at':129.0,'output':'GPU-11111111-1111-1111-1111-111111111111, 00000000:04:00.0, RTX, 12288, 8192, 0, 40'}))
     monkeypatch.setattr(agent.subprocess,'run',run)
     data=a.gpu_resources()
-    assert data['sampled_at']==115.0
+    assert data['sampled_at']==130.0
     assert data['gpus'][0]['sampled_at']==100.0  # Unrelated older observation.
-    assert data['gpus'][1]['sampled_at']==114.0
+    assert data['gpus'][1]['sampled_at']==129.0
     gpu={'uuid':data['gpus'][1]['uuid'],'minimum_free_mib':512}
     assert streams.resolve_gpu_allocation(gpu,data,data['machine'])==gpu
-    clock[0]=125.0
+    clock[0]=140.0
     with pytest.raises(RuntimeError,match='stale'):streams.resolve_gpu_allocation(gpu,data,data['machine'])
     assert calls[0][-3:-1]==['python3','-c']
 

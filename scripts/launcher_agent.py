@@ -2897,7 +2897,9 @@ finally:v.vkDestroyInstance(instance,None)
         # Timestamp inside the helper: Docker startup is not sample age.
         code="import json,subprocess,time; output=subprocess.check_output(['nvidia-smi','--query-gpu=uuid,pci.bus_id,name,memory.total,memory.free,utilization.gpu,temperature.gpu','--format=csv,noheader,nounits'],text=True,timeout=5); print(json.dumps({'output':output,'sampled_at':time.time()}))"
         try:
-            result=self.run_gpu_probe(['--rm','--pull=never','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--memory','96m','--memory-swap','96m','--cpus','0.25','--pids-limit','128','--label','org.lifetech.service=gpu-inventory','--gpus','all','--env','NVIDIA_DRIVER_CAPABILITIES=utility','organization-launcher:webrtc-1','python3','-c',code],timeout=15,prefix='swarm-gpu-inventory-nvidia-')
+            # Cold Docker/driver startup can exceed 15 seconds under load.
+            # Freshness still starts at the measurement inside the helper.
+            result=self.run_gpu_probe(['--rm','--pull=never','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--memory','96m','--memory-swap','96m','--cpus','0.25','--pids-limit','128','--label','org.lifetech.service=gpu-inventory','--gpus','all','--env','NVIDIA_DRIVER_CAPABILITIES=utility','organization-launcher:webrtc-1','python3','-c',code],timeout=60,prefix='swarm-gpu-inventory-nvidia-')
             value=json.loads(result.stdout)
             return [{**row,'sampled_at':value['sampled_at']} for row in nvidia_allocation_rows(value['output'])]
         except (OSError,ValueError,KeyError,TypeError,RuntimeError,subprocess.SubprocessError):return []
