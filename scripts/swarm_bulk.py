@@ -58,7 +58,7 @@ def load_config():
     return config
 
 
-def offer(config, path, sha256, size, peer, machine):
+def offer(config, path, sha256, size, peer, machine, *, access=None):
     import re
     if __package__:from .swarm_tls_transfer import atomic_json,identity
     else:from transfer import atomic_json,identity
@@ -67,8 +67,12 @@ def offer(config, path, sha256, size, peer, machine):
     path = Path(path).resolve(strict=True)
     if not path.is_file() or path.stat().st_size != size:raise ValueError('Source size changed')
     obj = hashlib.sha256((str(path)+'\0'+sha256+'\0'+peer).encode()).hexdigest()
+    if access:
+        # Separate each protected job from legacy and other jobs' capabilities.
+        obj = hashlib.sha256((obj+'\0'+access['job_key']).encode()).hexdigest()
     row = {'path':str(path),'sha256':sha256,'identity':identity(path.stat()),
            'clients':[config['peers'][peer]['certificate_sha256']]}
+    if access:row.update(expires=access['expires'],job_key=access['job_key'])
     manifest=BASE/'objects'/(obj+'.json')
     # A warm offer already binds this exact file identity and enrolled client.
     # Avoid thousands of identical durable manifest writes on every listing.
@@ -79,7 +83,7 @@ def offer(config, path, sha256, size, peer, machine):
 
 
 
-def inbox(config,destination,peer,machine,job_key,files,max_bytes,expires):
+def inbox(config,destination,peer,machine,job_key,files,max_bytes,expires,*,access=None):
     """Create an immutable output capability before submitting a node job."""
     import re,time
     if __package__:from .swarm_tls_transfer import atomic_json
@@ -89,8 +93,10 @@ def inbox(config,destination,peer,machine,job_key,files,max_bytes,expires):
     if type(max_bytes) is not int or max_bytes<1 or not time.time()<expires<=time.time()+30*86400:raise ValueError('Invalid output quota/expiry')
     destination=Path(destination).resolve();destination.mkdir(parents=True,exist_ok=True,mode=0o700)
     token=hashlib.sha256((str(destination)+'\0'+job_key+'\0'+peer).encode()).hexdigest()
+    if access:token=hashlib.sha256((token+'\0pidp').encode()).hexdigest()
     row={'destination':str(destination),'clients':[config['peers'][peer]['certificate_sha256']],
          'job_key':job_key,'files':files,'max_bytes':max_bytes,'expires':expires}
+    if access:row['protected']=True
     path=BASE/'inboxes'/(token+'.json')
     if path.exists():
         prior=json.loads(path.read_text())

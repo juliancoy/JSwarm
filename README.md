@@ -256,8 +256,16 @@ states; unavailable observations are marked stale instead of treated as success.
 ## Pipeline UI in the node
 
 The existing `swarm-node` process serves `pipeline.html` and its machine links.
-There is no separate node web container or web deployment registry. Public assets
-are bundled into the immutable launcher publication and covered by its checksum.
+The existing node endpoint serves public UI files directly from its mounted
+Organization checkout when `SWARM_WORKSPACE` is set (as in the standard local
+runner). It reads files on every request and sends `Cache-Control: no-store`, so
+HTML, CSS and JavaScript edits appear on refresh without a build or node restart.
+`SWARM_WEB_WORKSPACE` or the owner setting `web_workspace` can select another
+absolute, mounted checkout. Only `JSwarm/swarm-control/server/view` and its public
+GenomeHarbor web aliases are served; API authentication and proxying are unchanged.
+A missing source file returns 404 rather than silently serving old bundled code.
+Nodes without a source mount retain the checksum-covered publication assets.
+There is no separate node web container or web deployment registry.
 Use the standard Git-backed publication/update procedure; rebuild with
 `./build.sh` only when runtime dependencies change.
 
@@ -343,3 +351,17 @@ Node source is volume-mounted; code-only updates reuse the dependency image.
 The standard publisher pins Git commits and the fleet updater fetches them through
 its signed node API before activating the verified runtime. See
 [Git source deployment](docs/node-source-deployment.md) for the update and migration steps.
+
+
+Source-workspace web responses disable storage and revalidation with
+`Cache-Control: no-store, no-cache, max-age=0, must-revalidate`, `Pragma: no-cache`,
+and `Expires: 0`. Static HTML automatically loads `/jswarm-live.js`. The browser
+checks `/api/jswarm-web/source-revision` every 1.5 seconds while visible and reloads
+after a changed public-source fingerprint stabilizes over two checks. Imported JS,
+CSS, JSON, additions and deletions are included. The fingerprint endpoint returns
+only a digest, follows the existing enrolled-client/origin checks, and excludes
+private state and symlinks outside the two public asset trees. Read-only genome
+selectors are restored after reload. Focused text entry delays reload until the
+user leaves it. Background tabs check when visible again. Immutable bundled
+releases do not inject a live watcher. An already-open page needs one refresh to
+load the watcher after its first installation.

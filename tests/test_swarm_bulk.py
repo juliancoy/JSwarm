@@ -118,3 +118,24 @@ def test_workflow_batches_can_prefer_verified_bulk_below_general_threshold():
     assert preferred({'bytes':40*1024**2,'prefer_bulk':True},{'min_bytes':64*1024**2})
     assert not preferred({'bytes':40*1024**2},{'min_bytes':64*1024**2})
     assert not preferred({'bytes':40*1024**2,'prefer_bulk':'true'},{'min_bytes':64*1024**2})
+
+
+def test_protected_capabilities_do_not_reuse_legacy_or_other_job_grants(tmp_path,monkeypatch):
+    import hashlib
+    import time
+    monkeypatch.setattr(bulk,'BASE',tmp_path)
+    (tmp_path/'objects').mkdir();(tmp_path/'inboxes').mkdir()
+    config={'name':'source','machine':'source-machine','peers':{'worker':{'certificate_sha256':'worker-cert'}}}
+    source=tmp_path/'reads';source.write_bytes(b'synthetic')
+    digest=hashlib.sha256(source.read_bytes()).hexdigest()
+    args=(config,str(source),digest,source.stat().st_size,'worker','source-machine')
+    legacy=bulk.offer(*args)
+    first=bulk.offer(*args,access={'job_key':'a'*64,'expires':time.time()+30})
+    second=bulk.offer(*args,access={'job_key':'b'*64,'expires':time.time()+30})
+    assert len({legacy['object'],first['object'],second['object']})==3
+    args=(config,str(tmp_path/'result'),'worker','source-machine','a'*64,{'result.json':10},10)
+    legacy=bulk.inbox(*args,time.time()+3600)
+    protected=bulk.inbox(*args,time.time()+30,access={'job_key':'a'*64})
+    assert legacy['grant']!=protected['grant']
+    manifest=json.loads((tmp_path/'inboxes'/(protected['grant']+'.json')).read_text())
+    assert manifest['protected'] is True and manifest['expires']<=time.time()+30

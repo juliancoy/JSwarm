@@ -96,15 +96,74 @@ def pipeline_assets():
     return assets
 
 
+def pipeline_web_root(config):
+    """An owner-selected checkout supplies public UI files without a release bundle."""
+    settings=json.loads(Path(config).read_text())
+    workspace=settings.get('web_workspace') or os.environ.get('SWARM_WEB_WORKSPACE') or os.environ.get('SWARM_WORKSPACE')
+    if not workspace:return None
+    root=Path(workspace)
+    if not root.is_absolute() or not (root/'JSwarm/swarm-control/server/view').is_dir():
+        raise ValueError('Web workspace must be an absolute mounted Organization checkout')
+    return root.resolve()
+
+
+def pipeline_source_asset(workspace,name):
+    """Resolve only public asset trees, including the versioned genome aliases."""
+    from pathlib import PurePosixPath
+    path=PurePosixPath(name)
+    if not name or path.is_absolute() or '\\' in name or any(part.startswith('.') for part in path.parts):return None
+    roots=(workspace/'JSwarm/swarm-control/server/view',workspace/'GenomeHarbor/web')
+    target=(roots[0]/path).resolve()
+    if not any(target.is_relative_to(root.resolve()) for root in roots):return None
+    try:return target.read_bytes() if target.is_file() else None
+    except FileNotFoundError:return None  # An editor can atomically replace a file between requests.
+
+
+PIPELINE_NO_CACHE_HEADERS = {'Cache-Control':'no-store, no-cache, max-age=0, must-revalidate',
+                             'Pragma':'no-cache','Expires':'0'}
+
+
+def pipeline_source_revision(workspace):
+    """Fingerprint public source metadata, never private state or file contents."""
+    import hashlib
+    roots=(workspace/'JSwarm/swarm-control/server/view',workspace/'GenomeHarbor/web')
+    allowed=tuple(root.resolve() for root in roots)
+    digest=hashlib.sha256()
+    for index,root in enumerate(roots):
+        for path in sorted(root.rglob('*')):
+            if any(part.startswith('.') for part in path.relative_to(root).parts):continue
+            try:
+                target=path.resolve()
+                if not any(target.is_relative_to(base) for base in allowed) or not target.is_file():continue
+                stat=target.stat()
+            except (FileNotFoundError, OSError):continue
+            record=(index,str(path.relative_to(root)),stat.st_mtime_ns,stat.st_ctime_ns,stat.st_size,stat.st_ino)
+            digest.update(json.dumps(record,separators=(',',':')).encode())
+    return digest.hexdigest()
+
+
 class NodePipelineWeb:
     """Pipeline routes in the existing node HTTP applications; no extra service."""
     def __init__(self,agent):
-        self.agent=agent;self.assets=pipeline_assets()
+        self.agent=agent;self.workspace=pipeline_web_root(agent.config)
+        self.assets=None if self.workspace else pipeline_assets()
 
     async def handle(self,request):
+        from aiohttp import web
+        try:
+            response=await self._handle(request)
+        except web.HTTPException as error:
+            error.headers.update(PIPELINE_NO_CACHE_HEADERS)
+            raise
+        if not response.prepared:
+            response.headers.update(PIPELINE_NO_CACHE_HEADERS)
+            for name in ('ETag','Last-Modified'):response.headers.pop(name,None)
+        return response
+
+    async def _handle(self,request):
         import ipaddress,mimetypes
         from aiohttp import web,ClientSession,ClientTimeout
-        config=pipeline_configuration(json.loads(self.agent.config.read_text()))
+        settings=json.loads(self.agent.config.read_text());config=pipeline_configuration(settings)
         try:
             remote=ipaddress.ip_address(request.remote)
             legacy_map=request.host.split(':')[0]=='map.local' and config['name']==config['coordinator'] and remote in ipaddress.ip_network(config['peers'][config['coordinator']]+'/24',strict=False)
@@ -117,6 +176,10 @@ class NodePipelineWeb:
                 raise web.HTTPForbidden(text='Same-origin request required')
         except ValueError:raise web.HTTPMisdirectedRequest()
         if node==config['name']:
+            if request.path=='/api/jswarm-web/source-revision' and request.method=='GET':
+                if not self.workspace:raise web.HTTPNotFound()
+                revision=await asyncio.to_thread(pipeline_source_revision,self.workspace)
+                return web.json_response({'revision':revision},headers=PIPELINE_NO_CACHE_HEADERS)
             if request.path=='/api/jswarm-web' and request.method=='GET':
                 nodes=[{'name':name,'url':'http://'+name.removesuffix('.local')+'.jswarm.localhost/pipeline.html',
                         'direct_url':'http://'+address+'/pipeline.html'} for name,address in config['peers'].items()]
@@ -125,14 +188,27 @@ class NodePipelineWeb:
                 if request.method not in ('GET','HEAD'):raise web.HTTPMethodNotAllowed(request.method,['GET','HEAD'])
                 if request.path=='/':raise web.HTTPFound('/pipeline.html')
                 if request.path=='/tests':raise web.HTTPFound('/tests.html'+('?' + request.query_string if request.query_string else ''))
-                body=self.assets.get(request.path.lstrip('/'))
+                name=request.path.lstrip('/')
+                body=pipeline_source_asset(self.workspace,name) if self.workspace else self.assets.get(name)
                 if body is None:raise web.HTTPNotFound()
+                if self.workspace and name.endswith('.html'):
+                    marker=b'</head>'
+                    if marker in body and b'src="/jswarm-live.js"' not in body:
+                        revision=await asyncio.to_thread(pipeline_source_revision,self.workspace)
+                        bootstrap=('<script type="module" data-source-revision="'+revision+'" src="/jswarm-live.js"></script>').encode()
+                        body=body.replace(marker,bootstrap+marker,1)
                 return web.Response(body=body,headers={'Content-Type':mimetypes.guess_type(request.path)[0] or 'application/octet-stream',
                     'Cache-Control':'no-store','X-JSwarm-Node':config['name']})
             authority='map.local'
             if config['name']==config['coordinator']:
                 address='127.0.0.1'
                 port=8792 if request.path.startswith('/api/tasks') else 8795 if request.path=='/api/resources' or request.path.startswith('/api/v1/swarm/') or request.path=='/api/worker-controls' else 8089
+                if request.path=='/api/v1/swarm/genome-results':
+                    # Private genome evidence belongs to the owner API, not the LAN resource feed.
+                    from urllib.parse import urlsplit
+                    owner=urlsplit(settings.get('owner_web_origin','https://compai.lifetech.fyi'))
+                    if owner.scheme!='https' or not owner.netloc or owner.path or owner.query or owner.fragment:raise web.HTTPBadGateway(text='Invalid owner API origin')
+                    port=8091;authority=owner.netloc
                 if request.path.startswith('/api/v1/master/codex/'):raise web.HTTPForbidden()
             else:
                 address=config['peers'][config['coordinator']];port=8790
@@ -142,13 +218,13 @@ class NodePipelineWeb:
         excluded={'connection','keep-alive','proxy-authenticate','proxy-authorization','te','trailer','transfer-encoding','upgrade','host','origin','forwarded','x-forwarded-for','x-forwarded-host','accept-encoding'}
         headers={key:value for key,value in request.headers.items() if key.lower() not in excluded}
         headers['Host']=authority
-        if origin:headers['Origin']='http://'+authority
+        if origin:headers['Origin']=('https://' if port==8091 else 'http://')+authority
         try:
             async with ClientSession(timeout=ClientTimeout(total=60,connect=5),trust_env=False,auto_decompress=False) as session:
                 async with session.request(request.method,'http://'+address+':'+str(port)+str(request.rel_url),
                         data=await request.read(),headers=headers,allow_redirects=False) as upstream:
                     response=web.StreamResponse(status=upstream.status,headers={key:value for key,value in upstream.headers.items()
-                        if key.lower() not in {'connection','keep-alive','transfer-encoding','upgrade'}})
+                        if key.lower() not in {'connection','keep-alive','transfer-encoding','upgrade','etag','last-modified','cache-control','expires','pragma'}} | PIPELINE_NO_CACHE_HEADERS)
                     await response.prepare(request)
                     async for chunk in upstream.content.iter_chunked(65536):await response.write(chunk)
                     await response.write_eof();return response

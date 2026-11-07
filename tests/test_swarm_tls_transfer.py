@@ -98,6 +98,15 @@ class TransferTests(unittest.TestCase):
             row['clients']=[hashlib.sha256(der).hexdigest()];entry.write_text(json.dumps(row))
             with urllib.request.urlopen(url,context=self.context()) as response:
                 self.assertEqual(response.read(),source.read_bytes())
+            import time
+            for expiry in (time.time()-1, time.time()+3600, 'invalid', float('nan')):
+                row['expires']=expiry;entry.write_text(json.dumps(row))
+                with self.assertRaises(urllib.error.HTTPError) as error:
+                    urllib.request.urlopen(url,context=self.context())
+                self.assertEqual(error.exception.code,403)
+            row['expires']=time.time()+30;entry.write_text(json.dumps(row))
+            with urllib.request.urlopen(url,context=self.context()) as response:
+                self.assertEqual(response.read(),source.read_bytes())
         finally:
             server.shutdown();server.server_close();thread.join()
 

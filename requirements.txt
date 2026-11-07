@@ -1,5 +1,6 @@
 -e .
 cryptography>=43
+crypt4gh==1.8.6
 boto3>=1.35,<2
 zeroconf>=0.151,<1
 python-dotenv>=1,<2

@@ -29,8 +29,17 @@ class RemoteBoundaryTests(unittest.TestCase):
         if origin:headers['Origin']=origin
         if body is not None:headers['Content-Type']='application/json';body=json.dumps(body)
         c.request(method,path,body=body,headers=headers);r=c.getresponse();status=r.status;self.last_cookie=r.getheader('Set-Cookie');r.read();c.close();return status
-    def test_genome_difference_module_is_a_public_asset(self):
-        self.assertEqual(self.request('/genome-comparison.js'),200)
+    def test_current_genome_view_is_public_and_legacy_analysis_exports_are_removed(self):
+        self.assertEqual(self.request('/genome-sunburst.js'),200)
+        self.assertEqual(self.request('/genome-data.js'),404)
+        self.assertEqual(self.request('/genome-comparison.js'),404)
+
+    def test_owner_catalog_uses_current_queue_metadata_and_requires_session(self):
+        with patch('genome_catalog.snapshot',return_value={'schema':'genome-run-catalog.v1','available':True,'datasets':[]}) as read:
+            self.assertEqual(self.request('/api/tasks/genome-datasets'),401)
+            read.assert_not_called()
+            self.assertEqual(self.request('/api/tasks/genome-datasets',cookie=self.cookie),200)
+            read.assert_called_once()
 
     def test_wgs_progress_requires_owner(self):
         with patch('wgs_progress.snapshot',return_value={'available':True,'samples':[]}) as read:
@@ -38,6 +47,15 @@ class RemoteBoundaryTests(unittest.TestCase):
             read.assert_not_called()
             self.assertEqual(self.request('/api/v1/swarm/wgs',cookie=self.cookie),200)
             read.assert_called_once()
+
+    def test_genome_results_require_owner_and_do_not_enter_public_assets(self):
+        with patch('genome_results.snapshot',return_value={'available':True,'clinical':{'findings':[]}}) as read:
+            self.assertEqual(self.request('/api/v1/swarm/genome-results'),401)
+            read.assert_not_called()
+            self.assertEqual(self.request('/api/v1/swarm/genome-results',cookie=self.cookie),200)
+            read.assert_called_once()
+            self.assertEqual(self.request('/api/v1/swarm/genome-results','POST',origin='https://compai.example',body={},cookie=self.cookie),404)
+        self.assertEqual(self.request('/genome-results.json'),404)
 
     def test_connection_feed_requires_owner_and_is_read_only(self):
         with patch('status.connections',return_value={'hosts':[]}) as read:

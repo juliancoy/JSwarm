@@ -233,12 +233,12 @@ sample identifiers, report contents, or arbitrary filesystem paths. Missing stat
 is shown as unavailable. Partial downloads do not imply active transfer or
 successful validation. Browser checks use synthetic status fixtures.
 
-Verified reference-match snapshots can be rebuilt with
-`python3 -m scripts.genome_demo --root <private-workbench> --reference-run <completed-private-run> --output <snapshot.js>`.
-The reference run uses quality-qualified gVCF calls for personal data and official
-GIAB benchmark regions minus both official and normalized variant REF spans.
-Unknown quality stays unverified. Only aggregate counts enter the public snapshot;
-private intervals, sample headers, and worker hostnames stay outside it.
+Genome Explorer uses the authenticated `/api/v1/swarm/genome-results` publication.
+Sample composition requires a measured additive tree, assembly, source run,
+generation time, and source provenance. Missing results stay unpublished; archived
+demo exports are not a fallback. See `GenomeHarbor/server/GENOME-EXPLORER.md` for
+the publication workflow. Historical analysis outputs remain available to their
+owner outside the public web assets.
 
 ## Concurrent tests and private DNA jobs
 

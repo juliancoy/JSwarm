@@ -1,1 +1,0 @@
-../../../../../GenomeHarbor/web/genome-data.js
