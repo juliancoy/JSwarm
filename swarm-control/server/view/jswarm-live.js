@@ -1,3 +1,4 @@
+import './swarm-navigation.js';
 // Source-workspace pages follow local edits; immutable node bundles do not opt in.
 if (!window.__jswarmLive) {
   window.__jswarmLive = true;

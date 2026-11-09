@@ -39,14 +39,22 @@ def test_native_http_routes_serve_pipeline_and_enforce_origin(tmp_path,monkeypat
     from aiohttp import web
     from aiohttp.test_utils import TestClient,TestServer
     path=tmp_path/'peers.json';path.write_text(json.dumps({'name':'codecollective.local','peers':configuration()['peers']}))
-    monkeypatch.setattr(peers,'pipeline_assets',lambda:{'pipeline.html':b'<main>native node pipeline</main>'})
+    monkeypatch.setattr(peers,'pipeline_assets',lambda:{
+        'pipeline.html':b'<html><head></head><body><main>native node pipeline</main></body></html>',
+        'index.html':b'<html><head></head><body>separate network map</body></html>'})
     async def exercise():
         app=web.Application();app.router.add_route('*','/{path:.*}',peers.NodePipelineWeb(SimpleNamespace(config=path)).handle)
         async with TestClient(TestServer(app)) as client:
             response=await client.get('/pipeline.html',headers={'Host':'jswarm.localhost'})
-            assert response.status==200 and await response.text()=='<main>native node pipeline</main>'
+            body=await response.text()
+            assert response.status==200 and '<main>native node pipeline</main>' in body
+            assert body.count('src="/swarm-navigation.js"')==1
             assert response.headers['X-JSwarm-Node']=='codecollective.local'
             assert 'no-store' in response.headers['Cache-Control'] and response.headers['Pragma']=='no-cache'
+            response=await client.get('/index.html',headers={'Host':'localhost'})
+            body=await response.text()
+            assert response.status==200 and 'separate network map' in body
+            assert body.count('src="/swarm-navigation.js"')==1
             response=await client.get('/api/jswarm-web',headers={'Host':'jswarm.localhost'})
             body=await response.json()
             assert body['node']=='codecollective.local'

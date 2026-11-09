@@ -191,6 +191,8 @@ class NodePipelineWeb:
                 name=request.path.lstrip('/')
                 body=pipeline_source_asset(self.workspace,name) if self.workspace else self.assets.get(name)
                 if body is None:raise web.HTTPNotFound()
+                if name.endswith('.html') and b'</head>' in body and b'src="/swarm-navigation.js"' not in body:
+                    body=body.replace(b'</head>',b'<script type="module" src="/swarm-navigation.js"></script></head>',1)
                 if self.workspace and name.endswith('.html'):
                     marker=b'</head>'
                     if marker in body and b'src="/jswarm-live.js"' not in body:
