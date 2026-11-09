@@ -84,3 +84,18 @@ export function pipelineMachines(items,enrolled=[]){
 }
 
 export function memoryProfileText(item){const p=item.memory_profile;if(!p)return null;return p.samples+' verified samples · median '+p.median_peak_mb.toFixed(0)+' MiB · max '+p.max_peak_mb.toFixed(0)+' MiB'+(p.qualified?' · suggested ceiling '+p.recommended_limit_mb+' MiB':' · more qualification needed')+(p.shared_cache_separate?' · shared reference charged separately':'');}
+
+
+// No network or timer exists until an inspector's terminal is expanded.
+export class ShardLogTail {
+ constructor(id,render,{fetcher=fetch,schedule=setTimeout,cancel=clearTimeout}={}){Object.assign(this,{id,render,fetcher,schedule,cancel});this.version=0;this.active=false;}
+ open(){if(this.active)return;this.active=true;this.poll(++this.version);}
+ close(){this.active=false;++this.version;this.cancel(this.timer);this.controller?.abort();}
+ async poll(version){
+  if(!this.active||version!==this.version)return;
+  this.controller=new AbortController();
+  try{const response=await this.fetcher('/api/tasks/logs?id='+encodeURIComponent(this.id),{cache:'no-store',signal:this.controller.signal});if(!response.ok)throw new Error('unavailable');const value=await response.json();if(this.active&&version===this.version)this.render(value);}
+  catch(error){if(this.active&&version===this.version)this.render({available:false,message:'Connection unavailable. Retrying…'});}
+  if(this.active&&version===this.version)this.timer=this.schedule(()=>this.poll(version),2000);
+ }
+}

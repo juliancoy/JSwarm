@@ -2,7 +2,7 @@ import {deviceColor} from './levels-model.js';
 import {computerName} from './pipeline-colors.js';
 import {statusClass} from './task-display.js';
 import {machineActions,machineStateTags,actionDisabled} from './machine-controls.js';
-import {lanes,laneFor,facts,currentItems,inspectorSections,byteSize,runTypes,runType,completedNewestFirst,usedGpu,technologyColor,executionGroup,arrivalPresentation,pipelineMachines,tileLabel} from './pipeline-model.js';
+import {ShardLogTail,lanes,laneFor,facts,currentItems,inspectorSections,byteSize,runTypes,runType,completedNewestFirst,usedGpu,technologyColor,executionGroup,arrivalPresentation,pipelineMachines,tileLabel} from './pipeline-model.js';
 const $=id=>document.getElementById(id),node=(tag,text)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;return n;};
 let infrastructure=[],items=[],enrolledMachines=[],paused=false,busy=false,selected=null,pinned=null,activeMachine=null,activeGpu=null,machineTimer=null,machinePinned=false,machineColors=new Map();
 const boxes=new Map(),columns=new Map(),machineGroups=new Map();
@@ -22,6 +22,18 @@ function ioChart(chart){
  pie.setAttribute('aria-label',chart.title+': '+(total>0?entries.map(e=>e.endpoint+' '+byteSize(e.bytes)).join(','):available?'0 bytes recorded':'not measured'));
  figure.append(pie,legend);return figure;
 }
+let shardTerminal=null;
+function stopTerminal(){shardTerminal?.tail.close();shardTerminal=null;}
+function terminalFor(item){
+ if(shardTerminal?.id===item.id)return shardTerminal.element;
+ stopTerminal();
+ const element=node('details'),summary=node('summary','Docker terminal'),status=node('p','Expand to connect to worker logs.'),output=node('pre');
+ element.className='inspector-section shard-terminal';status.className='terminal-status';status.setAttribute('role','status');output.className='terminal-output';output.tabIndex=0;output.setAttribute('aria-label','Docker log output');element.append(summary,status,output);
+ const tail=new ShardLogTail(item.id,value=>{const bottom=output.scrollHeight-output.scrollTop-output.clientHeight<24;status.textContent=value.available?(value.running?'Live · updating every 2 seconds':'Worker stopped · retained logs')+(value.truncated?' · output truncated':''):value.message;output.textContent=value.available?(value.text||'No log output yet.') : '';if(bottom)output.scrollTop=output.scrollHeight;});
+ element.addEventListener('toggle',()=>{if(!element.isConnected){tail.close();return;}if(element.open){status.textContent='Connecting…';tail.open();}else{tail.close();status.textContent='Disconnected. Expand to reconnect.';}});
+ shardTerminal={id:item.id,element,tail};return element;
+}
+window.addEventListener('pagehide',stopTerminal);
 function details(item){if(machinePinned||pinned&&pinned!==item.id)return;activeGpu=null;activeMachine=null;machinePinned=false;clearTimeout(machineTimer);selected=item.id;$('inspector-hint').hidden=true;$('detail-title').textContent=item.name;
  const panel=$('detail');panel.className='shard-detail '+statusClass(item.status);panel.style.setProperty('--machine-color',machineColors.get(computerName(item.worker))||'var(--muted)');
  const dismiss=node('button','Close');dismiss.type='button';dismiss.className='inspector-close';dismiss.onclick=close;
@@ -37,7 +49,7 @@ function details(item){if(machinePinned||pinned&&pinned!==item.id)return;activeG
   if(section.metrics){const grid=node('div');grid.className='inspector-metrics';for(const [label,value,note] of section.metrics){const metric=node('div');metric.append(node('span',label),node('strong',value),node('small',note));grid.append(metric);}card.append(grid);}
   if(section.charts)for(const chart of section.charts)card.append(ioChart(chart));
   const list=node('dl');for(const [label,value,note] of section.rows){const row=node('div');row.append(node('dt',label),node('dd',String(value)));if(note)row.append(node('p',note));list.append(row);}card.append(list);return card;
- });$('detail-facts').replaceChildren(dismiss,badges,technologies,...sections);for(const [id,box] of boxes)box.setAttribute('aria-pressed',String(id===selected));}
+ });$('detail-facts').replaceChildren(dismiss,badges,technologies,...sections,terminalFor(item));for(const [id,box] of boxes)box.setAttribute('aria-pressed',String(id===selected));}
 
 const machineSnapshots=new Map();
 const machineRequests=new Map();
@@ -99,7 +111,7 @@ function drawMachine(host,data){
  if(!gpus.length)content.push(node('p',data?.status==='loading'?'Loading GPU measurements…':'This execution device could not be matched to node telemetry.'));
  const count=items.filter(i=>i.status==='running'&&computerName(i.worker)===host&&executionGroup(i).key===activeGpu.key).length;
  content.push(node('p',count+' running jobs in this GPU section'),node('p',data?.sampled_at?'Telemetry observed '+new Date(data.sampled_at*1000).toLocaleTimeString():'Telemetry not yet available'));
- const dismiss=node('button','Close');dismiss.type='button';dismiss.className='inspector-close';dismiss.onclick=close;$('detail-facts').replaceChildren(dismiss,...content);return;
+ const dismiss=node('button','Close');dismiss.type='button';dismiss.className='inspector-close';dismiss.onclick=close;stopTerminal();$('detail-facts').replaceChildren(dismiss,...content);return;
  }
  const resources=node('section');resources.className='inspector-section';resources.append(node('h3','Available resources'));
  const capacity=(label,value)=>resources.append(capacityBar(label,value?.available_percent,value?byteSize(value.available_bytes)+' available of '+byteSize(value.total_bytes):'Not reported by this node'));
@@ -119,7 +131,7 @@ function drawMachine(host,data){
  const values=node('dl');for(const [label,value] of [['Commit',data?.commit||'Not recorded in this node’s deployment'],['Source revision',data?.node_revision||'Not reported'],['Running time',Number.isFinite(data?.uptime_seconds)?Math.floor(data.uptime_seconds/86400)+'d '+Math.floor(data.uptime_seconds%86400/3600)+'h '+Math.floor(data.uptime_seconds%3600/60)+'m':'Not reported'],['Container',data?.node_container||'Not reported'],['Worker policy',data?.policy||'Not reported'],['Telemetry observed',data?.sampled_at?new Date(data.sampled_at*1000).toLocaleString():'Not reported']]){const row=node('div');row.append(node('dt',label),node('dd',value));values.append(row);}runtime.append(values);content.push(runtime);
  const dismiss=node('button','Close');dismiss.type='button';dismiss.className='inspector-close';dismiss.onclick=close;
  const focused=document.activeElement?.closest('[data-action]')?.dataset.action;
- $('detail-facts').replaceChildren(dismiss,...content);
+ stopTerminal();$('detail-facts').replaceChildren(dismiss,...content);
  if(focused)$('detail-facts').querySelector('[data-action="'+focused+'"]')?.focus({preventScroll:true});
 }
 async function refreshMachine(host){
@@ -134,7 +146,7 @@ function machineDetails(host,pin=false,gpu=null){
  updatePins();drawMachine(host,machineSnapshots.get(host)||{status:'loading'});machineTimer=setTimeout(()=>refreshMachine(host),180);
 }
 function updatePins(){for(const [host,group] of machineGroups)group.card.setAttribute('aria-pressed',String(machinePinned&&activeMachine===host));for(const chip of $('machine-key').querySelectorAll('[data-machine]'))chip.setAttribute('aria-pressed',String(machinePinned&&activeMachine===chip.dataset.machine));}
-function close(){activeGpu=null;activeMachine=null;machinePinned=false;clearTimeout(machineTimer);selected=null;pinned=null;$('detail').className='shard-detail';$('detail-title').textContent='Shard details';$('detail-facts').replaceChildren();$('inspector-hint').hidden=false;updatePins();for(const box of boxes.values())box.setAttribute('aria-pressed','false');}
+function close(){stopTerminal();activeGpu=null;activeMachine=null;machinePinned=false;clearTimeout(machineTimer);selected=null;pinned=null;$('detail').className='shard-detail';$('detail-title').textContent='Shard details';$('detail-facts').replaceChildren();$('inspector-hint').hidden=false;updatePins();for(const box of boxes.values())box.setAttribute('aria-pressed','false');}
 document.addEventListener('keydown',event=>{if(event.key==='Escape')close();});
 function render(){const query=$('search').value.toLowerCase(),workflow=$('workflow').value,active=new Set(currentItems(items.filter(i=>i.kind!=='shared-cache')).map(i=>i.id));const visible=items.filter(i=>(i.kind==='shared-cache'||workflow==='all'||workflow==='active'&&active.has(i.id)||workflow===i.parent)&&(!query||[i.name,i.job_id,i.worker,i.parent].join(' ').toLowerCase().includes(query)));const computers=pipelineMachines(visible,enrolledMachines).filter(host=>!query||host.toLowerCase().includes(query)||visible.some(item=>computerName(item.worker)===host));for(const host of computers)machineGroup({worker:host});const kept=new Set(),counts=new Map(lanes.map(([id])=>[id,0]));
  for(const item of visible){kept.add(item.id);const lane=laneFor(item);if(!item.superseded_by)counts.set(lane,counts.get(lane)+1);let box=boxes.get(item.id);if(!box){box=node('button');box.type='button';box.dataset.id=item.id;box.onpointerenter=()=>details(box.item);box.onpointerleave=()=>{if(!pinned&&selected===box.item.id&&!box.matches(':focus-visible'))close();};box.onfocus=()=>details(box.item);box.onblur=()=>{if(!pinned&&selected===box.item.id&&!box.matches(':hover'))close();};box.onclick=()=>{machinePinned=false;pinned=box.item.id;details(box.item);updatePins();};boxes.set(item.id,box);}const changed=box.item&&box.item.status!==item.status;box.item=item;box.style.setProperty('--machine-color',machineColors.get(computerName(item.worker))||'var(--muted)');box.className='shard run-'+runType(item)+' '+statusClass(item.status)+(changed?' changed':'')+(usedGpu(item)?' gpu-used':'')+(!item.worker?' unassigned':'');box.textContent=item.kind==='shared-cache'?'C':item.kind==='memory-pressure-benchmark'&&item.resources?.memory_mb?(item.resources.memory_mb/1024).toLocaleString(undefined,{maximumFractionDigits:1})+'G':tileLabel(item);box.setAttribute('aria-label',item.name+' · '+runTypes.find(([key])=>key===runType(item))[1]+' · '+item.status+(usedGpu(item)?' · GPU used':'')+' · '+item.parent);box.setAttribute('aria-pressed',String(item.id===selected));box.removeAttribute('title');const target=item.superseded_by?$('benchmark-history-grid'):lane==='running'?machineGroup(item):columns.get(lane).grid;if(box.parentNode!==target)target.append(box);}

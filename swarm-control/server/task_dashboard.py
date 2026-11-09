@@ -68,7 +68,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers();self.wfile.write(body);return
         if path.path=='/api/tasks/stream':
             self.stream();return
-        if path.path not in ('/api/tasks', '/api/tasks/events', '/api/tasks/pipeline', '/api/tasks/machine'):
+        if path.path not in ('/api/tasks', '/api/tasks/events', '/api/tasks/pipeline', '/api/tasks/machine', '/api/tasks/logs'):
             self.send_error(404); return
         try:
             if path.path in ('/api/tasks', '/api/tasks/pipeline'):
@@ -84,7 +84,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header('Content-Length', str(len(body)))
                 self.end_headers();self.wfile.write(body)
                 return
-            if path.path == '/api/tasks/machine':
+            if path.path == '/api/tasks/logs':
+                from shard_logs import tail
+                try:data=tail(parse_qs(path.query).get('id',[''])[0])
+                except ValueError:
+                    self.send_error(404,'Unknown shard');return
+            elif path.path == '/api/tasks/machine':
                 from task_machines import snapshot as machine_snapshot
                 query=parse_qs(path.query)
                 try:data=machine_snapshot(query.get('host',[''])[0])

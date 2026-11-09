@@ -102,3 +102,15 @@ test('follow-up tiles have readable identities and their own run color',()=>{
  assert.equal(tileLabel({kind:'report'}),'Report');
  assert.equal(runType({run_type:'genome-analysis'}),'genome-analysis');
 });
+
+import {ShardLogTail} from '../view/pipeline-model.js';
+test('terminal connects only when expanded and cancels on collapse',async()=>{
+ let reads=0,signal,scheduled,cleared;const frames=[];
+ const tail=new ShardLogTail('queue/a',v=>frames.push(v),{fetcher:async(url,options)=>{reads++;signal=options.signal;assert.match(url,/queue%2Fa/);return {ok:true,json:async()=>({available:true,text:'hello'})};},schedule:fn=>{scheduled=fn;return 7;},cancel:id=>cleared=id});
+ assert.equal(reads,0);tail.open();tail.open();await new Promise(r=>setImmediate(r));
+ assert.equal(reads,1);assert.equal(frames[0].text,'hello');tail.close();assert.ok(signal.aborted);assert.equal(cleared,7);scheduled();assert.equal(reads,1);
+});
+test('late log replies cannot update a collapsed inspector',async()=>{
+ let resolve;const frames=[];const tail=new ShardLogTail('a',v=>frames.push(v),{fetcher:()=>new Promise(r=>resolve=r),schedule:()=>assert.fail('Scheduled after close'),cancel:()=>{}});
+ tail.open();tail.close();resolve({ok:true,json:async()=>({text:'late'})});await new Promise(r=>setImmediate(r));assert.deepEqual(frames,[]);
+});

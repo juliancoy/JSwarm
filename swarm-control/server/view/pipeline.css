@@ -97,3 +97,5 @@ main{padding-top:24px}.pipeline-controls{margin-top:24px;padding-top:20px;border
 
 
 .node-web-navigation:not([hidden]){display:flex;align-items:center;flex-wrap:wrap;gap:10px 20px;padding:14px 32px;border-bottom:1px solid var(--line);font-size:13px}.node-web-navigation strong{color:var(--muted);margin-right:auto}.node-web-navigation a[aria-current=page]{font-weight:700;text-decoration:underline}
+
+.shard-terminal summary{cursor:pointer}.terminal-status{font-size:.75rem;color:var(--muted)}.terminal-output{background:#080c12;color:#d5e7d7;border:1px solid #384455;border-radius:6px;padding:12px;max-height:320px;min-height:100px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;user-select:text}
