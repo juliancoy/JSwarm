@@ -58,16 +58,21 @@ def load_config():
     return config
 
 
-def offer(config, path, sha256, size, peer, machine):
+def offer(config, path, sha256, size, peer, machine, *, access=None):
     import re
-    from transfer import atomic_json, identity
+    if __package__:from .swarm_tls_transfer import atomic_json,identity
+    else:from transfer import atomic_json,identity
     if machine != config['machine'] or peer not in config['peers']:raise ValueError('Unknown enrolled peer')
     if not re.fullmatch('[0-9a-f]{64}',sha256):raise ValueError('Invalid immutable digest')
     path = Path(path).resolve(strict=True)
     if not path.is_file() or path.stat().st_size != size:raise ValueError('Source size changed')
     obj = hashlib.sha256((str(path)+'\0'+sha256+'\0'+peer).encode()).hexdigest()
+    if access:
+        # Separate each protected job from legacy and other jobs' capabilities.
+        obj = hashlib.sha256((obj+'\0'+access['job_key']).encode()).hexdigest()
     row = {'path':str(path),'sha256':sha256,'identity':identity(path.stat()),
            'clients':[config['peers'][peer]['certificate_sha256']]}
+    if access:row.update(expires=access['expires'],job_key=access['job_key'])
     manifest=BASE/'objects'/(obj+'.json')
     # A warm offer already binds this exact file identity and enrolled client.
     # Avoid thousands of identical durable manifest writes on every listing.
@@ -78,17 +83,20 @@ def offer(config, path, sha256, size, peer, machine):
 
 
 
-def inbox(config,destination,peer,machine,job_key,files,max_bytes,expires):
+def inbox(config,destination,peer,machine,job_key,files,max_bytes,expires,*,access=None):
     """Create an immutable output capability before submitting a node job."""
     import re,time
-    from transfer import atomic_json
+    if __package__:from .swarm_tls_transfer import atomic_json
+    else:from transfer import atomic_json
     if machine!=config['machine'] or peer not in config['peers'] or not re.fullmatch('[a-f0-9]{64}',job_key):raise ValueError('Invalid output grant identity')
     if not isinstance(files,dict) or not files or any(not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,79}',n) or type(v) is not int or v<0 for n,v in files.items()):raise ValueError('Invalid output file limits')
     if type(max_bytes) is not int or max_bytes<1 or not time.time()<expires<=time.time()+30*86400:raise ValueError('Invalid output quota/expiry')
     destination=Path(destination).resolve();destination.mkdir(parents=True,exist_ok=True,mode=0o700)
     token=hashlib.sha256((str(destination)+'\0'+job_key+'\0'+peer).encode()).hexdigest()
+    if access:token=hashlib.sha256((token+'\0pidp').encode()).hexdigest()
     row={'destination':str(destination),'clients':[config['peers'][peer]['certificate_sha256']],
          'job_key':job_key,'files':files,'max_bytes':max_bytes,'expires':expires}
+    if access:row['protected']=True
     path=BASE/'inboxes'/(token+'.json')
     if path.exists():
         prior=json.loads(path.read_text())

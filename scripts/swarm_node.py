@@ -16,18 +16,46 @@ import sys
 ROOT=(Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('GenomeHarbor', 'JSwarm') else Path(__file__).resolve().parents[1])
 
 
+RUNTIME_LABEL='organization.node-runtime'
+
+
+def runtime_requirements():
+    import tomllib
+    project=Path(__file__).resolve().parents[1]
+    monitor=tomllib.loads((project/'ramtop/pyproject.toml').read_text())['project']['dependencies']
+    return (project/'requirements-node.txt').read_text().rstrip()+'\n'+'\n'.join(monitor)+'\n'
+
+
+def runtime_fingerprint():
+    """Only OS/Python dependency inputs invalidate the runtime image."""
+    import hashlib
+    project=Path(__file__).resolve().parents[1]
+    return hashlib.sha256((project/'Dockerfile.swarm-node').read_bytes()+runtime_requirements().encode()).hexdigest()
+
+
 def build_node_image(image='organization-swarm-node:1'):
-    """Build all public node components into the image using the shared image policy."""
-    import shutil
+    """Build the dependency image; source is always mounted at runtime."""
     from tempfile import TemporaryDirectory
     from docker_utils import build_image
+    project=Path(__file__).resolve().parents[1]
     with TemporaryDirectory(prefix='organization-swarm-build-') as folder:
         destination=Path(folder)
-        shutil.copyfile(ROOT/'Dockerfile.swarm-node',destination/'Dockerfile')
-        ignored=shutil.ignore_patterns('__pycache__','*.egg-info','.runtime','.git','node_modules','tests','*.pyc')
-        for relative in ('scripts','ramtop','swarm-control/server','docker_utils'):
-            shutil.copytree(ROOT/relative,destination/relative,ignore=ignored)
+        dockerfile=(project/'Dockerfile.swarm-node').read_text()
+        (destination/'Dockerfile').write_text(dockerfile+'\nLABEL '+RUNTIME_LABEL+'="'+runtime_fingerprint()+'"\n')
+        (destination/'requirements-node.txt').write_text(runtime_requirements())
         build_image(image,folder)
+    return image
+
+
+def ensure_node_image(image='organization-swarm-node:1'):
+    """Reuse the dependency image, building through build.sh only when needed."""
+    import subprocess
+    result=subprocess.run(['docker','image','inspect','--format',
+                           '{{index .Config.Labels "'+RUNTIME_LABEL+'"}}',image],
+                          capture_output=True,text=True,check=False)
+    if result.returncode or result.stdout.strip()!=runtime_fingerprint():
+        project=Path(__file__).resolve().parents[1]
+        subprocess.run(['./build.sh'],cwd=project,check=True)
     return image
 
 
@@ -39,6 +67,7 @@ def main(argv=None):
     parser.add_argument('--all',action='store_true',help='Apply a maintenance command to the enrolled fleet')
     parser.add_argument('--node',action='append',help='Select an enrolled node for maintenance; default is the fleet')
     parser.add_argument('--reason',default='Owner-requested maintenance')
+    parser.add_argument('--parallel',action='store_true',help='Update all selected nodes concurrently')
     parser.add_argument('--watch',action='store_true',help='Retry an update when a node is offline or busy')
     parser.add_argument('--address',help='Enrollment SSH address or explicit speed-test destination IP')
     parser.add_argument('--target',help='Enrollment target: user@hostname.local')
@@ -130,6 +159,8 @@ def main(argv=None):
     elif args.command=='update':
         from deploy_swarm_inputs import main as run
         forwarded=['--watch'] if args.watch else []
+        if args.parallel:forwarded+=['--parallel']
+        for node in args.node or []:forwarded+=['--node',node]
     else:
         if not args.target:parser.error('enroll requires --target user@hostname.local')
         from onboard_node import main as run

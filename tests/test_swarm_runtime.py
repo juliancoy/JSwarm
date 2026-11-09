@@ -50,6 +50,26 @@ class TransferTests(unittest.TestCase):
                 self.assertEqual(Path(result['path']).read_bytes(),b'expected!')
 
 class CleanupTests(unittest.TestCase):
+    def test_lost_removal_reply_is_confirmed_without_repeating_force_remove(self):
+        import subprocess
+        from scripts.swarm_runtime import cleanup_container
+        missing=subprocess.CompletedProcess([],1,'','Error: No such container: swarm-job-test')
+        with patch('scripts.swarm_runtime.subprocess.run',side_effect=[subprocess.TimeoutExpired('docker rm',30),missing]) as run:
+            self.assertTrue(cleanup_container({'local':True},'swarm-job-test'))
+        self.assertEqual(len(run.call_args_list),2)
+        self.assertEqual(run.call_args_list[1].args[0][:3],['docker','container','inspect'])
+
+    def test_cleanup_retires_only_freshly_observed_stopped_instance(self):
+        import json,subprocess
+        from scripts.swarm_runtime import cleanup_container
+        ident='a'*64;name='swarm-job-test'
+        denied=subprocess.CompletedProcess([],1,'','removal in progress')
+        observed=subprocess.CompletedProcess([],0,json.dumps([{'Id':ident,'Name':'/'+name,'State':{'Running':False,'Restarting':False}}]),'')
+        removed=subprocess.CompletedProcess([],0,ident,'')
+        with patch('scripts.swarm_runtime.subprocess.run',side_effect=[denied,observed,removed]) as run:
+            self.assertTrue(cleanup_container({'local':True},name))
+        self.assertEqual(run.call_args_list[-1].args[0],['docker','rm',ident])
+
     def test_dead_ssh_still_removes_container_before_releasing_lease(self):
         from functools import partial
         from scripts.swarm_runtime import run_job
@@ -395,6 +415,52 @@ def test_integrated_gpu_workspace_is_included_before_host_admission(tmp_path):
         with pytest.raises(runtime.CapacityWait):
             runtime.run_job({'host':'local','local':True,'machine':'id'},'sha256:pinned','true',[],str(tmp_path),1,2048,tmp_path/'status.json',group='test',memory_reservation_mb=300,gpu=gpu)
         launch.assert_not_called()
+
+
+def test_gpu_setup_uses_daemon_ram_mount_and_embeds_admission_code(tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from scripts import swarm_runtime as runtime
+    from scripts.launcher_streams import GPU_ADMISSION_SOURCE
+    import time
+    gpu={'uuid':'GPU-11111111-1111-1111-1111-111111111111','minimum_free_mib':512,'vram_mb':64}
+    def call(op,args=None,**kw):
+        if op=='status':return {'machine':'id','storage_policy':{'mode':'ram-only'},
+            'capabilities':['renewable-resources','gpu-resource-inventory-v1','independent-job-sinks-v1']}
+        if op=='resource.capacity':return {'available_mb':4096,'available_cpus':4}
+        if op=='resource.gpus':return {'machine':'id','sampled_at':time.time(),'gpus':[
+            {'uuid':gpu['uuid'],'allocation_known':True,'memory_free_mib':8192,'workers_known':True}]}
+        return {'acquired':True}
+    process=MagicMock();process.wait.return_value=0
+    with patch.object(runtime,'AgentClient') as client,patch.object(runtime,'eligible',return_value=True),\
+            patch.object(runtime,'shell_command',side_effect=lambda h,c:c),\
+            patch.object(runtime.subprocess,'run',return_value=SimpleNamespace(returncode=0)) as prepare,\
+            patch.object(runtime.subprocess,'Popen',return_value=process) as launch,\
+            patch.object(runtime,'observe_worker',return_value=0),\
+            patch.object(runtime,'cleanup_container',return_value=True):
+        client.return_value.call.side_effect=call
+        runtime.run_job({'host':'peer','local':False,'machine':'id'},'sha256:pinned','true',[],
+            '/work',2,1280,tmp_path/'report.json',group='test',gpu=gpu)
+    helper=prepare.call_args_list[0].args[0]
+    assert helper[:2]==['docker','run']
+    assert 'type=bind,src=/dev/shm,dst=/gpu-parent' in helper
+    assert helper[-1]=='jswarm-gpu-locks/id' and '--read-only' in helper
+    assert helper[helper.index('--memory')+1]==helper[helper.index('--memory-swap')+1]=='64m'
+    # Existing public ancestors are valid; the final accounting directory is
+    # private. Never traverse an attacker-controlled symlink during setup.
+    daemon=tmp_path/'daemon';daemon.mkdir();(daemon/'shared').mkdir(mode=0o755)
+    setup_code=helper[-2].replace("'/gpu-parent'",repr(str(daemon)))
+    with patch.object(runtime.sys,'argv',['setup','shared/private']):exec(setup_code,{})
+    assert (daemon/'shared/private').stat().st_mode & 0o777==0o700
+    outside=tmp_path/'outside';outside.mkdir();(daemon/'link').symlink_to(outside,target_is_directory=True)
+    import pytest
+    with patch.object(runtime.sys,'argv',['setup','link/private']),pytest.raises(AssertionError):exec(setup_code,{})
+    assert not (outside/'private').exists()
+    worker=launch.call_args.args[0]
+    import shlex
+    command=json.loads((tmp_path/'report.json').read_text())['command']
+    assert shlex.split(command)[:3]==['python3','-c',GPU_ADMISSION_SOURCE]
+    assert '/gpu-locks/gpu-admission-' not in worker[-1]
 
 class ActiveTransferTests(unittest.TestCase):
     def test_live_destination_lock_waits_without_touching_partial(self):

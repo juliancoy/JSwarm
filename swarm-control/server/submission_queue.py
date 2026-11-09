@@ -86,7 +86,7 @@ class SubmissionQueue:
             self.begin(db)
             if db.execute('UPDATE submissions SET priority=?,updated=? WHERE namespace=? AND id=?',(priority,time.time(),self.namespace,ident)).rowcount!=1:raise KeyError(ident)
 
-    def claim(self,host,capacity=None,eligible=None,requirements=None,preparation_resources=None):
+    def claim(self,host,capacity=None,eligible=None,requirements=None,preparation_resources=None,affinity=None):
         """Skip nonfitting jobs, without letting a large/GPU job block CPU work."""
         capacity=dict(capacity or {});eligible=None if eligible is None else set(eligible)
         if preparation_resources is not None:
@@ -103,7 +103,11 @@ class SubmissionQueue:
                 reserved=request.get('preparation_resources',request['resources']) if request.get('inputs_ready') is False else request['resources']
                 if capacity.get('cpu_admission_mode')!='timeshare':capacity['available_cpus']=capacity.get('available_cpus',float('inf'))-reserved.get('cpus',0)
                 capacity['available_mb']=capacity.get('available_mb',float('inf'))-reserved.get('memory_mb',0)
-            for row in db.execute("SELECT * FROM submissions WHERE namespace=? AND state='queued' ORDER BY priority DESC,created,id",(self.namespace,)):
+            rows=db.execute("SELECT * FROM submissions WHERE namespace=? AND state='queued' ORDER BY priority DESC,created,id",(self.namespace,))
+            if affinity:
+                if any(type(v) is not int or v<0 for v in affinity.values()):raise ValueError('Invalid cache affinity')
+                rows=sorted(rows,key=lambda row:(-row['priority'],-affinity.get(row['id'],0),row['created'],row['id']))
+            for row in rows:
                 if eligible is not None and row['id'] not in eligible:continue
                 spec=json.loads(row['spec']);resources=spec.get('resources',{})
                 estimate=(requirements or {}).get(row['id'],{})
@@ -122,6 +126,48 @@ class SubmissionQueue:
                 db.execute("UPDATE submissions SET state='preparing',host=?,token=?,updated=?,request=? WHERE namespace=? AND id=?",(host,token,time.time(),pending_request,self.namespace,row['id']))
                 return {**dict(row),'host':host,'token':token,'state':'preparing','admission_resources':resources}
         return None
+
+    def claim_batch(self,host,capacity,requests,resources):
+        """Atomically accept one physical reservation and individually fenced shards.
+
+        Requests already pin a durable batch manifest. No partial group or
+        reservation survives a race with another claimant.
+        """
+        if not 2<=len(requests)<=64 or set(resources)!={'cpus','memory_mb'} or any(type(v) is not int or v<=0 for v in resources.values()):
+            raise ValueError('Invalid bounded batch reservation')
+        batch=next(iter(requests.values())).get('gpu_batch')
+        if not isinstance(batch,dict) or set(batch.get('members',[]))!=set(requests) or any(r.get('gpu_batch')!=batch for r in requests.values()):
+            raise ValueError('Batch members must share one durable owner')
+        if capacity.get('accepting_jobs') is False:return []
+        remaining=dict(capacity)
+        with self.connect() as db:
+            self.begin(db)
+            for pending in db.execute("SELECT host,request FROM submissions WHERE state IN ('preparing','accepted') AND request IS NOT NULL"):
+                if not pending['host'] or pending['host'].split('#',1)[0]!=host.split('#',1)[0]:continue
+                request=json.loads(pending['request'])
+                if not request.get('admission_pending'):continue
+                reserved=request.get('preparation_resources',request['resources']) if request.get('inputs_ready') is False else request['resources']
+                if remaining.get('cpu_admission_mode')!='timeshare':remaining['available_cpus']=remaining.get('available_cpus',float('inf'))-reserved.get('cpus',0)
+                remaining['available_mb']=remaining.get('available_mb',float('inf'))-reserved.get('memory_mb',0)
+            if any(resources[key]>remaining.get(limit,float('inf')) for key,limit in [('cpus','available_cpus'),('memory_mb','available_mb')]):return []
+            rows=[]
+            for ident,request in requests.items():
+                row=db.execute("SELECT * FROM submissions WHERE namespace=? AND id=? AND state='queued'",(self.namespace,ident)).fetchone()
+                if row is None:return []
+                spec=json.loads(row['spec'])
+                if spec.get('resources',{}).get('sink')=='gpu' and not capacity.get('gpu'):return []
+                if not set(spec.get('resources',{}).get('capabilities',[]))<=set(capacity.get('capabilities',[])):return []
+                rows.append(row)
+            claims=[]
+            for index,row in enumerate(rows):
+                token=(self.epoch+':' if self.epoch else '')+uuid.uuid4().hex
+                request={**requests[row['id']],'admission_pending':True,'resources':resources if index==0 else {'cpus':0,'memory_mb':0}}
+                previous=json.loads(row['request'] or '{}')
+                if previous.get('directory'):request['superseded_request']=previous
+                db.execute("UPDATE submissions SET state='accepted',host=?,token=?,updated=?,request=? WHERE namespace=? AND id=?",
+                    (host,token,time.time(),json.dumps(request),self.namespace,row['id']))
+                claims.append({**dict(row),'state':'accepted','host':host,'token':token,'request':json.dumps(request)})
+            return claims
 
     def update(self,ident,token,**fields):
         if not fields or set(fields)-{'state','host','task_id','request','result','error'}:raise ValueError('Invalid queue checkpoint')

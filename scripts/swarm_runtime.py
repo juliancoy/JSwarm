@@ -78,7 +78,7 @@ def discover(required_image=None, names=None):
             client=AgentClient(host);status=client.call('status',timeout=15)
             if not eligible(status):raise RuntimeError('Agent is unavailable or declining jobs')
             if address not in status.get('addresses',[]):raise RuntimeError('Agent address attestation failed')
-            host['machine']=status['machine']
+            host['machine']=status['machine'];host['capabilities']=status.get('capabilities',[])
             if 'node-command-v1' not in status.get('capabilities',[]):raise RuntimeError('Launcher command transport unavailable; update required')
             limits=subprocess.check_output(shell_command(host,['docker','info','--format','{{json .MemoryLimit}} {{json .SwapLimit}}']),text=True,stderr=subprocess.DEVNULL,timeout=30).split()
             if limits!=['true','true']:raise RuntimeError('Docker memory/swap isolation unavailable')
@@ -125,10 +125,30 @@ def validate_job(cpus,memory_mb,group,tmpfs,labels,container_prefix):
 
 def cleanup_container(host,name):
     """Prove a job container absent even if its controller transport already exited."""
-    removed=subprocess.run(shell_command(host,['docker','rm','-f',name]),capture_output=True,text=True,timeout=30)
-    if removed.returncode==0:return True
-    inspected=subprocess.run(shell_command(host,['docker','container','inspect',name]),capture_output=True,text=True,timeout=20)
-    return inspected.returncode==1 and ('no such object:' in inspected.stderr.lower() or 'no such container:' in inspected.stderr.lower())
+    try:
+        removed=subprocess.run(shell_command(host,['docker','rm','-f',name]),capture_output=True,text=True,timeout=30)
+        if removed.returncode==0:return True
+    except subprocess.TimeoutExpired:
+        pass  # Docker may still be removing it after the command channel times out.
+    deadline=time.monotonic()+120
+    while time.monotonic()<deadline:
+        try:
+            inspected=subprocess.run(shell_command(host,['docker','container','inspect',name]),capture_output=True,text=True,timeout=20)
+            if inspected.returncode==1 and ('no such object:' in inspected.stderr.lower() or 'no such container:' in inspected.stderr.lower()):return True
+            if inspected.returncode==0:
+                rows=json.loads(inspected.stdout)
+                if len(rows)!=1 or rows[0].get('Name','').lstrip('/')!=name:return False
+                item=rows[0];state=item.get('State',{})
+                # Fresh inspection authorizes retirement of this exact stopped
+                # instance. Never blindly repeat a force-removal by name.
+                if not state.get('Running') and not state.get('Restarting') and re.fullmatch('[a-f0-9]{64}',item.get('Id','')):
+                    retired=subprocess.run(shell_command(host,['docker','rm',item['Id']]),capture_output=True,text=True,timeout=20)
+                    if retired.returncode==0:return True
+                elif state.get('Running') or state.get('Restarting'):return False
+        except (subprocess.TimeoutExpired,ValueError):
+            pass
+        time.sleep(1)
+    return False
 
 
 def observe_worker(host,name,lease,*,reconnect_seconds=180,poll_seconds=2):
@@ -187,7 +207,7 @@ def observe_recorded_worker(client,host,name,lease,*,on_observed=None,reconnect_
         time.sleep(poll_seconds)
 
 
-def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_for_capacity=False,on_admitted=None,tmpfs=None,labels=None,container_prefix=None,gpu=None,network='none',shared_cache=None,memory_reservation_mb=None,profiling_context=None,gpu_compute_complete_file=None,run_id=None,shared_caches=None,pids_limit=32):
+def _run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_for_capacity=False,on_admitted=None,tmpfs=None,labels=None,container_prefix=None,gpu=None,network='none',shared_cache=None,memory_reservation_mb=None,profiling_context=None,gpu_compute_complete_file=None,run_id=None,shared_caches=None,pids_limit=32):
     """Docker RAM, including bounded tmpfs scratch, fits the acquired lease."""
     validate_job(cpus,memory_mb,group,tmpfs,labels,container_prefix)
     if type(pids_limit) is not int or not 32<=pids_limit<=4096:
@@ -224,6 +244,7 @@ def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_fo
     try:
         status=client.call('status')
         if status.get('machine')!=host['machine']:raise RuntimeError('Worker identity changed')
+        host['capabilities']=status.get('capabilities',[])
         ram_only=status.get('storage_policy',{}).get('mode')=='ram-only'
         if ram_only:client.call('worker.storage.validate',{'paths':[str(source) for source,_,_ in mounts]})
         # Older enrolled agents require this legacy wire name. It does not
@@ -321,18 +342,27 @@ def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_fo
                 raise GpuUnavailable('GPU readiness changed before launch') from error
             if free.get(gpu['uuid'],0)<gpu['minimum_free_mib']:raise GpuUnavailable('GPU VRAM headroom changed before launch')
             locks=str(Path('/dev/shm/jswarm-gpu-locks')/host['machine']) if ram_only else str(Path(host['cache']).parent/'gpu-alignment-locks')
-            prepare="import pathlib,os,sys;p=pathlib.Path(sys.argv[1]);p.mkdir(mode=0o700,parents=True,exist_ok=True);assert p.stat().st_uid==os.getuid() and not p.stat().st_mode & 0o077"
-            subprocess.run(shell_command(host,['python3','-c',prepare,locks]),check=True,timeout=15)
+            # Owner command capsules can expose host RAM read-only. Provision
+            # through the same Docker daemon that will bind the worker path,
+            # within this worker's already acquired CPU/RAM reservation.
+            parent='/dev/shm' if ram_only else str(Path(locks).parent)
+            relative=str(Path(locks).relative_to(parent))
+            prepare="import pathlib,os,sys\np=pathlib.Path('/gpu-parent')\nfor part in pathlib.Path(sys.argv[1]).parts:\n p=p/part\n assert not p.is_symlink()\n p.mkdir(mode=0o700,exist_ok=True)\nassert (p.stat().st_uid==os.getuid() or os.getuid()==0) and not p.stat().st_mode & 0o077"
+            setup=name+'-gpu-setup'
+            helper=['docker','run','--rm','--pull=never','--name',setup,'--network','none','--read-only',
+                    '--cap-drop','ALL','--security-opt','no-new-privileges','--cpus',str(min(cpus,.25)),
+                    '--memory',str(min(reservation,64))+'m','--memory-swap',str(min(reservation,64))+'m',
+                    '--pids-limit','32','--user',host.get('container_user','1000:1000'),
+                    '--mount','type=bind,src='+parent+',dst=/gpu-parent','--entrypoint','python3',image,'-c',prepare,relative]
+            try:subprocess.run(shell_command(host,helper),check=True,timeout=30)
+            except BaseException:
+                subprocess.run(shell_command(host,['docker','rm','-f',setup]),capture_output=True,timeout=30)
+                raise
             from scripts.launcher_streams import gpu_container_args
             argv+=gpu_container_args(gpu)+['--mount','type=bind,src='+locks+',dst=/gpu-locks',
                    '--label','org.lifetech.accelerator='+gpu['uuid'],'--label','org.lifetech.gpu-memory-domain='+gpu.get('memory_domain','driver-reserved-vram'),'--label','org.lifetech.gpu-admission=pressure','--label','org.lifetech.gpu-private-mib='+str(gpu.get('vram_mb',gpu['minimum_free_mib']))]
-            import base64
             from scripts.launcher_streams import GPU_ADMISSION_SOURCE
-            revision=hashlib.sha256(GPU_ADMISSION_SOURCE.encode()).hexdigest()
-            script='gpu-admission-'+revision+'.py'
-            install="import base64,hashlib,os,pathlib,sys,tempfile; p=pathlib.Path(sys.argv[1]); data=base64.b64decode(sys.argv[2]); assert hashlib.sha256(data).hexdigest()==sys.argv[3]; f=tempfile.NamedTemporaryFile(dir=p.parent,delete=False); f.write(data); f.close(); os.replace(f.name,p) if not p.exists() else os.unlink(f.name); assert p.read_bytes()==data"
-            subprocess.run(shell_command(host,['python3','-c',install,locks+'/'+script,base64.b64encode(GPU_ADMISSION_SOURCE.encode()).decode(),revision]),check=True,timeout=30)
-            command=shlex.join(['python3','/gpu-locks/'+script,json.dumps({**gpu,'lock_directory':'/gpu-locks',**({'compute_complete_file':gpu_compute_complete_file} if gpu_compute_complete_file else {})}),'bash','-o','pipefail','-c',command])
+            command=shlex.join(['python3','-c',GPU_ADMISSION_SOURCE,json.dumps({**gpu,'lock_directory':'/gpu-locks',**({'compute_complete_file':gpu_compute_complete_file} if gpu_compute_complete_file else {})}),'bash','-o','pipefail','-c',command])
         for key,value in (labels or {}).items():argv+=['--label',key+'='+value]
         for target,size_mb in (tmpfs or {}).items():
             argv+=['--tmpfs',target+':rw,nosuid,nodev,noexec,size='+str(size_mb)+'m,mode=1777']
@@ -420,6 +450,24 @@ def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_fo
             else:raise RuntimeError('Container cleanup unconfirmed; resource lease retained until authenticated expiry cleanup')
         finally:client.close()
 
+
+
+def run_job(*args, **kwargs):
+    """Pin managed input objects from admission until Docker cleanup completes."""
+    from contextlib import ExitStack
+    from scripts.swarm_shared_cache import pin, is_managed
+    host = args[0] if args else kwargs['host']
+    caches = list((kwargs.get('shared_caches') or {}).values())
+    if kwargs.get('shared_cache'):caches.append(kwargs['shared_cache'])
+    with ExitStack() as stack:
+        for cache in {c['key']:c for c in caches if is_managed(c)}.values():
+            stack.enter_context(pin(host, cache))
+        return _run_job(*args, **kwargs)
+
+
+# Keep the public execution signature available to tooling and callers.
+import functools as _functools
+run_job = _functools.wraps(_run_job)(run_job)
 
 def copy_verified_file(source,destination,receipt,resume=False):
     """Prefer direct mutual TLS for large objects; retain a verified encrypted launcher-pipe fallback."""
@@ -524,7 +572,7 @@ if progress is not None:
         writer_args[6]=str(offset)
     reader="import shutil,sys;s=open(sys.argv[1],'rb');s.seek(int(sys.argv[2]));shutil.copyfileobj(s,sys.stdout.buffer,8388608)"
     source_command=['python3','-c',reader,receipt['path'],str(offset)] if offset else ['cat','--',receipt['path']]
-    producer=subprocess.Popen(shell_command(source,source_command),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    producer=subprocess.Popen(shell_command(source,source_command),stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     consumer=None
     try:
         consumer=subprocess.Popen(shell_command(destination,writer_args),stdin=producer.stdout,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
@@ -552,7 +600,7 @@ def stream_command(source,source_command,destination,destination_command):
     The receiving application must bound and verify the stream before using it.
     Its stdout is an operational result, never the input payload.
     """
-    producer=subprocess.Popen(shell_command(source,source_command),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    producer=subprocess.Popen(shell_command(source,source_command),stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     consumer=None
     try:
         consumer=subprocess.Popen(shell_command(destination,destination_command),stdin=producer.stdout,stdout=subprocess.PIPE,stderr=subprocess.PIPE)

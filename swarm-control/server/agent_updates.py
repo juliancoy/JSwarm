@@ -66,6 +66,15 @@ def check_publication(folder,expected):
         raise RuntimeError('Desired release advanced during preparation; validate and publish the current source again')
 
 
+def require_git_source(source):
+    """All deployable publications must carry validated Git provenance."""
+    if not isinstance(source,dict) or set(source)!={'repositories','installer'}:
+        raise ValueError('Git source provenance required; publish committed source with --publish')
+    from scripts.node_git_source import validate
+    validate(source['repositories'])
+    compile(source['installer'],'node_git_source.py','exec')
+
+
 INSTALL = '''import hashlib,json,os,pathlib,runpy,sys,tempfile,subprocess
 payload=json.load(sys.stdin)
 if hashlib.sha256(pathlib.Path('/etc/machine-id').read_bytes()).hexdigest()!=payload['machine']:
@@ -83,11 +92,24 @@ for name,address in peers.items():
  if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,252}',name):raise RuntimeError('Invalid enrolled node')
  ip=ipaddress.ip_address(address)
  if not ip.is_private or ip.is_loopback or ip.is_unspecified:raise RuntimeError('Enrolled LAN address required')
+# Fetch only the committed sources pinned by the validated publication. This
+# directory is host-backed through the existing persistent config mount.
+git_source=payload['git_source']
+namespace={'__name__':'node_git_source'}
+exec(compile(git_source['installer'],'node_git_source.py','exec'),namespace)
+workspace=namespace['workspace'](git_source['repositories'],config.parent/'node-source')
+project=workspace/'JSwarm'
+sys.path.insert(0,str(project/'swarm-control/server'))
+builder=runpy.run_path(str(project/'swarm-control/server/agent_updates.py'))['LauncherUpdates']
+release=builder(project,lambda:False,lambda *args:None)
+if release.files!=payload['files'] or release.supervisor_source!=payload['supervisor_source']:
+ raise RuntimeError('Git sources differ from validated publication')
+payload['files']=release.files
+payload['supervisor_source']=release.supervisor_source
 supervisor=payload['supervisor_source']
 if hashlib.sha256(supervisor.encode()).hexdigest()!=payload['supervisor_sha256']:raise RuntimeError('Supervisor checksum mismatch')
 compile(supervisor,'launcher_peer_supervisor.py','exec')
 targets=[pathlib.Path.home()/'.local/share/organization-node/scripts/launcher_peer_supervisor.py']
-replacement_containers=[]
 # The persistent API command owner may use rootless Docker while the node runs
 # on system Docker. Its enrollment-attested routing map still identifies the
 # existing writable bootstrap sources without host-PID or SSH access.
@@ -109,15 +131,13 @@ pending=config.with_suffix('.controller.tmp');pending.write_text(json.dumps(sett
 # The controller can use system Docker while its jobs use rootless Docker.
 # Inspect both endpoints; ownership still requires the enrolled config mount.
 for docker_command in (['docker'],['docker','--host','unix:///var/run/docker.sock']):
- for container_name in ('swarm-node','lifetech-launcher','lifetech-launcher-session','organization-test-agent'):
+ for container_name in ('swarm-node',):
   result=subprocess.run(docker_command+['inspect',container_name],capture_output=True,text=True,timeout=15)
   if result.returncode:continue
   container=json.loads(result.stdout)[0]
   owned=any(m['Destination'] in ('/run/launcher-config',str(config.parent)) and pathlib.Path(m['Source']).resolve()==config.parent.resolve() for m in container.get('Mounts',[]))
   for mount in container.get('Mounts',[]):
-   if owned and mount['Destination']=='/session':targets.append(pathlib.Path(mount['Source'])/'launcher_peer_supervisor.py')
    if owned and mount['Destination'].endswith('/scripts') and (pathlib.Path(mount['Source'])/'launcher_peer_supervisor.py').exists():targets.append(pathlib.Path(mount['Source'])/'launcher_peer_supervisor.py')
-  if owned:replacement_containers.append((docker_command,container_name))
   current_limit=container['HostConfig'].get('PidsLimit') or 0
   target_limit=min(32768,max(1024,len(os.sched_getaffinity(0))*256+512))
   if owned and 0<current_limit<target_limit:
@@ -168,28 +188,21 @@ with tempfile.TemporaryDirectory(prefix='launcher-start-update-') as temporary:
  sys.argv=['launcher_update.py']
  runpy.run_path(str(pathlib.Path(temporary)/'launcher_update.py'),run_name='__main__')
 
-# Bridge old supervisors whose in-memory loop still interpreted work counts as
-# blockers. The existing admission marker closes starts; Docker keeps the jobs.
-replacement_code = "import json,os,pathlib,time\\nconfig=pathlib.Path(os.environ.get('LIFETECH_PEER_CONFIG',str(pathlib.Path.home()/'.config/lifetech-launcher/peers.json')))\\ntarget=(config.parent/'agent-releases/current').resolve()\\nbusy=pathlib.Path('/tmp/launcher-agent-busy.json');gate=pathlib.Path('/tmp/launcher-agent-draining')\\nready=pathlib.Path('/tmp/launcher-agent-ready.json')\\nfor _ in range(300):\\n try:\\n  if json.loads(ready.read_text()).get('folder')==str(target):break\\n except (OSError,ValueError):pass\\n if (config.parent/'agent-releases/current').resolve()!=target:break\\n try:\\n  update=json.loads(pathlib.Path('/tmp/launcher-agent-update.json').read_text())\\n  if update.get('active')==str(target):gate.unlink(missing_ok=True)\\n except (OSError,ValueError):pass\\n try:observed=json.loads(busy.read_text())\\n except (OSError,ValueError):observed={}\\n value={'jobs':[],'browsers':[],'transfers':0,'observed_work':observed.get('observed_work',observed),'workers_survive_restart':True,'time':time.time()}\\n pending=busy.with_suffix('.replace.tmp');pending.write_text(json.dumps(value));pending.replace(busy)\\n time.sleep(.1)\\n"
-if replacement_containers:
- for docker_command,container_name in replacement_containers:
-  subprocess.run(docker_command+['exec','-d',container_name,'python3','-c',replacement_code],check=True,timeout=15)
-  # Legacy supervisors can retain a freshness-based drain loop after their
-  # source is replaced. Recreate that bootstrap process using the installed
-  # supervisor; independently owned Docker workers remain running.
-  probe="import json,pathlib; p=pathlib.Path('/tmp/launcher-agent-update.json'); phase=json.loads(p.read_text()).get('phase','') if p.exists() else ''; print('draining' if phase=='starting' and pathlib.Path('/tmp/launcher-agent-draining').exists() else phase)"
-  state=subprocess.run(docker_command+['exec',container_name,'python3','-c',probe],capture_output=True,text=True,timeout=15)
-  if state.returncode==0 and state.stdout.strip()=='draining':
-   subprocess.run(docker_command+['restart','-t','30',container_name],check=True,stdout=subprocess.DEVNULL,timeout=90)
-else:
- subprocess.Popen([sys.executable,'-c',replacement_code],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
 '''
 
 
 class LauncherUpdates:
     def __init__(self,root,stopped,progress):
         self.stopped,self.progress=stopped,progress
+        root=Path(root)
+        if (root/'JSwarm/scripts').is_dir():root=root/'JSwarm'
         folder=Path(root)/'scripts'
+        manifest=Path(root)/'.node-git-source.json'
+        self.git_source=None
+        if manifest.exists():
+            from scripts.node_git_source import validate
+            repositories=json.loads(manifest.read_text());validate(repositories)
+            self.git_source={'repositories':repositories,'installer':(folder/'node_git_source.py').read_text()}
         self.supervisor_source=(folder/'launcher_peer_supervisor.py').read_text()
         self.files={name:(folder/name).read_text() for name in (*FILES,'launcher_update.py')}
         import base64,gzip
@@ -197,13 +210,16 @@ class LauncherUpdates:
         assets={str(path.relative_to(view)):base64.b64encode(path.read_bytes()).decode() for path in view.rglob('*') if path.is_file()}
         genome=(Path(root).parent if Path(root).name=='JSwarm' else Path(root))/'GenomeHarbor/web'
         assets.update({'genome/'+str(path.relative_to(genome)):base64.b64encode(path.read_bytes()).decode() for path in genome.rglob('*') if path.is_file()})
-        encoded=base64.b64encode(gzip.compress(json.dumps(assets,sort_keys=True).encode(),mtime=0)).decode()
+        compressed=bytearray(gzip.compress(json.dumps(assets,sort_keys=True).encode(),compresslevel=9,mtime=0))
+        compressed[9]=255  # Python 3.12/3.13 differ in the default gzip OS header.
+        encoded=base64.b64encode(compressed).decode()
         marker="if __name__=='__main__':main()"
         self.files['launcher_peers.py']=self.files['launcher_peers.py'].replace(marker,'PIPELINE_ASSETS_B64 = '+repr(encoded)+'\n\n'+marker)
         runtime=Path(root)/'ramtop/ramtop'
         bundle=runpy.run_path(str(runtime/'bundle.py'))['encoded_runtime'](runtime)
         self.files['launcher_agent.py'] += '\n# Built-in monitor source is covered by the existing atomic release checksum.\nPERFORMANCE_RUNTIME_B64 = '+repr(bundle)+'\n'
         self.files['launcher_agent.py'] += '\n# Durable streaming runtime is part of this same verified launcher release.\nSTREAM_RUNTIME_SOURCE = '+repr((folder/'launcher_streams.py').read_text())+'\n'
+        self.files['launcher_agent.py'] += '\n# Durable streaming runtime is part of this same verified launcher release.\nCACHE_RUNTIME_SOURCE = '+repr((folder/'launcher_cache.py').read_text())+'\n'
         self.files['launcher_agent.py'] += '\n# Signed command runtime shares this same verified release.\nCOMMAND_RUNTIME_SOURCE = '+repr((folder/'launcher_commands.py').read_text())+'\n'
         self.files['launcher_agent.py'] += '\n# The supervisor version is part of the published release identity.\nSUPERVISOR_SHA256 = '+repr(hashlib.sha256(self.supervisor_source.encode()).hexdigest())+'\n'
         self.capabilities=set()
@@ -218,7 +234,14 @@ class LauncherUpdates:
 
     @classmethod
     def published(cls,path,stopped,progress):
-        """Load a complete immutable release, never reread mutable workspace files."""
+        """Load a deployable Git-backed publication."""
+        instance=cls._read_publication(path,stopped,progress)
+        require_git_source(instance.git_source)
+        return instance
+
+    @classmethod
+    def _read_publication(cls,path,stopped,progress):
+        """Read verified history, including pre-Git receipts, without deploying it."""
         path=Path(path).resolve(strict=True)
         value=json.loads(path.read_text())
         if value.get('schema')!='jswarm-agent-release.v1':raise ValueError('Unsupported published release schema')
@@ -239,10 +262,13 @@ class LauncherUpdates:
         instance.source_versions=value.get('source_versions',{instance.revision:instance.generation})
         if (not isinstance(instance.source_versions,dict) or instance.revision not in instance.source_versions or any(not isinstance(key,str) or type(version) is not int or not 0<=version<=instance.generation for key,version in instance.source_versions.items())):
             raise ValueError('Invalid source version history')
+        instance.git_source=value.get('git_source')
+        if instance.git_source is not None:require_git_source(instance.git_source)
         instance.components=value.get('components',{})
         if set(instance.components)-{'public-pager'}:raise ValueError('Unknown deployment component')
         for component in instance.components.values():validate(component)
         content={key:value.get(key,{}) if key=='components' else value[key] for key in ('schema','revision','files','supervisor_source','supervisor_sha256','components')}
+        if 'git_source' in value:content['git_source']=value['git_source']
         content_id=hashlib.sha256(json.dumps(content,sort_keys=True).encode()).hexdigest()
         instance.artifact_versions=value.get('artifact_versions',{content_id:instance.generation})
         if (not isinstance(instance.artifact_versions,dict) or content_id not in instance.artifact_versions or any(type(version) is not int or not 0<=version<=instance.generation for version in instance.artifact_versions.values())):
@@ -267,15 +293,19 @@ class LauncherUpdates:
         value={'schema':'jswarm-agent-release.v1','revision':self.revision,'files':self.files,
                'supervisor_source':self.supervisor_source,'supervisor_sha256':hashlib.sha256(self.supervisor_source.encode()).hexdigest(),
                'components':getattr(self,'components',{})}
+        require_git_source(self.git_source)
+        value['git_source']=self.git_source
         # Content identity stays stable; the immutable envelope orders deployments.
         artifact=hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest()
         token=publication_token(folder)
         current=folder/token if token else None
         versions={};artifacts={}
         if current:
-            prior=self.published(current,self.stopped,self.progress)
+            prior=self._read_publication(current,self.stopped,self.progress)
             prior_value=json.loads(current.read_text())
-            content={key:prior_value.get(key,{}) if key=='components' else prior_value[key] for key in value}
+            content={key:prior_value.get(key,{}) if key=='components' else prior_value[key]
+                     for key in ('schema','revision','files','supervisor_source','supervisor_sha256','components')}
+            if 'git_source' in prior_value:content['git_source']=prior_value['git_source']
             current_id=hashlib.sha256(json.dumps(content,sort_keys=True).encode()).hexdigest()
             versions=dict(prior.source_versions);artifacts=dict(prior.artifact_versions)
             if content==value:
@@ -363,17 +393,38 @@ class LauncherUpdates:
             check_publication(folder,self.publication_artifact)
             yield
 
+    @contextmanager
+    def parallel_updates(self):
+        """Lend workers a scoped guard while the caller owns the fleet lock."""
+        import copy
+        with self._deployment_guard():
+            active=threading.Event();active.set()
+            def child():
+                instance=copy.copy(self)
+                @contextmanager
+                def guard():
+                    if not active.is_set():raise RuntimeError('Parallel deployment scope ended')
+                    folder=getattr(self,'publication_folder',None)
+                    if folder is not None:check_publication(folder,self.publication_artifact)
+                    yield
+                instance._deployment_guard=guard
+                return instance
+            try:yield child
+            finally:active.clear()
+
     def stage(self,host,status):
         with self._deployment_guard():return self._stage(host,status)
 
     def _stage(self,host,status):
         if self.stopped():raise InterruptedError('Launcher update stopped')
+        require_git_source(self.git_source)
         from agent_client import CONFIG
         public_key=json.loads(CONFIG.read_text())['controller_public_key']
         if len(bytes.fromhex(public_key))!=32:raise ValueError('Invalid pinned controller key')
         payload={'supervisor_source':self.supervisor_source,'supervisor_sha256':hashlib.sha256(self.supervisor_source.encode()).hexdigest(),'machine':status['machine'],'node':status['node'],'revision':self.revision,'files':self.files,'controller_public_key':public_key,'peers':json.loads(CONFIG.read_text())['peers']}
+        payload['git_source']=self.git_source
         command=self.command(host,INSTALL,status=status)
-        try:result=subprocess.run(command,input=json.dumps(payload),capture_output=True,text=True,timeout=180)
+        try:result=subprocess.run(command,input=json.dumps(payload),capture_output=True,text=True,timeout=600)
         except subprocess.TimeoutExpired:raise RuntimeError('Launcher staging timed out; existing jobs preserved and retry is safe') from None
         if result.returncode:
             # No source payload, fleet keys or account configuration enter run logs.

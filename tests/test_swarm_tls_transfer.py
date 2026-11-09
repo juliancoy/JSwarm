@@ -16,10 +16,10 @@ class TransferTests(unittest.TestCase):
         cls.temp = tempfile.TemporaryDirectory(); cls.root = Path(cls.temp.name)
         def openssl(*args):
             subprocess.run(['openssl', *args], cwd=cls.root, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        openssl('req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-keyout', 'ca.key', '-out', 'ca.crt', '-subj', '/CN=test-ca', '-days', '1')
+        openssl('req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-keyout', 'ca.key', '-out', 'ca.crt', '-subj', '/CN=test-ca', '-days', '1', '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'keyUsage=critical,keyCertSign,cRLSign')
         for name, purpose in [('server', 'serverAuth'), ('client', 'clientAuth')]:
             openssl('req', '-new', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-keyout', name+'.key', '-out', name+'.csr', '-subj', '/CN='+name)
-            (cls.root/(name+'.ext')).write_text('extendedKeyUsage='+purpose+'\nsubjectAltName=IP:127.0.0.1\n')
+            (cls.root/(name+'.ext')).write_text('basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage='+purpose+'\nsubjectAltName=IP:127.0.0.1\n')
             openssl('x509', '-req', '-in', name+'.csr', '-CA', 'ca.crt', '-CAkey', 'ca.key', '-CAcreateserial', '-out', name+'.crt', '-days', '1', '-extfile', name+'.ext')
         cls.data = bytes(range(256)) * 8192
         source = cls.root/'source'; source.write_bytes(cls.data)
@@ -96,6 +96,15 @@ class TransferTests(unittest.TestCase):
             self.assertEqual(error.exception.code,403)
             der=ssl.PEM_cert_to_DER_cert((self.root/'client.crt').read_text())
             row['clients']=[hashlib.sha256(der).hexdigest()];entry.write_text(json.dumps(row))
+            with urllib.request.urlopen(url,context=self.context()) as response:
+                self.assertEqual(response.read(),source.read_bytes())
+            import time
+            for expiry in (time.time()-1, time.time()+3600, 'invalid', float('nan')):
+                row['expires']=expiry;entry.write_text(json.dumps(row))
+                with self.assertRaises(urllib.error.HTTPError) as error:
+                    urllib.request.urlopen(url,context=self.context())
+                self.assertEqual(error.exception.code,403)
+            row['expires']=time.time()+30;entry.write_text(json.dumps(row))
             with urllib.request.urlopen(url,context=self.context()) as response:
                 self.assertEqual(response.read(),source.read_bytes())
         finally:

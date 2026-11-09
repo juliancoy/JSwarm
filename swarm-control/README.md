@@ -44,17 +44,23 @@ release checksums and the new process's readiness marker; failed startup restore
 the previous release. Cancelling the staged update removes only the update gate,
 preserving owner maintenance, battery policy, and pressure protection.
 
-Publish a validated immutable release, then let the existing deployment service
-follow it one enrolled node at a time:
+Commit and push Organization, JSwarm and GenomeHarbor to origins reachable by
+every node. From the Organization workspace, publish a validated Git-backed release
+and follow it one enrolled node at a time:
 
 ```sh
-python3 scripts/deploy_swarm_inputs.py --publish
-python3 scripts/deploy_swarm_inputs.py --published --continuous --watch
+python3 -m scripts.deploy_swarm_inputs --publish
+python3 -m scripts.deploy_swarm_inputs --continuous --watch
 ```
 
 Publication runs the release/recovery tests, checks that sources did not change
 while they ran, and atomically publishes the complete checksummed bundle. The
-continuous mode follows that publication, not live edits in the workspace. It
+continuous mode follows the exact Git commits in that publication. Each node
+fetches dedicated detached worktrees on its mounted configuration volume and
+regenerates and verifies the runtime from Git. Code-only updates reuse the image.
+Publications lacking Git provenance are rejected for deployment and rollback;
+republish committed source to migrate. See
+[Git source deployment](../docs/node-source-deployment.md). The updater
 uses the existing `swarm-input-deployment.service`, enrolled names, identities,
 and `input-deployment.json` receipt; it creates no second node registry. A source
 release digest describes code, not a new node or job identity.
@@ -62,7 +68,7 @@ release digest describes code, not a new node or job identity.
 For a single existing node:
 
 ```sh
-python3 scripts/deploy_swarm_inputs.py --published --node compai.local --wait-timeout 180
+python3 -m scripts.deploy_swarm_inputs --node compai.local --wait-timeout 180
 ```
 
 Updates travel through the running node's signed owner-command API, including
@@ -227,12 +233,12 @@ sample identifiers, report contents, or arbitrary filesystem paths. Missing stat
 is shown as unavailable. Partial downloads do not imply active transfer or
 successful validation. Browser checks use synthetic status fixtures.
 
-Verified reference-match snapshots can be rebuilt with
-`python3 -m scripts.genome_demo --root <private-workbench> --reference-run <completed-private-run> --output <snapshot.js>`.
-The reference run uses quality-qualified gVCF calls for personal data and official
-GIAB benchmark regions minus both official and normalized variant REF spans.
-Unknown quality stays unverified. Only aggregate counts enter the public snapshot;
-private intervals, sample headers, and worker hostnames stay outside it.
+Genome Explorer uses the authenticated `/api/v1/swarm/genome-results` publication.
+Sample composition requires a measured additive tree, assembly, source run,
+generation time, and source provenance. Missing results stay unpublished; archived
+demo exports are not a fallback. See `GenomeHarbor/server/GENOME-EXPLORER.md` for
+the publication workflow. Historical analysis outputs remain available to their
+owner outside the public web assets.
 
 ## Concurrent tests and private DNA jobs
 

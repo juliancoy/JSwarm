@@ -19,7 +19,7 @@ def queue_snapshot(path, node):
 
     No worker telemetry database, remote files or node-status mirrors are read.
     """
-    from task_pipeline import resources,run_type,runtime_summary,shard_title,failure_detail
+    from task_pipeline import resources,run_type,runtime_summary,runtime_observation,shard_title,failure_detail
     path=Path(path)
     if not path.is_file():raise FileNotFoundError('Coordinator queue unavailable')
     items=[]
@@ -36,14 +36,19 @@ def queue_snapshot(path, node):
             keys=[report_key(str(Path(directory)/name)) for name in ('execution.json','staging-execution.json')] if directory else []
             if request.get('report'):keys.append(report_key(request['report']))
             verified=bool(result.get('receipt_sha256') or result.get('primary_pair_accounting_verified') is True)
+            observed=runtime_observation(None,result,row['host']) if verified else {}
+            gpu=request.get('accelerator',{}).get('gpu') or {}
+            if observed.get('gpu_used') and not observed.get('gpu_devices') and gpu.get('uuid'):observed['gpu_devices']=[gpu['uuid']]
+            batch=request.get('gpu_batch') or {}
             items.append({'id':row['namespace']+'/'+row['id'],'job_id':row['id'],'parent':row['namespace'],
-                'task_id':row['task_id'],'name':shard_title(spec,row['id'],row['namespace']),'shard':spec.get('shard'),'chromosome':spec.get('chromosome'),
+                'task_id':batch.get('id') or row['task_id'],'name':shard_title(spec,row['id'],row['namespace']),'shard':spec.get('shard'),'chromosome':spec.get('chromosome'),
                 'region':spec.get('region'),'stage':spec.get('stage'),'kind':spec.get('kind','work item'),
                 'run_type':run_type(spec,request,row['namespace']),'queue_state':row['state'],
                 'status':('waiting_capacity' if request.get('admission_pending') else 'preparing') if row['state']=='accepted' else row['state'],
                 'worker':row['host'],'dependencies':spec.get('depends_on',spec.get('dependencies',[])),
                 'resources':placement or submitted,'submission_resources':submitted,'placement_resources':placement,
-                'worker_resources':None,'execution':None,'runtime':{},'report_keys':keys,
+                'worker_resources':None,'execution':None,'runtime':observed,'report_keys':keys,
+                'gpu_allocation':gpu.get('uuid'),'shared_execution':{'id':batch['id'],'members':len(batch['members'])} if batch else None,
                 'output_verified':verified,'completed_at':row['updated'] if row['state']=='completed' else None,
                 'work_units':result.get('pairs') or spec.get('reads'),'detail':row['error'] or failure_detail(spec,result,row['state']),'detail_label':'Coordinator queue note','created':row['created'],'updated':row['updated'],
                 'generation':spec.get('generation'),'reference_mode':None,'queue_node':node,
@@ -66,4 +71,3 @@ def queue_snapshot(path, node):
         other.append(latest)
     return {'node':node,'source':'coordinator-owned queue and verification receipts','sampled_at':time.time(),
             'items':other,'runtime_summary':runtime_summary(other)}
-

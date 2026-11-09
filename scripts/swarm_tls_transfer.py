@@ -61,6 +61,7 @@ def make_server(bind, port, manifest, cert, key, ca):
             except (OSError,ValueError):self.send_error(404);return
             peer=hashlib.sha256(self.connection.getpeercert(binary_form=True)).hexdigest()
             if peer not in grant.get('clients',[]) or grant.get('expires',0)<time.time():self.send_error(403);return
+            if grant.get('protected') and not time.time()<grant.get('expires',0)<=time.time()+60:self.send_error(403);return
             if self.headers.get('X-Job-Key')!=grant.get('job_key'):self.send_error(403);return
             name=match[2];limit=grant.get('files',{}).get(name)
             length=self.headers.get('Content-Length','');expected=self.headers.get('X-Content-SHA256','')
@@ -112,6 +113,10 @@ def make_server(bind, port, manifest, cert, key, ca):
             finally:temporary.unlink(missing_ok=True)
 
         def do_GET(self):
+            if self.path=='/health':
+                data=b'{"capabilities":["expiring-capabilities-v1"]}'
+                self.send_response(200);self.send_header('Content-Type','application/json')
+                self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
             name = self.path.removeprefix('/objects/')
             row = None
             if self.path.startswith('/objects/') and re.fullmatch(r'[a-zA-Z0-9_-]+', name):
@@ -124,6 +129,9 @@ def make_server(bind, port, manifest, cert, key, ca):
                 self.send_error(404); return
             fingerprint = hashlib.sha256(self.connection.getpeercert(binary_form=True)).hexdigest()
             if (manifest.is_dir() and not row.get('clients')) or row.get('clients') and fingerprint not in row['clients']:
+                self.send_error(403); return
+            if 'expires' in row and (type(row['expires']) not in (int,float)
+                                      or not time.time() < row['expires'] <= time.time()+60):
                 self.send_error(403); return
             try:
                 with open(row['path'], 'rb') as source:

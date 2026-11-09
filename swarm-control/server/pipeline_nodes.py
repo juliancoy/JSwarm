@@ -71,7 +71,7 @@ def collect(name,address,previous,task_ids,wan_only=False):
 
 
 def execution_from_worker(row):
-    fields=('container','image','sink','started','finished','elapsed_seconds','cpu_core_seconds',
+    fields=('container','image','sink','gpu_allocation','gpu','gpu_devices','started','finished','elapsed_seconds','cpu_core_seconds',
             'cpu_throttled_seconds','cpu_sampled_at','cpu_measurement_basis','cpu_accounting_coverage',
             'memory_current_bytes','memory_peak_bytes','memory_swap_bytes','memory_sampled_at',
             'memory_measurement_basis','memory_accounting_coverage')
@@ -104,7 +104,13 @@ def merge_item(item,node):
         if matches:execution=execution_from_worker(max(matches,key=lambda r:r.get('observed_at',0)))
     if execution:
         item['execution']=execution
-        item['runtime']=runtime_observation(execution,{},name)
+        verified=item.get('runtime') or {}
+        observed=runtime_observation(execution,{},name)
+        observed['gpu_used']=observed['gpu_used'] or verified.get('gpu_used',False)
+        observed['gpu_devices']=observed['gpu_devices'] or verified.get('gpu_devices') or [d for d in (execution.get('gpu_allocation') or item.get('gpu_allocation'),) if d]
+        observed['technologies']=list(dict.fromkeys(observed['technologies']+verified.get('technologies',[])))
+        if item.get('shared_execution'):observed['accounting_scope']='Shared batch execution; do not sum across member shards'
+        item['runtime']=observed
         for k in ('cpu_accounting_coverage','queue_seconds','queue_timing_basis'):
             if k in execution:item['runtime'][k]=execution[k]
         item['worker_resources']=resources(execution.get('resources'))

@@ -6,6 +6,12 @@ import pytest
 from scripts import launcher_peers as peers
 
 
+@pytest.fixture(autouse=True)
+def isolated_web_workspace(monkeypatch):
+    monkeypatch.delenv("SWARM_WORKSPACE",raising=False)
+    monkeypatch.delenv("SWARM_WEB_WORKSPACE",raising=False)
+
+
 def configuration():
     return peers.pipeline_configuration({'name':'codecollective.local','peers':{'codecollective.local':'10.42.0.49','compai.local':'10.42.0.1','julian-minipc.local':'10.42.0.221'}})
 
@@ -40,6 +46,7 @@ def test_native_http_routes_serve_pipeline_and_enforce_origin(tmp_path,monkeypat
             response=await client.get('/pipeline.html',headers={'Host':'jswarm.localhost'})
             assert response.status==200 and await response.text()=='<main>native node pipeline</main>'
             assert response.headers['X-JSwarm-Node']=='codecollective.local'
+            assert 'no-store' in response.headers['Cache-Control'] and response.headers['Pragma']=='no-cache'
             response=await client.get('/api/jswarm-web',headers={'Host':'jswarm.localhost'})
             body=await response.json()
             assert body['node']=='codecollective.local'
@@ -95,7 +102,7 @@ def test_native_api_routing_does_not_depend_on_the_retired_nginx_view(tmp_path,m
             assert await response.json()=={'ok':True}
             assert calls[-1][1]=='http://10.42.0.1:8790/api/tasks/pipeline'
             settings['name']='compai.local';path.write_text(json.dumps(settings))
-            for route,expected in [('/api/tasks/pipeline',8792),('/api/resources',8795),('/api/health',8089)]:
+            for route,expected in [('/api/tasks/pipeline',8792),('/api/tasks/genome-datasets',8792),('/api/v1/swarm/genome-results',8091),('/api/resources',8795),('/api/health',8089)]:
                 response=await client.get(route,headers={'Host':'jswarm.localhost'});await response.read()
                 assert calls[-1][1]=='http://127.0.0.1:'+str(expected)+route
             response=await client.post('/api/tasks/machine/control',json={'host':'compai.local','action':'pause'},headers={'Host':'jswarm.localhost','Origin':'http://jswarm.localhost','X-JSwarm-Control':'1'})
@@ -104,4 +111,80 @@ def test_native_api_routing_does_not_depend_on_the_retired_nginx_view(tmp_path,m
             assert calls[-1][2]['X-JSwarm-Control']=='1'
             response=await client.get('/api/v1/master/codex/threads',headers={'Host':'jswarm.localhost'})
             assert response.status==403
+    asyncio.run(exercise())
+
+
+def test_workspace_web_reads_each_request_and_constrains_symlinks(tmp_path,monkeypatch):
+    pytest.importorskip('aiohttp')
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient,TestServer
+    workspace=tmp_path/'workspace'
+    view=workspace/'JSwarm/swarm-control/server/view';view.mkdir(parents=True)
+    genome=workspace/'GenomeHarbor/web';genome.mkdir(parents=True)
+    asset=genome/'genome-explorer.html';asset.write_text('first edit')
+    (view/'genome-explorer.html').symlink_to(asset)
+    private=workspace/'private.json';private.write_text('private result')
+    (view/'escape.json').symlink_to(private)
+    config=tmp_path/'peers.json';config.write_text(json.dumps({'name':'codecollective.local','peers':configuration()['peers'],'web_workspace':str(workspace)}))
+    monkeypatch.setattr(peers,'pipeline_assets',lambda:pytest.fail('Source mode must not load bundled bytes'))
+    async def exercise():
+        app=web.Application();app.router.add_route('*','/{path:.*}',peers.NodePipelineWeb(SimpleNamespace(config=config)).handle)
+        async with TestClient(TestServer(app)) as client:
+            async def get(name):return await client.get('/'+name,headers={'Host':'localhost'})
+            response=await get('genome-explorer.html');assert await response.text()=='first edit'
+            assert 'no-store' in response.headers['Cache-Control']
+            asset.write_text('second edit without a restart')
+            response=await get('genome-explorer.html');assert await response.text()=='second edit without a restart'
+            asset.unlink();assert (await get('genome-explorer.html')).status==404
+            assert (await get('escape.json')).status==404
+            assert (await get('.git/config')).status==404
+    asyncio.run(exercise())
+    assert peers.pipeline_source_asset(workspace,'../private.json') is None
+    assert peers.pipeline_source_asset(workspace,'/private.json') is None
+
+
+def test_mounted_web_workspace_overrides_bundled_assets(tmp_path,monkeypatch):
+    config=tmp_path/'peers.json';config.write_text('{}')
+    root=tmp_path/'workspace';(root/'JSwarm/swarm-control/server/view').mkdir(parents=True)
+    monkeypatch.setenv('SWARM_WEB_WORKSPACE',str(root))
+    monkeypatch.setattr(peers,'PIPELINE_ASSETS_B64','bundled',raising=False)
+    assert peers.pipeline_web_root(config)==root
+    monkeypatch.setenv('SWARM_WEB_WORKSPACE',str(tmp_path/'missing'))
+    with pytest.raises(ValueError,match='mounted Organization'):peers.pipeline_web_root(config)
+
+
+def test_live_source_revision_tracks_public_edits_and_injects_only_source_html(tmp_path):
+    pytest.importorskip('aiohttp')
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient,TestServer
+    workspace=tmp_path/'workspace'
+    view=workspace/'JSwarm/swarm-control/server/view';view.mkdir(parents=True)
+    genome=workspace/'GenomeHarbor/web';genome.mkdir(parents=True)
+    (view/'index.html').write_text('<html><head></head><body>live</body></html>')
+    config=tmp_path/'peers.json';config.write_text(json.dumps({'name':'codecollective.local','peers':configuration()['peers'],'web_workspace':str(workspace)}))
+    outside=workspace/'private.json';outside.write_text('private')
+    (view/'escape.json').symlink_to(outside)
+    async def exercise():
+        app=web.Application();app.router.add_route('*','/{path:.*}',peers.NodePipelineWeb(SimpleNamespace(config=config)).handle)
+        async with TestClient(TestServer(app)) as client:
+            async def get(path):return await client.get(path,headers={'Host':'localhost'})
+            response=await get('/index.html');assert (await response.text()).count('src="/jswarm-live.js"')==1
+            assert response.headers['Pragma']=='no-cache' and response.headers['Expires']=='0'
+            assert 'ETag' not in response.headers and 'Last-Modified' not in response.headers
+            async def revision():
+                response=await get('/api/jswarm-web/source-revision')
+                assert 'no-store' in response.headers['Cache-Control']
+                body=await response.json();assert set(body)=={'revision'}
+                return body['revision']
+            initial=await revision()
+            outside.write_text('private edit must not trigger public reload')
+            assert await revision()==initial
+            asset=genome/'data.json';asset.write_text('{"version":1}')
+            created=await revision();assert created!=initial
+            asset.write_text('{"version":2}')
+            edited=await revision();assert edited!=created
+            asset.unlink();assert await revision()!=edited
+            response=await get('/missing.js');assert response.status==404 and 'no-store' in response.headers['Cache-Control']
+            response=await client.get('/api/jswarm-web/source-revision',headers={'Host':'evil.test'})
+            assert response.status==421 and 'no-store' in response.headers['Cache-Control']
     asyncio.run(exercise())

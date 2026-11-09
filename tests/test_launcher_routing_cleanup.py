@@ -56,3 +56,26 @@ def test_web_port_forwarding_does_not_replace_foreign_tables():
     with patch('subprocess.run',side_effect=[subprocess.CompletedProcess([],0,json.dumps(row),'') for row in outputs]) as run:
         with pytest.raises(RuntimeError,match='owned by another'):reconcile_node_web_ports('10.42.0.49')
     assert run.call_count==2
+
+
+def test_lost_create_response_removes_helper_by_preselected_name():
+    client=MagicMock();client.info.return_value={'SecurityOptions':[]}
+    client.containers.create.side_effect=TimeoutError('lost create response')
+    with patch('docker.from_env',return_value=client):
+        with pytest.raises(TimeoutError,match='lost create'):configure_launcher_routing({})
+    name=client.containers.create.call_args.kwargs['name']
+    client.api.remove_container.assert_called_once_with(name,force=True)
+    client.close.assert_called_once()
+
+
+def test_failed_routing_cleanup_prevents_more_creates(monkeypatch):
+    from scripts import launcher_registry as registry
+    monkeypatch.setattr(registry,'_routing_pending',None)
+    client=MagicMock();client.info.return_value={'SecurityOptions':[]}
+    client.containers.create.side_effect=TimeoutError('lost create response')
+    client.api.remove_container.side_effect=TimeoutError('Docker unavailable')
+    with patch('docker.from_env',return_value=client):
+        for _ in range(3):
+            with pytest.raises(TimeoutError):configure_launcher_routing({})
+    assert client.containers.create.call_count==1
+    assert registry._routing_pending==client.containers.create.call_args.kwargs['name']

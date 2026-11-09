@@ -198,3 +198,29 @@ def test_stream_deploy_can_skip_offline_preflight_before_replacement(monkeypatch
     rows=stream.deploy([{'host':'first','machine':'machine'},{'host':'second','machine':'machine'}],progress=lambda _:None)
     assert [row['status'] for row in rows]==['failed','updated']
     assert updater.ensure.call_count==1 and updater.ensure.call_args.args[0]['host']=='second'
+
+
+def test_removed_published_flag_is_rejected_before_deployment(monkeypatch):
+    monkeypatch.setattr(deploy.sys,'argv',['deploy_swarm_inputs.py','--published'])
+    sweep=Mock();monkeypatch.setattr(deploy,'sweep',sweep)
+    with pytest.raises(SystemExit) as stopped:deploy.main()
+    assert stopped.value.code==2
+    sweep.assert_not_called()
+
+
+def test_parallel_rollout_contacts_all_nodes_and_keeps_independent_failures(monkeypatch,tmp_path):
+    from contextlib import nullcontext
+    import threading
+    updater,clients=setup_deployment(monkeypatch,tmp_path)
+    updater.parallel_updates=lambda:nullcontext(lambda:updater)
+    together=threading.Barrier(2)
+    def ensure(host,client,status,**options):
+        together.wait(timeout=5)
+        if host['host']=='first':raise RuntimeError('first offline')
+        return {**status,'source_revision':'new'}
+    updater.ensure.side_effect=ensure
+    assert deploy.sweep(parallel=True) is False
+    assert len(clients)==2 and all(c.close.called for c in clients)
+    report=json.loads((tmp_path/'.local/state/swarm-control/input-deployment.json').read_text())
+    assert [r['status'] for r in report['nodes']]==['pending','current']
+    assert all('seconds' in r for r in report['nodes'])

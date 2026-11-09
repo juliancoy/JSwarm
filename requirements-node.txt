@@ -1,0 +1,7 @@
+docker>=7,<8
+cryptography>=43
+aiortc>=1.14,<2
+aiohttp>=3.12,<4
+zeroconf>=0.151,<1
+
+crypt4gh==1.8.6

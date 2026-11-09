@@ -1158,10 +1158,6 @@
       "path": "swarm-control/server/view/test-deployment.css"
     },
     {
-      "previous_path": "swarm-control/server/view/genome-data.js",
-      "path": "swarm-control/server/view/genome-data.js"
-    },
-    {
       "previous_path": "swarm-control/server/view/websites.html",
       "path": "swarm-control/server/view/websites.html"
     },
@@ -1466,10 +1462,6 @@
       "path": "swarm-control/server/view/authorized-action.js"
     },
     {
-      "previous_path": "swarm-control/server/view/genome-comparison.js",
-      "path": "swarm-control/server/view/genome-comparison.js"
-    },
-    {
       "previous_path": "swarm-control/server/view/websites.js",
       "path": "swarm-control/server/view/websites.js"
     },
@@ -1576,10 +1568,6 @@
     {
       "previous_path": "swarm-control/server/tests/test_codex_titles.py",
       "path": "swarm-control/server/tests/test_codex_titles.py"
-    },
-    {
-      "previous_path": "swarm-control/server/tests/genome-comparison.test.js",
-      "path": "swarm-control/server/tests/genome-comparison.test.js"
     },
     {
       "previous_path": "swarm-control/server/tests/export-data.test.js",

@@ -4,6 +4,13 @@ Swarm discovery, scheduling, transport, Docker execution, launcher supervision a
 
 For node and controller updates, follow the [no-drain replacement procedure](docs/REPLACEMENT.md).
 
+The task and pipeline APIs share background observation refreshes across clients.
+Responses reuse compact JSON and gzip encodings; request threads do not wait for
+queue scans or node polling. `sampled_at` and `X-Observation-Age` describe the
+retained observation, including during refresh. An initial cold snapshot returns
+503 with `Retry-After: 1`; a failed refresh retains the previous snapshot with a
+Warning header. Machine controls continue to use the current node API directly.
+
 ## Worker storage policy
 
 RAM-only operation is a node container setting. Set
@@ -44,7 +51,7 @@ Build the node image with `PYTHON=/path/to/python ./build.sh` from this director
 - `ramtop/`: node resource monitoring.
 - `peer-worker/`: peer transport service.
 - `Dockerfile.swarm-node`: current swarm node image, formerly the lifetech launcher.
-- `Dockerfile.launcher`: legacy launcher base image.
+- `Dockerfile.swarm-node`: dependency-only node image, built with `./build.sh`.
 - `run.py`, `swarm-node`: launcher and node entry points.
 
 Keep this repository beside `GenomeHarbor` in the Organization workspace. Compatibility links preserve deployed paths and shared `scripts.*` imports. Genome-specific scripts and UI assets are owned by GenomeHarbor. Existing image tags and enrollment identities are preserved.
@@ -58,89 +65,111 @@ GenomeHarbor. Legacy links rely on the adjacent workspace layout.
 
 ## Shared node memory
 
-JSwarm owns the reusable shared RAM cache in
-[`scripts/swarm_shared_cache.py`](scripts/swarm_shared_cache.py).
-Jobs declare an immutable set of files and use `ensure(host, image, files, load)`
-to prepare one verified cache per node. `image` is a pinned Docker image ID;
-each file declares its byte count and SHA-256. The application supplies the
-`load(owner_container)` callback that streams those files into `/dev/shm`.
-JSwarm verifies the payload before publishing the cache for reuse.
+Each updated node has one bounded RAM cache keeper, managed by its agent through
+controller-signed `resource.cache.*` operations. Immutable object sets live in
+separate directories of one Docker tmpfs volume. Jobs mount only their required
+object directories read-only using Docker `volume-subpath`; they never see the
+whole cache. Docker Engine must support volume subpaths. The keeper charges its
+payload commitment once, with one 128 MiB allowance for the node instead of one
+allowance and sleeping container per object. Configured limits are not measured
+physical RAM usage.
 
-Pass the returned descriptor to `swarm_runtime.run_job(..., shared_cache=cache)`.
-Concurrent jobs mount the same native Docker tmpfs volume read-only at
-`/dev/shm`; keep mutable scratch in a separate private mount, such as `/work`.
-The existing scheduler charges the cache owner's RAM once, while each job's
-`memory_mb` covers its private working memory and scratch. The cache owner
-also reserves one CPU slot. Job reports include the cache descriptor.
+The default payload budget is 25% of effective node RAM. The node owner can set
+`SWARM_CACHE_BUDGET_MB` before agent startup. Admission also checks actual node
+headroom; a cache budget does not reserve permission to exhaust host RAM. Idle
+objects are evicted in least-recently-used order to make room. Explicit cleanup
+removes all unpinned managed objects without consulting controller queue state.
+Queued jobs retain immutable preparation instructions, not permanent RAM pins.
+An input miss returns to preparation and rebuilds or transfers the same verified
+bytes before launch. Derived references are regenerated from their original
+source; cached lookup metadata alone never proves residency.
 
-JSwarm controls identity, admission, concurrent loading, verification and
-safe cleanup. Cache ownership comes from input bindings in the existing durable
-job requests, across namespaces and machines; there is no separate cache claims
-ledger. Prepared, queued, paused and retrying jobs retain their inputs. Completion
-or confirmed cancellation allows cleanup only after no unfinished job needs the
-entry and Docker confirms that no consumer or transfer uses it. Incomplete
-preparation and unknown queue state preserve caches. Capacity pressure can retry
-cleanup of terminal job data, but cannot evict inputs owned by unfinished jobs.
-External shared volumes remain owned by their coordinator queue; the node's
-stream journal cleans only its own streamed input entries. Cache preparation
-honors the node's worker policy and live capacity. There is no cache-wide or
-derived-object file lock: Docker's unique container name elects the loader;
-competing requests retry until its verified seal is available. Terminal cleanup
-sweeps all eligible entries rather than stopping at a pressure budget.
+Loading, execution and transfers hold renewable 120-second pins. A lost
+controller's pins expire. Running and stopped Docker consumers independently
+protect their exact object directories even after agent replacement; unknown
+whole-volume readers or untracked keeper execs conservatively block eviction.
+The RAM manifest survives agent replacement with the keeper, and disappears with
+the payload on reboot. Results and private scratch remain outside this cache.
 
-Applications choose cache contents, transfer method, private memory budget and
-fallback policy. GenomeHarbor's BWA adapter uses this interface; BWA formats,
-reference selection and alignment validation remain in GenomeHarbor. Across
-nodes, files are transferred into independent local caches. This interface
-provides shared host RAM, not shared VRAM or remote pointer access.
+Applications call `swarm_shared_cache.ensure(..., load_path=True)`. The loader
+accepts `(owner_container, object_directory)` and streams files there. For older
+nodes it receives just `owner_container` and must default its directory to
+`/dev/shm`. Descriptors continue to contain pinned image IDs, byte counts and
+SHA-256 hashes. Generic `swarm_runtime.run_job` pins managed inputs through Docker
+cleanup. Peer transfers pin the source through completion. Loader paths, seals,
+instance identities and read-only file identities are checked before reuse.
 
-Validation: `python -m pytest tests/test_swarm_shared_cache.py tests/test_swarm_runtime.py`.
-The Docker integration check exercises concurrent consumers, read-only mounts,
-cache reuse, payload rejection and alignment output parity.
+Legacy per-object owners remain readable during migration and retain their
+previous terminal-queue and Docker-reference cleanup checks. Existing immutable
+node recipe bindings continue using their legacy owners until replaced; no
+accepted worker is stopped or rebound by this change. New managed genomics
+staging and recipe bundles share the node keeper. The pipeline shows one cache
+summary per machine, including overlapping legacy owners during migration.
+
+Validation: `python -m pytest tests/test_node_cache_manager.py
+ tests/test_swarm_shared_cache.py tests/test_swarm_runtime.py` (on one line).
+The manager tests use uniquely named local Docker volumes and never enumerate or
+remove production cache holders. Build the runtime with `./build.sh`; publish and
+roll out through the standard validated release path.
 
 ## Fleet releases
 
-The authoritative launcher release is the immutable, checksummed artifact selected
-by `~/.local/state/swarm-control/node-releases/desired` on the coordinator.
-Manual deployment, streaming deployment, readiness checks, backups and maintenance
-use this publication. Workspace edits become deployable only after validation and
-publication; do not patch installed node releases or exclude nodes to retain a fix.
+Node application code comes from host-mounted Git source; the Docker image
+contains runtime dependencies and is reused for code-only updates. See
+[Git source deployment](docs/node-source-deployment.md) for mount layout, Git
+access requirements, initial provisioning and dependency changes.
 
-Run these commands from the Organization workspace with the configured Python environment:
-
-```bash
-python JSwarm/scripts/deploy_swarm_inputs.py --publish
-python JSwarm/scripts/deploy_swarm_inputs.py --status
-```
-
-Publication runs the required release checks, verifies that bundled sources did not
-change during validation, and atomically selects the artifact. The existing
-`swarm-input-deployment.service` follows that publication and replaces one enrolled
-node at a time. It requires the exact published revision and readiness before
-continuing. An unavailable agent can be recovered through the existing pinned
-owner SSH transport after checking its enrolled node identity. Legacy supervisors
-stuck draining are restarted into the installed supervisor; worker containers
-remain independently owned. Docker workers retain their own lifecycle. Status is read-only and
-exits unsuccessfully if a selected node is unreachable, unready or on another
-revision. `--node NAME` selects an enrolled node for status or a manual rollout.
-
-To run the same rollout manually, use `python JSwarm/scripts/deploy_swarm_inputs.py`.
-The legacy `--published` flag remains compatible; published deployment is now the
-default. Use `--paged-cache-only` explicitly for paging-cache provisioning; it does not
-run during launcher releases or establish launcher readiness. Native resource monitors and application controller images
-have their own deployments; this artifact covers the launcher, supervisor and
-bundled command, streaming and performance runtimes.
+Commit and push Organization, JSwarm and GenomeHarbor to origins reachable by all
+nodes. From the Organization workspace:
 
 ```bash
-python JSwarm/scripts/deploy_swarm_inputs.py --rollback
-python JSwarm/scripts/deploy_swarm_inputs.py --status
+python -m scripts.deploy_swarm_inputs --publish
+python -m scripts.swarm_node update
+python -m scripts.deploy_swarm_inputs --status
 ```
 
-Rollback verifies the previous immutable publication before selecting it for the
-same rolling updater. Republishing the current release preserves the previous
-release. Publication, rollback and deployment share a lock. The deployment report
-is `~/.local/state/swarm-control/input-deployment.json`; service logs are available
-with `journalctl --user -u swarm-input-deployment.service`.
+Publication validates committed snapshots and atomically selects the checksummed
+artifact at `~/.local/state/swarm-control/node-releases/desired`. The updater uses
+each enrolled node's signed owner-command API to fetch those exact commits into
+dedicated detached worktrees. Nodes regenerate the runtime from Git and verify it
+against the publication before activation. Local edits are excluded. Deployment
+requires Git provenance and does not fall back to SSH or source-only staging.
+
+The existing `swarm-input-deployment.service` follows the same publication and
+updates one enrolled machine at a time. Each node must report the target revision,
+readiness and enrolled machine identity before rollout continues. `--node NAME`
+selects a machine. An offline node remains pending until its API is available.
+Admission briefly closes while the supervisor replaces the agent process;
+Docker-owned workers continue under their existing container IDs.
+
+Validation, publication, rollback and deployment share the coordinator's
+`~/.local/state/swarm-control/input-deployment.lock`. Competing commands report the
+lock holder. Never delete the lock file to bypass a running deployment. Changed
+publications have increasing `generation` numbers; repeating the current release
+is a no-op. Stale publication attempts cannot replace a newer selected release.
+
+To select and deploy the previous Git-backed release:
+
+```bash
+python -m scripts.deploy_swarm_inputs --rollback
+python -m scripts.swarm_node update
+python -m scripts.deploy_swarm_inputs --status
+```
+
+Publications lacking Git provenance cannot be deployed or selected for rollback.
+Republish committed source to replace an old desired publication. Historical
+receipts remain available for auditing and generation ordering. Unsupported old
+supervisors require recovery through the normal local bootstrap; the updater no
+longer bridges draining supervisors or restarts legacy containers.
+
+Use `./build.sh` from JSwarm for provisioning or changed runtime dependencies,
+then recreate the affected node container. Code-only updates do not build images
+or install Python packages. The optional public-pager component uses the same
+publication; `--paged-cache-only` provisions it without replacing launchers.
+Application controller images have their own releases.
+
+The rollout receipt is `~/.local/state/swarm-control/input-deployment.json`;
+inspect logs with `journalctl --user -u swarm-input-deployment.service`.
 
 
 ## Independent private source catalogue
@@ -174,8 +203,8 @@ inspect the container's Docker health status on its source machine.
 
 JSwarm's standard fleet publication includes the checksummed `public-pager`
 component. The normal deployer provisions it for every enrolled machine from
-that immutable snapshot. Legacy publications continue their existing behavior;
-deployment never imports an unpublished pager from the working directory.
+that validated Git-backed publication. Deployment never imports an unpublished
+pager from the working directory.
 
 An application explicitly publishes a public immutable artifact set through
 `scripts.swarm_paged_cache.publish`. Deployment verifies source checksums, sets
@@ -190,6 +219,10 @@ complete destination download. The source node maps its original verified files
 locally. System and existing rootless Docker engines are checked during node
 provisioning. Compute containers receive read-only file mounts and no mount
 privileges. Only the dedicated deployment helpers manage kernel mounts.
+Deployment checks system Docker access before distributing a paging helper image.
+A rootless API owner without that socket keeps the verified shared RAM-cache
+fallback; deployment does not grant it system Docker access or enable payload
+disk fallback. Its optional paging result records the missing prerequisite.
 
 For reclaimable mappings, `run_job(memory_reservation_mb=...)` separates the
 private RAM admission reservation from the larger no-swap container hard limit.
@@ -223,9 +256,18 @@ states; unavailable observations are marked stale instead of treated as success.
 ## Pipeline UI in the node
 
 The existing `swarm-node` process serves `pipeline.html` and its machine links.
-There is no separate node web container or web deployment registry. Public assets
-are bundled into the immutable launcher publication and covered by its checksum.
-Use `./build.sh` and the standard validated fleet publication/update procedure.
+The existing node endpoint serves public UI files directly from its mounted
+Organization checkout when `SWARM_WORKSPACE` is set (as in the standard local
+runner). It reads files on every request and sends `Cache-Control: no-store`, so
+HTML, CSS and JavaScript edits appear on refresh without a build or node restart.
+`SWARM_WEB_WORKSPACE` or the owner setting `web_workspace` can select another
+absolute, mounted checkout. Only `JSwarm/swarm-control/server/view` and its public
+GenomeHarbor web aliases are served; API authentication and proxying are unchanged.
+A missing source file returns 404 rather than silently serving old bundled code.
+Nodes without a source mount retain the checksum-covered publication assets.
+There is no separate node web container or web deployment registry.
+Use the standard Git-backed publication/update procedure; rebuild with
+`./build.sh` only when runtime dependencies change.
 
 `http://jswarm.localhost/pipeline.html` opens the local node's page on
 port 80. Machine links such as
@@ -323,3 +365,85 @@ code, including failures. Changed inputs run again; interrupted runs and inputs
 modified during a test are not reused. This applies to commands invoked through
 `--test`; direct test commands do not pass through the launcher.
 
+
+### Browser sign-in and WAN node enrollment
+
+On a new Linux machine with JSwarm and its runtime dependencies installed, run:
+
+```sh
+./swarm-node join --origin https://compai.lifetech.fyi
+```
+
+The command opens the owner's browser sign-in, which already uses PIdP
+Authorization Code with S256 PKCE. After sign-in, compare the node name and
+machine fingerprint shown by the command and approve that computer. A second
+S256 grant binds provisioning delivery to the native node process; the browser
+never receives fleet keys or node registration credentials. Grants expire after
+ten minutes, and revoked or disallowed browser sessions cannot finish them.
+Provisioning delivery can safely retry after an interrupted response. Existing
+fleet membership is never overwritten by `join`.
+
+The node stores enrollment material with owner-only permissions, registers with
+the existing signaling service, and starts JSwarm. Approved WAN nodes use WebRTC
+explicitly, including when their private address overlaps the coordinator's LAN.
+The scheduler checks the approved machine fingerprint before accepting them.
+Enrollment and channel readiness are separate; check launcher status to confirm
+an open connection. TURN configuration is intentionally deferred.
+
+The HTTPS console serves `/pipeline.html` and its read/control endpoints behind
+the existing PIdP session checks. LAN `map.local` retains its existing network
+access policy. Both use the same pipeline backend: queue definitions and verified
+acceptance receipts belong to the coordinator, while each worker supplies its
+execution journal, timing receipts, resource measurements, and cache-worker
+status through authenticated JSwarm RPC. Unreachable nodes are marked unavailable;
+retained measurements are marked stale rather than replaced by coordinator
+telemetry. Historical node journals warm up in bounded pages.
+
+Deploy the web integration with `./run.py --pipeline-view authenticated-nodes`
+on the coordinator. It backs up replaced files, rolls back on service restart
+failure, and restarts only the task feed and authenticated web API. Build the
+updated node package with `./build.sh`.
+
+## Fast prerelease swarm experiments
+
+[The five-machine simulator](docs/prerelease-simulation.md) calibrates node resources
+and execution stages from each machine's authenticated API history, then runs
+seeded cache-pressure and scheduling experiments with a virtual clock. Offline
+runs need only a saved calibration. Reports compare round-robin and cache-aware
+scheduling, expose cache accumulation/admission stalls, and include reproducible
+seeds plus deliberate fault controls. No live jobs or cache changes are made.
+
+## Audit caches across enrolled machines
+
+Use the [read-only cache audit](docs/cache-audit.md) to check every machine's
+JSwarm APIs for shared-cache counts, measured RAM, admission headroom, pending
+cache preparation, and retained package/workspace data. Repeat samples or a saved
+previous report expose growth without assuming that retained data is unowned.
+
+## Clean terminal shared RAM caches
+
+The [cache cleanup API and script](docs/cache-cleanup.md) provide signed
+`resource.caches.inspect` and `resource.caches.cleanup` operations. The script
+checks controller queue ownership, defaults to a preview, and supports `--apply`
+and an optional admission-headroom target. Nodes preserve attached consumers and
+active transfers and refuse stale owner identities. Updated nodes advertise
+`cache-cleanup-v1`; standard publication and node update are required.
+
+Node source is volume-mounted; code-only updates reuse the dependency image.
+The standard publisher pins Git commits and the fleet updater fetches them through
+its signed node API before activating the verified runtime. See
+[Git source deployment](docs/node-source-deployment.md) for the update and migration steps.
+
+
+Source-workspace web responses disable storage and revalidation with
+`Cache-Control: no-store, no-cache, max-age=0, must-revalidate`, `Pragma: no-cache`,
+and `Expires: 0`. Static HTML automatically loads `/jswarm-live.js`. The browser
+checks `/api/jswarm-web/source-revision` every 1.5 seconds while visible and reloads
+after a changed public-source fingerprint stabilizes over two checks. Imported JS,
+CSS, JSON, additions and deletions are included. The fingerprint endpoint returns
+only a digest, follows the existing enrolled-client/origin checks, and excludes
+private state and symlinks outside the two public asset trees. Read-only genome
+selectors are restored after reload. Focused text entry delays reload until the
+user leaves it. Background tabs check when visible again. Immutable bundled
+releases do not inject a live watcher. An already-open page needs one refresh to
+load the watcher after its first installation.

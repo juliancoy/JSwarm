@@ -12,6 +12,8 @@ class AgentReadinessTests(unittest.TestCase):
         folder=tempfile.TemporaryDirectory();self.addCleanup(folder.cleanup)
         root=Path(__file__).resolve().parents[3]
         updater=LauncherUpdates(root,lambda:False,Mock())
+        updater.git_source={'repositories':{name:{'origin':'https://example.com/'+name+'.git','commit':'a'*40}
+                            for name in ('Organization','JSwarm','GenomeHarbor')},'installer':'# test Git installer\n'}
         artifact=updater.publish(folder.name)
         publication=LauncherUpdates.published(artifact,lambda:False,Mock())
         selected=patch('agent_updates.LauncherUpdates.desired',return_value=publication)
@@ -57,3 +59,21 @@ class AgentReadinessTests(unittest.TestCase):
         with patch('agent_client.AgentClient') as client:
             with self.assertRaises(InterruptedError):service.verify([{'host':'a.local'}])
         client.assert_not_called()
+
+class WANDiscoveryTests(unittest.TestCase):
+    def test_approved_remote_address_uses_webrtc_and_requires_machine_pin(self):
+        import json
+        from agent_client import AgentSessions
+        with tempfile.TemporaryDirectory() as directory:
+            config=Path(directory)/'peers.json'
+            value={'name':'master.local','peers':{'master.local':'10.42.0.1','remote.local':'192.168.5.4','unapproved.local':'192.168.5.5'},
+                   'wan_only':['remote.local','unapproved.local'],'internet_nodes':{'remote.local':'peer','unapproved.local':'other'},'enrolled_machines':{'remote.local':'machine'}}
+            config.write_text(json.dumps(value))
+            service=AgentSessions(Path(__file__).resolve().parents[3],[{'host':'remote.local'},{'host':'unapproved.local'}],lambda:False,Mock())
+            interfaces=[{'addr_info':[{'local':'10.42.0.1','prefixlen':24,'scope':'global'}]}]
+            with patch('agent_client.CONFIG',config),patch('subprocess.check_output',return_value=json.dumps(interfaces)),patch.dict('sys.modules',{'zeroconf':Mock(),'launcher_discovery':Mock(SERVICE='_lifetech._tcp.local.')}),patch('agent_client.time.monotonic',side_effect=[0,5]):
+                hosts=service.accessible()
+            self.assertEqual(len(hosts),1)
+            self.assertEqual(hosts[0]['agent_route'],'webrtc')
+            self.assertEqual(hosts[0]['expected_machine'],'machine')
+            self.assertEqual(hosts[0]['agent_endpoint'],'http://127.0.0.1:8791')

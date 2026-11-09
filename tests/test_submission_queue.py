@@ -114,3 +114,25 @@ def test_input_preparation_does_not_reserve_future_compute_memory(tmp_path):
     with q.connect() as db:r=json.loads(db.execute("SELECT request FROM submissions WHERE id='a'").fetchone()[0])
     r['inputs_ready']=True;q.update('a',a['token'],state='accepted',request=json.dumps(r))
     assert q.claim('peer',{'available_cpus':4,'available_mb':4096},requirements={'c':budget},eligible=['c'],preparation_resources={'cpus':0,'memory_mb':128}) is None
+
+
+def test_batch_claim_is_atomic_and_charges_one_shared_worker(tmp_path):
+    q=SubmissionQueue('batches',tmp_path/'queue.sqlite')
+    for ident in ['a','b','other']:q.submit({'id':ident,'resources':{'cpus':2,'memory_mb':1024}})
+    group={'id':'group','members':['a','b'],'manifest':'/private/manifest'}
+    requests={i:{'gpu_batch':group} for i in group['members']}
+    capacity={'available_cpus':4,'available_mb':2048}
+    claims=q.claim_batch('node',capacity,requests,{'cpus':2,'memory_mb':1024})
+    assert len(claims)==2
+    assert sum(json.loads(c['request'])['resources']['memory_mb'] for c in claims)==1024
+    assert q.claim('node',capacity,eligible=['other'])['id']=='other'
+    assert q.claim_batch('node',capacity,requests,{'cpus':2,'memory_mb':1024})==[]
+
+
+def test_batch_claim_race_leaves_every_other_member_unclaimed(tmp_path):
+    q=SubmissionQueue('batches',tmp_path/'queue.sqlite')
+    for ident in ['a','b']:q.submit({'id':ident,'resources':{'cpus':1,'memory_mb':128}})
+    q.claim('other',eligible=['b'])
+    group={'id':'group','members':['a','b']}
+    assert q.claim_batch('node',{'available_cpus':4,'available_mb':4096},{i:{'gpu_batch':group} for i in group['members']},{'cpus':2,'memory_mb':1024})==[]
+    with q.connect() as db:assert db.execute("SELECT state FROM submissions WHERE id='a'").fetchone()[0]=='queued'

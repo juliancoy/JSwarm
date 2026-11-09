@@ -12,13 +12,13 @@ from scripts.swarm_source_client import SourceClient
 
 
 @pytest.fixture
-def source(tmp_path,monkeypatch):
+def source(tmp_path,monkeypatch,request):
     def openssl(*args):subprocess.run(['openssl',*args],cwd=tmp_path,check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-    openssl('req','-x509','-newkey','ec','-pkeyopt','ec_paramgen_curve:P-256','-nodes','-keyout','ca.key','-out','ca.crt','-subj','/CN=fixture-ca','-days','1')
+    openssl('req','-x509','-newkey','ec','-pkeyopt','ec_paramgen_curve:P-256','-nodes','-keyout','ca.key','-out','ca.crt','-subj','/CN=fixture-ca','-days','1','-addext','basicConstraints=critical,CA:TRUE','-addext','keyUsage=critical,keyCertSign,cRLSign')
     fingerprints={}
     for name in ('source','controller','other'):
         openssl('req','-new','-newkey','ec','-pkeyopt','ec_paramgen_curve:P-256','-nodes','-keyout',name+'.key','-out',name+'.csr','-subj','/CN='+name)
-        (tmp_path/(name+'.ext')).write_text('extendedKeyUsage=serverAuth,clientAuth\nsubjectAltName=IP:127.0.0.1\n')
+        (tmp_path/(name+'.ext')).write_text('basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth,clientAuth\nsubjectAltName=IP:127.0.0.1\n')
         openssl('x509','-req','-in',name+'.csr','-CA','ca.crt','-CAkey','ca.key','-CAcreateserial','-out',name+'.crt','-days','1','-extfile',name+'.ext')
         fingerprints[name]=hashlib.sha256(ssl.PEM_cert_to_DER_cert((tmp_path/(name+'.crt')).read_text())).hexdigest()
     peers={name:{'machine':name*16,'address':'127.0.0.1','certificate_sha256':fingerprints[name]} for name in fingerprints}
@@ -37,7 +37,12 @@ def source(tmp_path,monkeypatch):
         for mate in range(2):
             path=shards/f'{n:06d}-{mate}.gz';path.write_bytes(b'synthetic input'+bytes([n,mate]));files.append({'path':str(path),'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'bytes':path.stat().st_size})
         (shards/f'{n:06d}.json').write_text(json.dumps({'shard':n,'pairs':2,'generation':'existing-generation','files':files}))
-    server=service.make_server(bases['source'],{'controller':'controller','inputs':[str(work)],'outputs':[str(outputs)]},'127.0.0.1',0)
+    policy={'controller':'controller','inputs':[str(work)],'outputs':[str(outputs)]}
+    if getattr(request,'param',False):
+        policy['authorization']={'issuer':'https://id.example','resource':'https://source.example/genomics',
+            'introspection_endpoint':'https://id.example/oauth/mcp/introspect',
+            'secret_file':str(bases['source']/'secret'),'approvals_file':str(bases['source']/'approvals')}
+    server=service.make_server(bases['source'],policy,'127.0.0.1',0)
     for name,base in bases.items():
         cfg=json.loads((base/'config.json').read_text());cfg['peers']['source']['source_port']=server.server_port;(base/'config.json').write_text(json.dumps(cfg))
     thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
@@ -89,3 +94,51 @@ def test_paged_catalogue_does_not_duplicate_shards(source):
     second=client.call('/v1/shards',{'work':str(work),'limit':1,'start':first['next']})
     assert first['shards'][0]['shard']==0 and second['shards'][0]['shard']==1
     assert second['next'] is None
+
+
+@pytest.mark.parametrize('source',[True],indirect=True)
+def test_protected_source_checks_live_identity_and_exact_contract(source,monkeypatch):
+    import time
+    from scripts import swarm_data_authorization as auth
+    client,work,outputs,bases=source
+    row=json.loads((work/'shards/000000.json').read_text())['files'][0]
+    args={'peer':'other','inputs':{'reads':row}}
+    job='d'*64
+    approval={'subject':'owner:alice','peer':'other','machine':'other'*16,'expires':time.time()+300,
+              'requests':[auth.request_digest('/v1/offers',args)]}
+    (bases['source']/'approvals').write_text(json.dumps({job:approval}))
+    (bases['source']/'approvals').chmod(0o600)
+    claims={'active':True,'iss':'https://id.example','aud':'https://source.example/genomics',
+            'sub':'owner:alice','scope':'genomics:data','exp':time.time()+300}
+    monkeypatch.setattr(auth,'introspect',lambda cfg,token:claims if token=='user-token' else {'active':False})
+    with pytest.raises(RuntimeError,match='403'):client.call('/v1/offers',args)
+    client=SourceClient('source',bases['controller'],token_provider=lambda:'user-token',job_key=job)
+    offered=client.call('/v1/offers',args)['reads']
+    manifest=json.loads((bases['source']/'objects'/(offered['object']+'.json')).read_text())
+    assert manifest['job_key']==job and time.time()<manifest['expires']<=time.time()+60
+    assert 'user-token' not in json.dumps(manifest)
+    changed={**args,'peer':'controller'}
+    with pytest.raises(RuntimeError,match='403'):client.call('/v1/offers',changed)
+    claims['active']=False
+    with pytest.raises(RuntimeError,match='403'):client.call('/v1/offers',args)
+
+
+def test_protected_activation_refuses_live_legacy_capabilities(source):
+    import time
+    client,work,outputs,bases=source
+    row=json.loads((work/'shards/000000.json').read_text())['files'][0]
+    client.offers('other',{'reads':row})
+    policy={'controller':'controller','inputs':[str(work)],'outputs':[str(outputs)],
+            'authorization':{'issuer':'https://id.example','resource':'https://source.example',
+            'introspection_endpoint':'https://id.example/oauth/mcp/introspect',
+            'secret_file':str(bases['source']/'secret'),'approvals_file':str(bases['source']/'approvals')}}
+    with pytest.raises(ValueError,match='Retire legacy'):
+        service.SourceService(bases['source'],policy)
+    for path in (bases['source']/'objects').glob('*.json'):path.unlink()
+    request={'destination':str(outputs/'existing'),'peer':'other','job_key':'b'*64,'files':{'r':10},'max_bytes':10}
+    client.grant(request)
+    with pytest.raises(ValueError,match='Retire legacy'):
+        service.SourceService(bases['source'],policy)
+    for path in (bases['source']/'inboxes').glob('*.json'):
+        value=json.loads(path.read_text());value['expires']=time.time()-1;path.write_text(json.dumps(value))
+    assert service.SourceService(bases['source'],policy).authorization is not None

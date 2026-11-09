@@ -11,7 +11,10 @@ import agent_updates as updates
 
 @pytest.fixture
 def source():
-    return updates.LauncherUpdates(Path(__file__).parents[1],lambda:False,Mock())
+    value=updates.LauncherUpdates(Path(__file__).parents[1],lambda:False,Mock())
+    value.git_source={'repositories':{name:{'origin':'https://example.com/'+name+'.git','commit':'a'*40}
+                       for name in ('Organization','JSwarm','GenomeHarbor')},'installer':'# test Git installer\n'}
+    return value
 
 
 def test_process_lock_reports_owner_and_releases_after_crash(tmp_path):
@@ -162,3 +165,20 @@ def test_ready_node_observations_do_not_block_job_admission_on_the_fleet_lock(tm
     assert source.ensure(host,Mock(),compatible,allow_compatible=True)==compatible
     assert host['launcher_update']['status']=='deferred'
     source._deployment_guard.assert_not_called()
+
+
+def test_parallel_children_share_pinned_lock_and_expire_with_the_scope(tmp_path,source):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    source.publish(tmp_path)
+    together=threading.Barrier(2)
+    def work(child):
+        with child._deployment_guard():
+            together.wait(timeout=5)
+            with pytest.raises(RuntimeError,match='Deployment locked'):
+                with updates.deployment_lock(folder=tmp_path.parent):pass
+    with source.parallel_updates() as factory:
+        children=[factory(),factory()]
+        with ThreadPoolExecutor(max_workers=2) as pool:list(pool.map(work,children))
+    with pytest.raises(RuntimeError,match='scope ended'):
+        with children[0]._deployment_guard():pass

@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from agent_client import AgentClient, CONFIG
 
 POOL=ThreadPoolExecutor(max_workers=3,thread_name_prefix='machine-inspector')
+DIAGNOSTICS=ThreadPoolExecutor(max_workers=2,thread_name_prefix='machine-diagnostics')
 LOCK=threading.Lock()
 CACHE={}
 PROBE_BYTES=4*1024**2
@@ -55,7 +56,14 @@ def capacity(available,total):
     return {'available_bytes':available,'total_bytes':total,'available_percent':round(100*available/total,1)}
 
 
-def project(name,status,metrics,runtime=None):
+def pci_key(value):
+    try:
+        domain,bus,slot=value.lower().split(':')
+        return f'{int(domain,16):04x}:{bus}:{slot}'
+    except (AttributeError,ValueError):return value
+
+
+def project(name,status,metrics,runtime=None,gpu_inventory=None):
     memory=metrics.get('performance',{}).get('memory',{})
     total=memory.get('total_bytes',metrics.get('ram_total_bytes'))
     available=memory.get('available_bytes')
@@ -72,14 +80,25 @@ def project(name,status,metrics,runtime=None):
         storage=hardware.get('storage') or {};c=capacity(storage.get('free_bytes'),storage.get('total_bytes'))
         if c:disks.append({'name':'JSwarm storage','path':storage.get('path'),**c})
     ram=capacity(available,total)
-    gpus=[]
-    for gpu in hardware.get('gpus',[]):
+    gpus=[];now=time.time()
+    measured={pci_key(g.get('pci_id')):g for g in hardware.get('gpus',[])}
+    inventory=gpu_inventory.get('gpus',[]) if gpu_inventory is not None else hardware.get('gpus',[])
+    for raw in inventory:
+        gpu={**measured.get(pci_key(raw.get('pci_id')),{}),**raw}
+        sampled=gpu.get('sampled_at',hardware.get('sampled_at',metrics.get('sampled_at')))
+        fresh=finite(sampled) and -5<=now-sampled<=15
         busy=gpu.get('utilization_percent');total=gpu.get('memory_total_mib');free=gpu.get('memory_free_mib')
+        utilization_at=sampled if 'utilization_percent' in raw else hardware.get('sampled_at',metrics.get('sampled_at'))
+        if not finite(utilization_at) or not -5<=now-utilization_at<=15:busy=None
+        if not fresh:busy=total=free=None
         gpus.append({**{key:gpu.get(key) for key in ('uuid','pci_id','vendor','backend')},'name':gpu.get('name') or gpu.get('vendor') or 'GPU',
+                     'sampled_at':sampled,'status':'live' if fresh else 'stale',
+                     'memory_domain':gpu.get('memory_domain'),'active_workers':gpu.get('active_workers'),
+                     'shared_memory_available_bytes':gpu.get('shared_memory_available_mib',0)*2**20 if fresh and gpu.get('memory_domain')=='shared-system-memory' else None,
                      'available_percent':round(100-busy,1) if finite(busy) and busy<=100 else None,
                      'basis':gpu.get('utilization_basis') or 'Reported GPU engine utilization',
                      'memory':capacity(free*2**20,total*2**20) if finite(free) and finite(total) else None})
-    return {'host':name,'status':'live' if metrics.get('status')=='live' else 'stale',
+    return {'host':name,'status':'live' if metrics.get('status')=='live' and finite(metrics.get('sampled_at')) and -5<=now-metrics['sampled_at']<=30 else 'stale',
             'sampled_at':metrics.get('sampled_at'),'fetched_at':time.time(),
             'ram':ram,'disks':disks,'gpus':gpus,
             'node_revision':status.get('source_revision'),'commit':(runtime or {}).get('commit'),
@@ -156,32 +175,47 @@ def collect(host,source,previous):
         status=client.call('status',timeout=4)
         if status.get('node')!=name:raise ValueError('JSwarm node identity differs')
         metrics=client.call('metrics',timeout=4)
+        try:gpu_inventory=client.call('resource.gpus',timeout=4)
+        except Exception:gpu_inventory=None
+        with LOCK:previous=dict(CACHE[name]['value'])
         runtime=previous.get('_runtime') or {}
-        runtime_at=previous.get('_runtime_at',0)
-        if time.time()-runtime_at>=60:
-            try:runtime=node_runtime(client);runtime_at=time.time()
-            except Exception:pass
         if runtime.get('started_at'):
             try:runtime={**runtime,'uptime_seconds':max(0,time.time()-datetime.datetime.fromisoformat(runtime['started_at'].replace('Z','+00:00')).timestamp())}
             except (ValueError,TypeError):pass
-        value=project(name,status,metrics,runtime)
-        value.update(_runtime=runtime,_runtime_at=runtime_at)
-        try:value['cpu']=cpu_usage(client)
-        except Exception:value['cpu']=None
-        speed=previous.get('speed') or {}
-        if speed.get('status') in ('tested','local') and time.time()-speed.get('sampled_at',time.time())<600:
-            value['speed']=speed
-        else:
-            # Publish resources immediately; the test must not delay the inspector.
-            value['speed']={'status':'testing','source':source,'target':name}
-            with LOCK:CACHE[name]['value']=value
-            try:value={**value,'speed':probe(client,source,name)}
-            except Exception:value={**value,'speed':{'status':'unavailable','note':'JSwarm transfer test unavailable; resource observations retained.'}}
+        value=project(name,status,metrics,runtime,gpu_inventory)
     except Exception:
         value={**previous,'host':name,'status':'unavailable','error':'Cannot reach this machine’s JSwarm; retained measurements may be stale.'}
     finally:
         client.close()
-        with LOCK:CACHE[name].update(value=value,busy=False,updated=time.monotonic())
+        with LOCK:
+            latest=CACHE[name]['value']
+            for key in ('_runtime','_runtime_at','cpu','speed'):
+                if key in latest:value[key]=latest[key]
+            CACHE[name].update(value=value,busy=False,updated=time.monotonic())
+
+
+def diagnose(host,source):
+    """Slow command diagnostics never occupy the resource observation pool."""
+    client=AgentClient(host);name=host['host'];delta={}
+    try:
+        with LOCK:previous=dict(CACHE[name]['value'])
+        status=client.call('status',timeout=4)
+        if status.get('node')!=name:raise ValueError('JSwarm node identity differs')
+        if time.time()-previous.get('_runtime_at',0)>=60:
+            try:delta.update(_runtime=node_runtime(client),_runtime_at=time.time())
+            except Exception:pass
+        try:delta['cpu']=cpu_usage(client)
+        except Exception:pass
+        speed=previous.get('speed') or {}
+        if speed.get('status') not in ('tested','local') or time.time()-speed.get('sampled_at',0)>=600:
+            try:delta['speed']=probe(client,source,name)
+            except Exception:delta['speed']={'status':'unavailable','note':'JSwarm transfer test unavailable; resource observations retained.'}
+    except Exception:pass
+    finally:
+        client.close()
+        with LOCK:
+            CACHE[name]['value'].update(delta)
+            CACHE[name].update(diagnostics_busy=False,diagnostics_at=time.monotonic())
 
 
 def snapshot(name):
@@ -193,6 +227,13 @@ def snapshot(name):
         if not row['busy'] and time.monotonic()-row['updated']>=1:
             row['busy']=True
             POOL.submit(collect,host,config['name'],row['value'])
+        if not row.get('diagnostics_busy') and time.monotonic()-row.get('diagnostics_at',0)>=5:
+            row['diagnostics_busy']=True
+            DIAGNOSTICS.submit(diagnose,host,config['name'])
         value={**{key:value for key,value in row['value'].items() if not key.startswith('_')},'refreshing':row['busy']}
+        now=time.time()
+        if value.get('status')=='live' and now-value.get('sampled_at',0)>30:value['status']='stale'
+        value['gpus']=[{**g,'status':'stale','available_percent':None,'memory':None,'shared_memory_available_bytes':None}
+                       if not finite(g.get('sampled_at')) or not -5<=now-g['sampled_at']<=15 else g for g in value.get('gpus',[])]
     from machine_controls import snapshot as control_snapshot
     return {**value,'control':control_snapshot(name)}

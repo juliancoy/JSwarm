@@ -71,12 +71,55 @@ def test_node_image_contains_shared_sdk_and_discovery_dependencies(monkeypatch):
     checked=[]
     def build(image,folder):
         root=Path(folder)
-        for name in ('scripts/swarm_runtime.py','scripts/genome_runtime.py','docker_utils/policy.py','docker_utils/images.py','swarm-control/server/agent_client.py'):
-            assert (root/name).is_file(),name
+        assert sorted(p.name for p in root.iterdir())==['Dockerfile','requirements-node.txt']
+        assert 'zeroconf>=0.151,<1' in (root/'requirements-node.txt').read_text()
         dockerfile=(root/'Dockerfile').read_text()
-        assert 'COPY docker_utils /opt/swarm-node/docker_utils' in dockerfile
+        assert 'COPY scripts' not in dockerfile
+        assert 'organization.node-runtime=' in dockerfile
         assert 'ENV PYTHONPATH=/opt/swarm-node' in dockerfile
         checked.append(image)
     monkeypatch.setattr(docker_utils,'build_image',build)
     assert build_node_image('swarm-node:test')=='swarm-node:test'
     assert checked==['swarm-node:test']
+
+
+def test_recreation_reuses_matching_runtime_image(monkeypatch):
+    from scripts.swarm_node import ensure_node_image,runtime_fingerprint
+    from types import SimpleNamespace
+    calls=[]
+    def run(command,**kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0,stdout=runtime_fingerprint()+'\n')
+    monkeypatch.setattr('subprocess.run',run)
+    assert ensure_node_image()=='organization-swarm-node:1'
+    assert len(calls)==1
+    assert calls[0][:3]==['docker','image','inspect']
+
+
+def test_missing_or_obsolete_image_builds_through_build_script(monkeypatch):
+    from scripts.swarm_node import ensure_node_image
+    from types import SimpleNamespace
+    calls=[]
+    def run(command,**kwargs):
+        calls.append((command,kwargs))
+        return SimpleNamespace(returncode=0,stdout='old-code-image')
+    monkeypatch.setattr('subprocess.run',run)
+    ensure_node_image()
+    assert calls[1][0]==['./build.sh']
+    assert calls[1][1]['check'] is True
+
+
+def test_runtime_fingerprint_ignores_code_but_tracks_dependency_changes(tmp_path,monkeypatch):
+    from scripts import swarm_node
+    project=tmp_path/'JSwarm';(project/'scripts').mkdir(parents=True)
+    (project/'ramtop').mkdir()
+    (project/'Dockerfile.swarm-node').write_text('FROM python:3.12\n')
+    (project/'requirements-node.txt').write_text('docker>=7,<8\n')
+    metadata=project/'ramtop/pyproject.toml'
+    metadata.write_text('[project]\ndependencies=["rich>=13"]\n')
+    monkeypatch.setattr(swarm_node,'__file__',str(project/'scripts/swarm_node.py'))
+    before=swarm_node.runtime_fingerprint()
+    (project/'scripts/launcher_agent.py').write_text('# new application code\n')
+    assert swarm_node.runtime_fingerprint()==before
+    metadata.write_text('[project]\ndependencies=["rich>=14"]\n')
+    assert swarm_node.runtime_fingerprint()!=before

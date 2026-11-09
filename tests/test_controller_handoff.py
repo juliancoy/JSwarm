@@ -86,6 +86,7 @@ def test_deploy_retains_previous_process_and_does_not_stop_workers(tmp_path,monk
     (folder/'generation.json').write_text(json.dumps({'generation':'012345abcdef'}))
     queue=SubmissionQueue('venter-alignment:012345abcdef',tmp_path/'q')
     queue.submit({'id':'active'});a=queue.claim('host');queue.update('active',a['token'],state='accepted')
+    monkeypatch.setattr(rollout,'reconcile_missing_owners',lambda root:[])
     monkeypatch.setattr(rollout,'SubmissionQueue',lambda namespace,epoch:SubmissionQueue(namespace,queue.path,epoch=epoch))
     calls=[]
     def docker(*args,**kwargs):

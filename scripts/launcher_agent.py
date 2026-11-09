@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import selectors
 import signal
 import shutil
 import subprocess
@@ -20,6 +21,112 @@ import threading
 import time
 import urllib.request
 import urllib.error
+
+
+class NvidiaSampler:
+    """One node-owned utility process; readers never wait for Docker startup."""
+    def __init__(self,changed=lambda:None):
+        self.lock=threading.Lock();self.stopped=threading.Event();self.thread=None
+        self.rows=[];self.changed=changed;self.retry_at=0;self.last_error=None
+
+    def command(self,name):
+        code="""import json,subprocess,time
+while True:
+ try:
+  output=subprocess.check_output(['nvidia-smi','--query-gpu=uuid,pci.bus_id,name,memory.total,memory.free,utilization.gpu,temperature.gpu','--format=csv,noheader,nounits'],text=True,timeout=5)
+  print(json.dumps({'output':output,'sampled_at':time.time()}),flush=True)
+ except (OSError,subprocess.SubprocessError):print('{}',flush=True)
+ time.sleep(2)
+"""
+        return ['docker','run','--rm','--pull=never','--name',name,'--network','none','--read-only','--cap-drop','ALL',
+                '--security-opt','no-new-privileges','--memory','96m','--memory-swap','96m','--cpus','0.25','--pids-limit','128',
+                '--label','org.lifetech.service=gpu-inventory','--gpus','all','--env','NVIDIA_DRIVER_CAPABILITIES=utility',
+                '--label','org.lifetech.gpu-inventory-owner='+os.environ.get('HOSTNAME',''),
+                'organization-launcher:webrtc-1','python3','-u','-c',code]
+
+    def reap_orphans(self):
+        result=subprocess.run(['docker','ps','-aq','--filter','label=org.lifetech.gpu-inventory-owner'],capture_output=True,text=True,timeout=15,check=True)
+        for ident in result.stdout.split():
+            info=json.loads(subprocess.check_output(['docker','inspect',ident],text=True,timeout=15))[0]
+            owner=info['Config']['Labels'].get('org.lifetech.gpu-inventory-owner','')
+            if not re.fullmatch(r'[a-f0-9]{12,64}',owner):continue
+            inspected=subprocess.run(['docker','inspect',owner],capture_output=True,text=True,timeout=15)
+            if inspected.returncode:
+                if 'No such' not in inspected.stderr:raise RuntimeError('Sampler owner inspection unavailable')
+            elif json.loads(inspected.stdout)[0]['State']['Running']:continue
+            self.remove(ident)
+
+    def snapshot(self):
+        with self.lock:
+            if not self.stopped.is_set() and (self.thread is None or not self.thread.is_alive()) and time.monotonic()>=self.retry_at:
+                self.thread=threading.Thread(target=self.run,daemon=True,name='nvidia-allocation-sampler');self.thread.start()
+            now=time.time()
+            return [dict(row) for row in self.rows if -5<=now-row['sampled_at']<=10]
+
+    def accept(self,line):
+        value=json.loads(line)
+        if not isinstance(value,dict):raise ValueError('Invalid NVIDIA sample')
+        sample=value.get('sampled_at')
+        rows=[]
+        if type(sample) in (float,int) and -5<=time.time()-sample<=10:
+            rows=[{**row,'sampled_at':sample} for row in nvidia_allocation_rows(value.get('output',''))]
+        with self.lock:
+            previous={r['uuid']:r.get('memory_free_mib') for r in self.rows};self.rows=rows
+            if rows:self.last_error=None
+        # Wake admission when inventory first becomes usable or disappears.
+        if previous!={r['uuid']:r.get('memory_free_mib') for r in rows}:self.changed()
+
+    def remove(self,name):
+        result=subprocess.run(['docker','rm','-f',name],capture_output=True,text=True,timeout=15)
+        if result.returncode and 'No such container' not in result.stderr:raise RuntimeError('NVIDIA sampler cleanup unconfirmed')
+
+    def run(self):
+        name='swarm-gpu-inventory-nvidia-'+secrets.token_hex(8);process=None
+        try:
+            self.reap_orphans()
+            process=subprocess.Popen(self.command(name),stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout,selectors.EVENT_READ)
+                pending=b'';last=time.monotonic();deadline=60
+                while not self.stopped.is_set():
+                    if not selector.select(.5):
+                        if time.monotonic()-last>deadline:raise TimeoutError('NVIDIA sampler heartbeat unavailable')
+                        continue
+                    block=os.read(process.stdout.fileno(),65536)
+                    if not block:break
+                    pending+=block
+                    if len(pending)>65536:raise ValueError('Oversized NVIDIA inventory')
+                    while b'\n' in pending:
+                        line,pending=pending.split(b'\n',1);self.accept(line);last=time.monotonic();deadline=12
+        except (OSError,ValueError,RuntimeError,subprocess.SubprocessError) as error:self.last_error=type(error).__name__
+        finally:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:process.wait(timeout=3)
+                except subprocess.TimeoutExpired:process.kill();process.wait()
+            if process is not None:process.stdout.close()
+            try:self.remove(name)
+            except (OSError,RuntimeError,subprocess.SubprocessError):
+                # Do not spawn replacements while ownership is uncertain.
+                self.retry_at=float('inf')
+            with self.lock:
+                self.rows=[]
+                if self.retry_at!=float('inf'):self.retry_at=time.monotonic()+2
+            self.changed()
+
+    def health(self):
+        with self.lock:
+            sample=max((row['sampled_at'] for row in self.rows),default=None)
+            running=self.thread is not None and self.thread.is_alive()
+            status=('closed' if self.stopped.is_set() else 'cleanup_pending' if self.retry_at==float('inf') else
+                    'fresh' if sample is not None and -5<=time.time()-sample<=10 else
+                    'stale' if sample is not None else 'starting' if running else
+                    'backoff' if self.retry_at>time.monotonic() else 'idle')
+            return {'status':status,'sampled_at':sample,'last_error':self.last_error}
+
+    def close(self):
+        self.stopped.set()
+        if self.thread:self.thread.join(timeout=20)
 
 def required_test_repositories(suites, jobs=None, repositories=None):
     """Select only reviewed application source dependencies for an owned suite."""
@@ -245,7 +352,7 @@ def memory_budget(limits,active):
             # Unknown working sets must not be credited as free RAM.
             growth+=limit;continue
         used=min(limit,max(0,sample['used']))
-        if now-sample.get('first',now)<10:allowance=limit-used
+        if row.get('cache_keeper') or now-sample.get('first',now)<10:allowance=limit-used
         else:allowance=min(limit-used,max(64,used*.25)+max(0,sample.get('peak',used)-used)+sample.get('growth',0)*2)
         growth+=allowance
     safety=max(256,int(limits['memory_mb']*.05))
@@ -296,7 +403,7 @@ def docker_workers():
                  or any(str(device.get('PathInContainer','')).startswith(('/dev/dri/','/dev/nvidia')) for device in limits.get('Devices') or []))
         rows.append({'id':item['Id'],'container':name,'job':labels.get('org.lifetech.job',name.removeprefix('genomics-').removeprefix('swarm-job-')),
                      'run':labels.get('org.lifetech.run'),'sink':labels.get('org.lifetech.sink','gpu' if gpu else 'cpu'),
-                     'resident_mb':usage.get(item['Id'],0),'group':labels.get('org.lifetech.group','workers'),'cpus':cpu,'memory_mb':(memory+1024**2-1)//1024**2,'memory_limit_mb':(max(hard_memory,private_memory)+1024**2-1)//1024**2,
+                     'resident_mb':usage.get(item['Id'],0),'cache_keeper':bool(labels.get('org.lifetech.node-cache')),'group':labels.get('org.lifetech.group','workers'),'cpus':cpu,'memory_mb':(memory+1024**2-1)//1024**2,'memory_limit_mb':(max(hard_memory,private_memory)+1024**2-1)//1024**2,
                      'cpu_observation':_WORKER_CPU_CACHE.get(item['Id'],_WORKER_CPU_CACHE.get(name)),
                      'memory_observation':_WORKER_RAM_CACHE.get(item['Id'],_WORKER_RAM_CACHE.get(name)),
                      'pids':limits.get('PidsLimit') or 512,'active':True,'created':0})
@@ -317,8 +424,8 @@ class ResourceLease:
 
     CPU and GPU sinks have independent queues over one physical CPU/RAM pool.
     Within each sink, waiting groups with the smallest
-    dominant resource share get the next fitting slot. After 30 seconds the
-    oldest waiter reserves headroom, preventing large jobs from starving.
+    dominant resource share get the next fitting slot. After 30 seconds CPU
+    waiters reserve headroom; GPU waiters age only among currently fitting jobs.
     """
     def __init__(self, group, cpus, memory_mb, container='', directory=None, limits=None, pids=512, sink=None, cpu_burst=False, priority=0):
         if not isinstance(group,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}',group):raise ValueError('Invalid resource group')
@@ -397,14 +504,20 @@ class ResourceLease:
         return limits
 
     @classmethod
-    def pool_capacity(cls, directory=None, group=None):
+    def host_capacity(cls):
+        """Physical/shared-cgroup limits without worker or admission scans."""
+        probe=cls.__new__(cls);probe.limits=None
+        return probe.capacity()
+
+    @classmethod
+    def pool_capacity(cls, directory=None, group=None, *, locked=False):
         """Read admission headroom under the pool lock, without making a reservation."""
         probe=cls.__new__(cls)
         probe.limits=None
         probe.directory=Path(directory or os.getenv('SWARM_RESOURCE_DIR',str(Path.home()/'.local/state/swarm-control/resources')))
         probe.directory.mkdir(parents=True,exist_ok=True,mode=0o700)
         probe.path=probe.directory/'.capacity'
-        with probe.guard():
+        with contextlib.nullcontext() if locked else probe.guard():
             limits=probe.capacity();rows=probe.rows();active=[row for row in rows if row['active']]
             reserved=sum(row['memory_mb'] for row in active)
             # Host pressure and observed growth drive capacity; unknown starts
@@ -491,6 +604,11 @@ class ResourceLease:
             for sink in ('cpu','gpu'):
                 queue=[r for r in waiting if job_sink(r)==sink]
                 if not queue:continue
+                # A GPU request that cannot fit must not reserve the entire
+                # GPU queue's future headroom or hide fitting lower-priority
+                # work. Preserve priority and age among admissible requests.
+                if sink=='gpu':queue=[r for r in queue if fits(r)]
+                if not queue:continue
                 highest=max(r.get('priority',0) for r in queue)
                 queue=[r for r in queue if r.get('priority',0)==highest]
                 oldest=queue[0]
@@ -567,6 +685,8 @@ def nvidia_allocation_rows(output):
         def number(value):
             try:return float(value)
             except ValueError:return None
+        pci=re.fullmatch(r'([0-9a-fA-F]{4,8}):([0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7])',ident)
+        if pci:ident=f'{int(pci[1],16):04x}:'+pci[2].lower()
         rows.append({'uuid':uuid,'pci_id':ident,'vendor':'NVIDIA','name':name,'backend':'CUDA candidate',
                      'memory_domain':'driver-reserved-vram','memory_source':'NVIDIA driver','gpu_allocation_added_to_host_ram':False,
                      'memory_total_mib':number(total),'memory_free_mib':number(free),
@@ -1186,6 +1306,20 @@ def load_command_runtime():
     return sys.modules[name]
 
 
+CACHE_RUNTIME_SOURCE = ''
+
+
+def load_cache_runtime():
+    import types
+    source = CACHE_RUNTIME_SOURCE or (Path(__file__).resolve().parent/'launcher_cache.py').read_text()
+    name = 'launcher_cache_' + hashlib.sha256(source.encode()).hexdigest()
+    if name not in sys.modules:
+        module = types.ModuleType(name)
+        exec(compile(source, name, 'exec'), module.__dict__)
+        sys.modules[name] = module
+    return sys.modules[name]
+
+
 STREAM_RUNTIME_SOURCE = ''
 
 
@@ -1450,6 +1584,137 @@ def verified_ram_caches():
     return {'memory_domain':'host-ram','caches':caches,'pending_caches':pending}
 
 
+def cache_cleanup_inventory():
+    """Executed inside the existing command API; no filesystem payload reads."""
+    import json
+    import re
+    import subprocess
+    from collections import defaultdict
+    owner_label = 'org.lifetech.cache-owner'
+
+    def docker(*args):
+        result = subprocess.run(['docker', *args], capture_output=True, text=True, timeout=30)
+        if result.returncode:
+            raise RuntimeError('Docker cache inventory failed: ' + result.stderr[-200:])
+        return result.stdout
+
+    def inspect(kind, ids):
+        rows = []
+        for start in range(0, len(ids), 100):
+            rows.extend(json.loads(docker(*kind, *ids[start:start + 100])))
+        return rows
+
+    ids = docker('ps', '-aq').split()
+    if len(ids) > 4096:
+        raise ValueError('Container inventory exceeds bounded cleanup limit')
+    containers = inspect(['inspect'], ids)
+    consumers = defaultdict(list)
+    owners = {}
+    for row in containers:
+        for mount in row.get('Mounts', []):
+            if mount.get('Type') == 'volume':
+                consumers[mount['Name']].append(row['Name'].lstrip('/'))
+        labels = row.get('Config', {}).get('Labels') or {}
+        key = labels.get(owner_label, '')
+        if (re.fullmatch(r'[a-f0-9]{64}', key) and row['Name'].lstrip('/') == 'swarm-job-' + key[:32]
+                and labels.get('org.lifetech.group') == 'shared-cache'):
+            owners[key] = row
+    names = docker('volume', 'ls', '-q', '--filter', 'label=' + owner_label).split()
+    if len(names) > 4096:
+        raise ValueError('Volume inventory exceeds bounded cleanup limit')
+    volumes = {}
+    for volume in inspect(['volume', 'inspect'], names):
+        key = (volume.get('Labels') or {}).get(owner_label, '')
+        options = volume.get('Options') or {}
+        if (re.fullmatch(r'[a-f0-9]{64}', key) and volume['Name'] == 'swarm-cache-' + key[:32]
+                and volume.get('Driver') == 'local' and options.get('type') == 'tmpfs' and options.get('device') == 'tmpfs'):
+            volumes[key] = volume
+    result = []
+    for key in sorted(set(owners) | set(volumes)):
+        owner = owners.get(key)
+        name, volume = 'swarm-job-' + key[:32], 'swarm-cache-' + key[:32]
+        result.append({'key': key, 'container': name, 'volume': volume,
+                       'owner_id': owner['Id'] if owner else None,
+                       'owner_state': owner.get('State', {}).get('Status') if owner else 'missing',
+                       'created': owner.get('Created', '') if owner else '',
+                       'volume_verified': key in volumes,
+                       'owner_verified': owner is None or any(m.get('Type')=='volume' and m.get('Name')==volume and m.get('Destination')=='/dev/shm' for m in owner.get('Mounts',[])),
+                       'consumers': [consumer for consumer in consumers[volume] if owner is None or consumer != name],
+                       'exec_readers': len(owner.get('ExecIDs') or []) if owner else 0})
+    return result
+
+def _cache_cleanup_docker(args,missing=False):
+    result=subprocess.run(['docker',*args],capture_output=True,text=True,timeout=30)
+    if result.returncode:
+        error=result.stderr.lower()
+        if missing and ('no such' in error or 'not found' in error):return None
+        raise RuntimeError('Cache cleanup Docker operation failed: '+result.stderr[-250:])
+    return result.stdout
+
+
+def _cache_cleanup_inspect(kind,name):
+    raw=_cache_cleanup_docker([kind,'inspect',name],missing=True)
+    return json.loads(raw)[0] if raw is not None else None
+
+
+def cleanup_ram_cache(args):
+    """Controller attests terminal-only ownership; this node fences live readers.
+
+    Queue bindings live on the controller, not here. This signed operation must
+    be called only after a fresh queue check, one exact owner instance at a time.
+    No implicit discovery, arbitrary names, prune, or force-volume removal.
+    """
+    if (not isinstance(args,dict) or set(args)!={'key','owner_id','machine','ownership','dry_run'}
+            or not isinstance(args.get('key'),str) or not re.fullmatch(r'[a-f0-9]{64}',args['key'])
+            or args.get('owner_id') is not None and (not isinstance(args['owner_id'],str) or not re.fullmatch(r'[a-f0-9]{64}',args['owner_id']))
+            or not isinstance(args.get('machine'),str) or not re.fullmatch(r'[a-f0-9]{64}',args['machine'])
+            or args.get('ownership')!='terminal-only' or type(args.get('dry_run')) is not bool):
+        raise ValueError('Expected one exact cache identity and controller terminal-ownership attestation')
+    if hashlib.sha256(Path('/etc/machine-id').read_bytes()).hexdigest()!=args['machine']:
+        raise ValueError('Cache cleanup machine identity differs')
+    key=args['key'];name='swarm-job-'+key[:32];volume_name='swarm-cache-'+key[:32]
+    result={'key':key,'removed':False,'owner_removed':False,'dry_run':args['dry_run']}
+    def skip(reason):return {**result,'reason':reason}
+    def valid_owner(row):
+        labels=row.get('Config',{}).get('Labels') or {}
+        return (row.get('Name','').lstrip('/')==name and labels.get('org.lifetech.cache-owner')==key
+                and labels.get('org.lifetech.group')=='shared-cache'
+                and any(m.get('Type')=='volume' and m.get('Name')==volume_name and m.get('Destination')=='/dev/shm' for m in row.get('Mounts',[])))
+    def valid_volume(row):
+        options=row.get('Options') or {}
+        return (row.get('Name')==volume_name and row.get('Driver')=='local'
+                and options.get('type')=='tmpfs' and options.get('device')=='tmpfs'
+                and (row.get('Labels') or {}).get('org.lifetech.cache-owner')==key)
+    owner=_cache_cleanup_inspect('container',name)
+    if (owner['Id'] if owner else None)!=args['owner_id']:return skip('owner_changed')
+    if owner and not valid_owner(owner):return skip('owner_identity_invalid')
+    volume=_cache_cleanup_inspect('volume',volume_name)
+    if not volume:return skip('volume_missing')
+    if not valid_volume(volume):return skip('volume_identity_invalid')
+    consumers=_cache_cleanup_docker(['ps','-a','--filter','volume='+volume_name,'--format','{{.Names}}']).splitlines()
+    if any(consumer!=name for consumer in consumers):return skip('docker_consumer')
+    # Recheck the exact owner after consumer enumeration. A new loader under
+    # the same content key is a different instance and cannot be removed.
+    owner=_cache_cleanup_inspect('container',name)
+    if (owner['Id'] if owner else None)!=args['owner_id']:return skip('owner_changed')
+    if owner and (not valid_owner(owner) or owner.get('ExecIDs')):
+        return skip('active_transfer_or_owner_changed')
+    if args['dry_run']:return skip('eligible_terminal_cache')
+    if owner:
+        _cache_cleanup_docker(['rm','-f',owner['Id']])
+        result['owner_removed']=True
+    # An ownerless volume never authorizes deleting any subsequently created
+    # owner. Docker's non-forced reference check protects a new attachment.
+    volume=_cache_cleanup_inspect('volume',volume_name)
+    if not volume:return {**result,'removed':True,'reason':'already_removed'}
+    if not valid_volume(volume):return skip('volume_identity_changed')
+    try:_cache_cleanup_docker(['volume','rm',volume_name])
+    except RuntimeError as error:
+        if 'in use' in str(error).lower() or 'being used' in str(error).lower():return skip('docker_consumer')
+        raise
+    return {**result,'removed':True,'reason':'removed'}
+
+
 class DockerWorkerJournal:
     """Durable attempt identity and last observation, independent of agent lifetime."""
     def __init__(self,path,accounting_reader=None):
@@ -1472,6 +1737,7 @@ class DockerWorkerJournal:
         value={'job':job,'container':name,'container_id':item['Id'],'run':labels.get('org.lifetech.run'),
                'image':item['Image'],'controller_report':labels.get('org.lifetech.report'),'agent_revision':labels.get('org.lifetech.agent-revision'),
                'group':labels.get('org.lifetech.group'),'sink':labels.get('org.lifetech.sink'),
+               'gpu_allocation':labels.get('org.lifetech.accelerator'),
                'cpus':limits.get('NanoCpus',0)/1e9,'memory_mb':limits.get('Memory',0)//1024**2,
                'status':state['Status'],'running':bool(state.get('Running') or state.get('Restarting')),
                'exit_code':state.get('ExitCode') if state['Status'] in ('exited','dead') else None,
@@ -1586,6 +1852,8 @@ class Agent:
         self.storage_status={}
         self.storage_lock=threading.RLock()
         self.storage_stop=threading.Event()
+        self.resource_condition=threading.Condition();self.resource_revision=0
+        self.nvidia_sampler=NvidiaSampler(self.gpu_inventory_changed)
         self.uploads = {}
         self.registry_transfers=0
         self.image_progress={}
@@ -1777,6 +2045,15 @@ class Agent:
             raise ValueError('Invalid run ID')
         return self.root/ident
 
+    def resource_changed(self):
+        condition=self.__dict__.setdefault('resource_condition',threading.Condition())
+        with condition:
+            self.resource_revision=getattr(self,'resource_revision',0)+1;condition.notify_all()
+
+    def gpu_inventory_changed(self):
+        self.gpu_resource_cache=None
+        self.resource_changed()
+
     def watch_docker_workers(self):
         """Observe existing Docker identities; this pipe never owns a worker."""
         since=str(int(time.time())-2)
@@ -1790,6 +2067,7 @@ class Agent:
                     if self.storage_stop.is_set():break
                     event=json.loads(line);action=event.get('Action',event.get('status'))
                     if action in ('create','start','die'):
+                        self.resource_changed()
                         actor=event.get('Actor') or {};attributes=actor.get('Attributes') or {}
                         if attributes.get('org.lifetech.group') in ('stream-work','shared-cache'):continue
                         job=attributes.get('org.lifetech.job','')
@@ -1874,6 +2152,32 @@ class Agent:
                     entry['lease'].close();del self.pending_resources[ident];changed=True
             if changed:self.busy()
             return workers
+
+    def worker_observation(self):
+        """Bounded advisory status; admission still observes Docker synchronously."""
+        with self.lock:
+            snapshot=getattr(self,'worker_snapshot',None)
+            if snapshot is None:
+                snapshot={'workers':[],'info':{},'sampled_at':None,'attempted':float('-inf'),'refreshing':False,'error':None}
+                self.worker_snapshot=snapshot
+            now=time.monotonic()
+            if not snapshot['refreshing'] and now-snapshot['attempted']>=5:
+                snapshot.update(refreshing=True,attempted=now)
+                def refresh():
+                    try:
+                        workers=self.reconcile_resources()
+                        with self.client() as client:info=client.info()
+                        with self.lock:snapshot.update(workers=workers,info=info,sampled_at=time.monotonic(),error=None)
+                    except Exception as error:
+                        with self.lock:snapshot['error']=type(error).__name__+': '+str(error)[:200]
+                    finally:
+                        with self.lock:snapshot['refreshing']=False
+                self.worker_observation_thread=threading.Thread(target=refresh,daemon=True,name='worker-observation')
+                self.worker_observation_thread.start()
+            age=None if snapshot['sampled_at'] is None else max(0,now-snapshot['sampled_at'])
+            metadata={'status':'live' if age is not None and age<=15 else 'unavailable' if age is None else 'stale',
+                      'age_seconds':age,'refreshing':snapshot['refreshing'],'error':snapshot['error']}
+            return list(snapshot['workers']),dict(snapshot['info']),metadata
 
     def expire_resource(self,ident,token=None):
         # Explicit owner cancellation only; workers never expire on agent exit.
@@ -1977,6 +2281,12 @@ class Agent:
         self.validate_worker_storage(paths)
 
     def dispatch(self, op, args):
+        if op=='resource.events':
+            if (set(args)!={'after','timeout'} or type(args['after']) is not int or args['after']<0
+                    or type(args['timeout']) not in (float,int) or not 0<=args['timeout']<=25):raise ValueError('Invalid resource event cursor')
+            with self.resource_condition:
+                self.resource_condition.wait_for(lambda:self.resource_revision!=args['after'] or self.storage_stop.is_set(),timeout=args['timeout'])
+                return {'revision':self.resource_revision}
         if op=='worker.storage':
             if args:raise ValueError('Storage policy accepts no arguments')
             return self.worker_storage_policy()
@@ -2003,9 +2313,47 @@ class Agent:
         if op=='resource.gpus':
             if args:raise ValueError('GPU inventory accepts no arguments')
             return self.gpu_resources()
+        if op.startswith('resource.cache.'):
+            if op!='resource.cache.inventory':
+                args=dict(args)
+                if args.pop('machine',None)!=hashlib.sha256(Path('/etc/machine-id').read_bytes()).hexdigest():
+                    raise ValueError('Cache node machine identity changed')
+            if not hasattr(self, 'cache_manager'):
+                with self.lock:
+                    if not hasattr(self, 'cache_manager'):
+                        self.cache_manager = load_cache_runtime().CacheManager(
+                            capacity=lambda: ResourceLease.pool_capacity(directory=os.getenv('SWARM_RESOURCE_DIR',str(self.root/'.resources'))),
+                            memory_mb=lambda: ResourceLease.host_capacity()['memory_mb'],
+                            machine=hashlib.sha256(Path('/etc/machine-id').read_bytes()).hexdigest(),
+                            accepting=lambda: worker_policy(self.config)['accepting_jobs'])
+                        self.cache_manager.start_maintenance()
+            if op=='resource.cache.begin':
+                # Grow the singleton's commitment atomically with ordinary job
+                # admission. A warm keeper cannot borrow its future payload RAM.
+                manager=self.cache_manager
+                with manager.lock:
+                    probe=ResourceLease.__new__(ResourceLease)
+                    probe.directory=Path(os.getenv('SWARM_RESOURCE_DIR',str(self.root/'.resources')))
+                    probe.directory.mkdir(parents=True,exist_ok=True,mode=0o700)
+                    with probe.guard():
+                        capacity=manager.capacity
+                        manager.capacity=lambda:ResourceLease.pool_capacity(directory=probe.directory,locked=True)
+                        try:return manager.dispatch('begin',args)
+                        finally:manager.capacity=capacity
+            return self.cache_manager.dispatch(op.removeprefix('resource.cache.'), args)
+        if op=='resource.caches.inspect':
+            if args:raise ValueError('Cache cleanup inventory accepts no arguments')
+            return {'items':cache_cleanup_inventory(),'ownership_authority':'controller-submission-queue'}
+        if op=='resource.caches.cleanup':
+            return cleanup_ram_cache(args)
         if op=='resource.caches':
             if args:raise ValueError('RAM cache inventory accepts no arguments')
-            return verified_ram_caches()
+            legacy = verified_ram_caches()
+            managed = self.dispatch('resource.cache.inventory', {})
+            legacy['caches'].extend(i for i in managed['items'] if i['phase']=='ready')
+            legacy['pending_caches'].extend(i['key'] for i in managed['items'] if i['phase']!='ready')
+            legacy['manager'] = {k:managed[k] for k in ('budget_mb','used_mb')}
+            return legacy
         if op=='resource.capacity':
             if set(args)-{'group','include_gpus'} or 'include_gpus' in args and type(args['include_gpus']) is not bool:raise ValueError('Invalid capacity request')
             with self.lock:
@@ -2022,6 +2370,7 @@ class Agent:
                 if op=='resource.release':
                     entry=self.pending_resources.pop(ident,None)
                     if entry:entry['lease'].close()
+                    self.resource_changed()
                     self.busy();return {'released':True}
                 if op=='resource.renew':
                     # Compatibility for existing controllers; no timer or lease owner.
@@ -2132,23 +2481,22 @@ class Agent:
             policy=worker_policy(self.config)
             config = json.loads(self.config.read_text())
             import socket
-            with self.client() as client:
-                info = client.info()
+            workers,info,worker_inventory=self.worker_observation()
             machine = Path('/etc/machine-id')
             if not machine.exists():raise RuntimeError('Host machine identity is not mounted')
             rows = json.loads(subprocess.check_output(['ip','-j','addr'],text=True,timeout=5))
             addresses = [a['local'].split('%')[0] for row in rows if row['ifname'].startswith(('en','eth','wl')) for a in row.get('addr_info',[]) if a.get('scope')!='host']
             try:update_state=json.loads(Path('/tmp/launcher-agent-update.json').read_text())
             except (OSError,ValueError):update_state={}
-            return {'service':'swarm-node','update':update_state,'lifecycle':'updating' if policy['mode']=='draining' else 'ready' if policy['accepting_jobs'] else 'paused','protocol':VERSION,'source_revision':self.source_revision,'node':config['name'],'ready':bool(shutil.which('docker')) and not Path('/tmp/launcher-agent-draining').exists(),'time':time.time(),
+            return {'service':'swarm-node','update':update_state,'lifecycle':'updating' if policy['mode']=='draining' else 'ready' if policy['accepting_jobs'] else 'paused','protocol':VERSION,'source_revision':self.source_revision,'node':config['name'],'ready':bool(shutil.which('docker')) and worker_inventory['status']=='live' and not Path('/tmp/launcher-agent-draining').exists(),'time':time.time(),
                     'machine':hashlib.sha256(machine.read_bytes()).hexdigest(),'hostname':socket.gethostname(),
-                    'addresses':addresses,'platform':info['OSType']+'/'+info['Architecture'],
+                    'addresses':addresses,'platform':info.get('OSType','unknown')+'/'+info.get('Architecture','unknown'),
                     'routing':getattr(self,'routing_status',{'status':'pending'}),
-                    'worker_policy':policy,'capabilities':['controller-signature','github-jobs','p2p-browser','cancel','events','layer-pull','registry-read','peer-layer-cache','mptcp-transport','file-queue','snapshot-stage','event-wait','shared-resources','renewable-resources','docker-workers','durable-docker-workers-v1','execution-accounting-v1','persistent-command-pipes-v1','generic-workers','encrypted-backup','gpu-kernel','telemetry-push','performance-v1','builtin-monitor','stream-work-v1','independent-job-sinks-v1','node-command-v1','gpu-resource-inventory-v1','node-maintenance-recipes-v1','verified-ram-caches-v1','worker-storage-v1','node-web-v1'],
-                    'enrolled_peers':sorted(config['peers']),'storage':self.storage_status,'storage_policy':self.worker_storage_policy(),
+                    'worker_policy':policy,'capabilities':['controller-signature','github-jobs','p2p-browser','cancel','events','layer-pull','registry-read','peer-layer-cache','mptcp-transport','file-queue','snapshot-stage','event-wait','shared-resources','renewable-resources','docker-workers','durable-docker-workers-v1','execution-accounting-v1','persistent-command-pipes-v1','generic-workers','encrypted-backup','gpu-kernel','telemetry-push','performance-v1','builtin-monitor','stream-work-v1','independent-job-sinks-v1','node-command-v1','gpu-resource-inventory-v1','resource-events-v1','node-maintenance-recipes-v1','verified-ram-caches-v1','cache-cleanup-v1','node-cache-v1','cache-metrics-v1','worker-storage-v1','node-web-v1'],
+                    'cache_summary':getattr(getattr(self,'cache_manager',None),'summary',{}),'enrolled_peers':sorted(config['peers']),'storage':self.storage_status,'storage_policy':self.worker_storage_policy(),
                     'hardware':self.hardware(info),
                     'preparations':[key for key,j in self.jobs.items() if j['status']=='running' and j.get('prepare_only')],
-                    'active_commands':self.commands.active() if hasattr(self,'commands') else 0,'active_jobs':[key for key,j in self.jobs.items() if j['status']=='running' and not j.get('prepare_only')],'active_image_transfers':self.registry_transfers,'active_uploads':len(self.uploads),'active_resource_leases':len(self.pending_resources),'workers':self.reconcile_resources()}
+                    'active_commands':self.commands.active() if hasattr(self,'commands') else 0,'active_jobs':[key for key,j in self.jobs.items() if j['status']=='running' and not j.get('prepare_only')],'active_image_transfers':self.registry_transfers,'active_uploads':len(self.uploads),'active_resource_leases':len(self.pending_resources),'workers':workers,'worker_inventory':worker_inventory}
         if op.startswith('backup.'):
             return self.backup(op,args)
         if op.startswith('upload.'):
@@ -2620,6 +2968,30 @@ class Agent:
         timer.daemon=True;self.browser_timers[ident]=timer;timer.start()
         return {'started':True}
 
+    def run_gpu_probe(self,args,*,timeout,prefix):
+        """Serialize probes and settle failed removals before creating more helpers."""
+        with self.__dict__.setdefault('gpu_probe_lock',threading.Lock()):
+            def remove(name):
+                result=subprocess.run(['docker','rm','-f',name],capture_output=True,text=True,timeout=30)
+                if result.returncode and 'No such container' not in result.stderr:
+                    raise RuntimeError('GPU helper cleanup failed: '+result.stderr[-300:])
+            pending=getattr(self,'gpu_probe_pending',None)
+            if pending:
+                remove(pending)
+                self.gpu_probe_pending=None
+            name=prefix+secrets.token_hex(8)
+            self.gpu_probe_pending=name
+            try:
+                result=subprocess.run(['docker','run','--name',name,*args],capture_output=True,text=True,check=True,timeout=timeout)
+            except BaseException:
+                # Retain ownership if Docker is still unavailable. The next
+                # probe retries removal instead of adding another container.
+                remove(name)
+                self.gpu_probe_pending=None
+                raise
+            self.gpu_probe_pending=None  # --rm completed successfully.
+            return result
+
     def host_render_groups(self):
         if getattr(self,'gpu_render_groups',None) is not None and time.time()-self.gpu_render_groups_at<30:return self.gpu_render_groups
         # Only metadata: no character-device permission is granted to this helper.
@@ -2634,7 +3006,7 @@ for p in pathlib.Path('/host-share/vulkan/icd.d').glob('*.json'):
  except (OSError,ValueError,TypeError):continue
 print(json.dumps(result))"""
         try:
-            result=subprocess.run(['docker','run','--rm','--pull=never','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--memory','64m','--memory-swap','64m','--cpus','0.1','--pids-limit','16','--label','org.lifetech.service=gpu-inventory','--mount','type=bind,src=/dev/dri,dst=/host-dri,readonly','--mount','type=bind,src=/usr/share,dst=/host-share,readonly','organization-launcher:webrtc-1','python3','-c',code],capture_output=True,text=True,check=True,timeout=10)
+            result=self.run_gpu_probe(['--rm','--pull=never','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--memory','64m','--memory-swap','64m','--cpus','0.1','--pids-limit','16','--label','org.lifetech.service=gpu-inventory','--mount','type=bind,src=/dev/dri,dst=/host-dri,readonly','--mount','type=bind,src=/usr/share,dst=/host-share,readonly','organization-launcher:webrtc-1','python3','-c',code],timeout=10,prefix='swarm-gpu-inventory-render-')
             metadata=json.loads(result.stdout)
             groups=metadata.get('groups',metadata)
             if 'icds' in metadata:
@@ -2642,7 +3014,7 @@ print(json.dumps(result))"""
                 if not isinstance(icds,list) or any(not isinstance(x,dict) or not isinstance(x.get('path'),str) or not isinstance(x.get('library'),str) for x in icds):raise ValueError('Invalid host Vulkan manifests')
                 self.gpu_host_icds=icds
             if not isinstance(groups,dict) or any(not re.fullmatch(r'renderD[0-9]+',k) or type(v) is not int or v<0 for k,v in groups.items()):raise ValueError('Invalid host device groups')
-        except (OSError,ValueError,subprocess.SubprocessError):return {}
+        except (OSError,ValueError,RuntimeError,subprocess.SubprocessError):return {}
         self.gpu_render_groups=groups;self.gpu_render_groups_at=time.time();return groups
 
     def host_intel_devices(self,render,gid,icd):
@@ -2668,33 +3040,33 @@ try:
  print(json.dumps(rows))
 finally:v.vkDestroyInstance(instance,None)
 """
-        name='swarm-gpu-inventory-intel-'+secrets.token_hex(8)
         try:
-            result=subprocess.run(['docker','run','--rm','--pull=never','--name',name,'--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--memory','128m','--memory-swap','128m','--cpus','0.25','--pids-limit','64','--label','org.lifetech.service=gpu-inventory','--device',render,'--group-add',str(gid),'--mount','type=bind,src=/usr,dst=/usr,readonly','--tmpfs','/tmp:rw,nosuid,nodev,size=16m','--env','XDG_CACHE_HOME=/tmp','--env','VK_ICD_FILENAMES='+icd,'organization-launcher:webrtc-1','/usr/bin/python3','-c',code],capture_output=True,text=True,check=True,timeout=15)
+            result=self.run_gpu_probe(['--rm','--pull=never','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--memory','128m','--memory-swap','128m','--cpus','0.25','--pids-limit','64','--label','org.lifetech.service=gpu-inventory','--device',render,'--group-add',str(gid),'--mount','type=bind,src=/usr,dst=/usr,readonly','--tmpfs','/tmp:rw,nosuid,nodev,size=16m','--env','XDG_CACHE_HOME=/tmp','--env','VK_ICD_FILENAMES='+icd,'organization-launcher:webrtc-1','/usr/bin/python3','-c',code],timeout=15,prefix='swarm-gpu-inventory-intel-')
             rows=json.loads(result.stdout)
             if not isinstance(rows,list) or any(not isinstance(r,dict) or type(r.get('integrated')) is not bool for r in rows):raise ValueError('Invalid Vulkan physical devices')
-        except (OSError,ValueError,subprocess.SubprocessError):rows=[]
-        finally:
-            try:subprocess.run(['docker','rm','-f',name],capture_output=True,timeout=5)
-            except (OSError,subprocess.SubprocessError):pass
+        except (OSError,ValueError,RuntimeError,subprocess.SubprocessError):rows=[]
         cache[key]=(time.time(),rows);return rows
 
     def host_nvidia_allocations(self):
+        if hasattr(self,'nvidia_sampler'):
+            return [] if getattr(self,'cuda_runtime',None) is False else self.nvidia_sampler.snapshot()
+        with self.__dict__.setdefault('nvidia_probe_lock',threading.Lock()):
+            if getattr(self,'cuda_runtime',None) is False:return []
+            if time.monotonic()<getattr(self,'nvidia_probe_retry_at',0):return []
+            rows=self._host_nvidia_allocations()
+            self.nvidia_probe_retry_at=0 if rows else time.monotonic()+60
+            return rows
+
+    def _host_nvidia_allocations(self):
         # Timestamp inside the helper: Docker startup is not sample age.
-        name='swarm-gpu-inventory-nvidia-'+secrets.token_hex(8)
         code="import json,subprocess,time; output=subprocess.check_output(['nvidia-smi','--query-gpu=uuid,pci.bus_id,name,memory.total,memory.free,utilization.gpu,temperature.gpu','--format=csv,noheader,nounits'],text=True,timeout=5); print(json.dumps({'output':output,'sampled_at':time.time()}))"
-        completed=False
         try:
-            result=subprocess.run(['docker','run','--rm','--pull=never','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--memory','96m','--memory-swap','96m','--cpus','0.25','--pids-limit','128','--name',name,'--label','org.lifetech.service=gpu-inventory','--gpus','all','--env','NVIDIA_DRIVER_CAPABILITIES=utility','organization-launcher:webrtc-1','python3','-c',code],capture_output=True,text=True,check=True,timeout=15)
-            completed=True
+            # Cold Docker/driver startup can exceed 15 seconds under load.
+            # Freshness still starts at the measurement inside the helper.
+            result=self.run_gpu_probe(['--rm','--pull=never','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--memory','96m','--memory-swap','96m','--cpus','0.25','--pids-limit','128','--label','org.lifetech.service=gpu-inventory','--gpus','all','--env','NVIDIA_DRIVER_CAPABILITIES=utility','organization-launcher:webrtc-1','python3','-c',code],timeout=60,prefix='swarm-gpu-inventory-nvidia-')
             value=json.loads(result.stdout)
             return [{**row,'sampled_at':value['sampled_at']} for row in nvidia_allocation_rows(value['output'])]
-        except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError):return []
-        finally:
-            # A CLI timeout does not remove the helper container.
-            if not completed:
-                try:subprocess.run(['docker','rm','-f',name],capture_output=True,timeout=10)
-                except (OSError,subprocess.SubprocessError):pass
+        except (OSError,ValueError,KeyError,TypeError,RuntimeError,subprocess.SubprocessError):return []
 
     def gpu_resources(self):
         with self.__dict__.setdefault('gpu_inventory_lock',threading.RLock()):return self._gpu_resources()
@@ -2709,8 +3081,6 @@ finally:v.vkDestroyInstance(instance,None)
             if nvidia:inventory['gpus']=[r for r in inventory['gpus'] if r['vendor']!='NVIDIA']+nvidia
         machine=hashlib.sha256(Path('/etc/machine-id').read_bytes()).hexdigest()
         memory={line.split(':',1)[0]:int(line.split()[1]) for line in Path('/proc/meminfo').read_text().splitlines() if len(line.split())>=2 and line.split()[1].isdigit()}
-        released=self.stream_work.released_gpu_work() if hasattr(self,'stream_work') else set()
-        workers=gpu_worker_commitments(released) if released else gpu_worker_commitments()
         rows=[];groups=None
         for raw in inventory['gpus']:
             row=dict(raw)
@@ -2733,10 +3103,21 @@ finally:v.vkDestroyInstance(instance,None)
                         if len(matches)==1 and matches[0]['integrated']:
                             row.update(device_type='integrated',name=matches[0]['name'],memory_domain='shared-system-memory',memory_source='Vulkan physical integrated device; kernel host RAM',memory_total_mib=None,memory_free_mib=None,memory_used_mib=None,shared_memory_available_mib=memory.get('MemAvailable',0)/1024,gpu_allocation_added_to_host_ram=False)
             row['allocation_known']=row.get('memory_total_mib') is not None and row.get('memory_free_mib') is not None
+            row.setdefault('sampled_at',now);rows.append(row)
+        # Slow device classification must finish before taking the shared
+        # ownership/RAM snapshot. Keep allocation timestamps on each device.
+        memory={line.split(':',1)[0]:int(line.split()[1]) for line in Path('/proc/meminfo').read_text().splitlines() if len(line.split())>=2 and line.split()[1].isdigit()}
+        memory_sampled=time.time()
+        released=self.stream_work.released_gpu_work() if hasattr(self,'stream_work') else set()
+        workers=gpu_worker_commitments(released) if released else gpu_worker_commitments()
+        for row in rows:
+            if row.get('memory_domain')=='shared-system-memory':row['shared_memory_available_mib']=memory.get('MemAvailable',0)/1024
             row.update(workers['devices'].get(row.get('uuid'),{'active_workers':0,'private_commitment_mib':0,'exclusive_worker_present':False}))
-            row['workers_known']=workers['known'];row.setdefault('sampled_at',now);rows.append(row)
-        self.gpu_resource_cache={'machine':machine,'sampled_at':min((row['sampled_at'] for row in rows),default=now),'gpus':rows,
+            row['workers_known']=workers['known']
+        self.gpu_resource_cache={'machine':machine,'sampled_at':memory_sampled,'gpus':rows,
+            'nvidia_sampler':self.nvidia_sampler.health() if hasattr(self,'nvidia_sampler') else None,
             'host_memory':{'total_mib':memory.get('MemTotal',0)/1024,'available_mib':memory.get('MemAvailable',0)/1024,
+                           'sampled_at':memory_sampled,
                            'source':'kernel MemTotal/MemAvailable; GPU allocations are not added'},
             'selection_policy':'physical identity and measured allocation; workload qualification required separately'}
         self.gpu_resource_sampled=time.time()
@@ -2775,6 +3156,7 @@ finally:v.vkDestroyInstance(instance,None)
         return value
 
     def close(self):
+        if hasattr(self,'nvidia_sampler'):self.nvidia_sampler.close()
         if hasattr(self,'commands'):self.commands.close()
         if hasattr(self,'stream_work'):self.stream_work.close()
         if hasattr(self,'control_executor'):self.control_executor.shutdown(wait=False,cancel_futures=True)

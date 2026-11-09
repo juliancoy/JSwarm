@@ -86,12 +86,24 @@ def save_caller(path,record):
     temp.chmod(0o600);temp.replace(path)
 
 
+def input_reader(fd, inputs, stopped):
+    """Read cancellably without holding Python's buffered stdin lock at exit."""
+    while not stopped.is_set():
+        if not select.select([fd], [], [], .1)[0]:continue
+        block=os.read(fd,256*1024)
+        while not stopped.is_set():
+            try:inputs.put(block,timeout=.1);break
+            except queue.Full:continue
+        if not block:return
+
+
 def run(host,argv):
     # An offline peer must not delay commands on a healthy worker. Its
     # retained journals are reconciled when that peer is contacted again.
     reap_orphan_clients(host=host['host'])
     client=AgentClient(host);ident=uuid.uuid4().hex;started=False;start_requested=False
     journal=journal_root()/(ident+'.json')
+    input_stopped=threading.Event();reader=None
     save_caller(journal,caller_record(host,ident,argv))
     def call(op,args):
         deadline=time.monotonic()+180
@@ -107,11 +119,8 @@ def run(host,argv):
         start_requested=True
         call('command.start',{'id':ident,'argv':argv});started=True
         inputs=queue.Queue(maxsize=2)
-        def read_input():
-            while True:
-                block=sys.stdin.buffer.read(256*1024);inputs.put(block)
-                if not block:return
-        threading.Thread(target=read_input,daemon=True).start()
+        reader=threading.Thread(target=input_reader,args=(sys.stdin.fileno(),inputs,input_stopped),daemon=True)
+        reader.start()
         offsets={'stdout':0,'stderr':0};input_offset=0;credit=512*1024;eof=False;pending=b'' 
         while True:
             block=b''
@@ -135,6 +144,8 @@ def run(host,argv):
             if row['exit_code'] is not None and row['stdout_eof'] and row['stderr_eof']:return row['exit_code']
             if not block and not output:time.sleep(.05)
     finally:
+        input_stopped.set()
+        if reader is not None:reader.join(timeout=1)
         closed=not start_requested
         if start_requested:
             try:closed=call('command.close',{'id':ident}).get('closed') is True and started
