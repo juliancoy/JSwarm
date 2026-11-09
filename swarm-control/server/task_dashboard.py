@@ -86,7 +86,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path.path == '/api/tasks/logs':
                 from shard_logs import tail
-                try:data=tail(parse_qs(path.query).get('id',[''])[0])
+                try:data=tail(parse_qs(path.query).get('id',[''])[0],snapshot=lambda: pipeline_feed.sample or {'items':[]})
                 except ValueError:
                     self.send_error(404,'Unknown shard');return
             elif path.path == '/api/tasks/machine':

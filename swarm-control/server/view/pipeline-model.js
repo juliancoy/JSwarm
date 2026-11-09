@@ -88,7 +88,7 @@ export function memoryProfileText(item){const p=item.memory_profile;if(!p)return
 
 // No network or timer exists until an inspector's terminal is expanded.
 export class ShardLogTail {
- constructor(id,render,{fetcher=fetch,schedule=setTimeout,cancel=clearTimeout}={}){Object.assign(this,{id,render,fetcher,schedule,cancel});this.version=0;this.active=false;}
+ constructor(id,render,{fetcher=(...args)=>fetch(...args),schedule=(...args)=>setTimeout(...args),cancel=(...args)=>clearTimeout(...args)}={}){Object.assign(this,{id,render,fetcher,schedule,cancel});this.version=0;this.active=false;}
  open(){if(this.active)return;this.active=true;this.poll(++this.version);}
  close(){this.active=false;++this.version;this.cancel(this.timer);this.controller?.abort();}
  async poll(version){
