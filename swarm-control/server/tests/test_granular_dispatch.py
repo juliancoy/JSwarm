@@ -10,16 +10,29 @@ from granular_dispatch import execute
 
 class DispatchLifecycleTests(unittest.TestCase):
     def test_completed_session_drains_events_without_feeding_it_again(self):
+        self.dispatch()
+
+    def test_python_jobs_finish_before_cold_node_image_preparation(self):
+        self.dispatch(cold_image=True)
+
+    def test_cold_first_worker_does_not_pin_a_single_shard(self):
+        self.dispatch(slow_peer=True)
+
+    def dispatch(self, cold_image=False, slow_peer=False):
         task='monitor--abc'
+        tasks=[task,'map--abc'] if cold_image else [task]
         events=[]
+        slow_started=threading.Event();fast_finished=threading.Event()
         state={'status':'running','closes':0}
         host={'host':'worker','session':{'machine':'machine'},'agent_status':{'source_revision':'source'}}
         def call(operation,args=None,**kwargs):
             if operation=='worker.policy':return {'accepting_jobs':True,'reason':'Accepting worker jobs'}
             if operation=='status':return {'ready':True,'machine':'machine','source_revision':'source'}
             if operation=='job.start':
+                state['status']='running';events.clear()
                 events.append({'kind':'capacity','cpus':4,'memory_mb':4096})
-                events.append({'kind':'dependencies','base':'monitor','status':'ready'})
+                for base in args['manifest']['hosts'][args['index']]['suites']:
+                    events.append({'kind':'dependencies','base':base,'status':'ready'})
                 events.append({'kind':'dependencies','status':'complete'})
                 return {'status':'running'}
             if operation=='job.poll':
@@ -34,11 +47,12 @@ class DispatchLifecycleTests(unittest.TestCase):
                     state['closes']+=1
                     events.append({'kind':'complete'})
                     state['status']='completed'
+                    fast_finished.set()
                 return {'accepted':args['tasks']}
             raise AssertionError(operation)
         with tempfile.TemporaryDirectory() as folder:
             run={'id':'20261024T000000Z-1234abcd','hosts':[host],'images':{},'source_sha256':'digest','force':True,
-                 'selection':{'paths':[],'suites':['monitor']},
+                 'selection':{'paths':[],'suites':['monitor','map'] if cold_image else ['monitor']},
                  'repositories':{name:{'url':'url','commit':'commit'} for name in ('.','OrgPortal','PIdP')}}
             service=SimpleNamespace(run=run,root=folder,folder=folder,lock=threading.RLock(),save=Mock())
             def update(worker,event,**kwargs):
@@ -47,41 +61,36 @@ class DispatchLifecycleTests(unittest.TestCase):
             service.update_events=lambda worker,events:[update(worker,event) for event in events]
             images=Mock(host_images={'worker':{PYTHON:'image'}},images={PYTHON:'image'})
             spec={**SUITES['monitor'],'base':'monitor','cpus':1,'memory_mb':512}
-            with patch.dict('os.environ',{'SWARM_SUBMISSION_QUEUE':folder+'/submission.sqlite'}), patch.dict(SUITES,{task:spec}), patch('granular_dispatch.catalog',return_value=[task]), \
-                 patch('granular_dispatch.pending',return_value=[task]), patch('granular_dispatch.SuiteCache'), \
-                 patch('granular_dispatch.focused_workers',side_effect=lambda hosts,*args:hosts[:1]), \
+            specs={task:spec}
+            if cold_image:
+                specs['map--abc']={**SUITES['map'],'base':'map','cpus':1,'memory_mb':512}
+                def ensure(image,hosts):
+                    if image==SUITES['map']['image']:
+                        self.assertEqual(host['jobs'][task]['status'],'passed')
+                        images.host_images['worker'][image]='node-image'
+                images.ensure.side_effect=ensure
+            if slow_peer:
+                def ensure(image,hosts):
+                    if hosts[0]['host']=='cold-worker':
+                        slow_started.set()
+                        assert fast_finished.wait(5), 'Cold preparation blocked the ready worker'
+                    else:
+                        assert slow_started.wait(5), 'Cold worker was excluded before preparation'
+                images.ensure.side_effect=ensure
+            with patch.dict('os.environ' ,{'SWARM_SUBMISSION_QUEUE':folder+'/submission.sqlite'}), patch.dict(SUITES,specs), patch('granular_dispatch.catalog',return_value=tasks), \
+                 patch('granular_dispatch.pending',side_effect=lambda *_:list(tasks)), patch('granular_dispatch.SuiteCache'), \
                  patch('granular_dispatch.AgentClient') as client, patch('granular_dispatch.time.sleep'):
                 client.return_value.call.side_effect=call
-                unused={'host':'unused-worker'}
-                execute(service,[host,unused],images)
-                self.assertTrue(unused['not_executed'])
-                self.assertEqual(client.call_count,1)
+                cold={'host':'cold-worker'}
+                execute(service,[cold,host] if slow_peer else [host],images)
+                if slow_peer:
+                    self.assertTrue(cold['not_executed'])
+                    self.assertEqual(cold['jobs'],{})
+                self.assertEqual(client.call_count,len(tasks)+(1 if slow_peer else 0))
             self.assertEqual(host['status'],'passed')
             self.assertEqual(host['jobs'][task]['status'],'passed')
-            self.assertEqual(state['closes'],1)
+            self.assertEqual(state['closes'],len(tasks))
             self.assertEqual(run['pending_tasks'],[])
-
-
-def test_focused_worker_selection_skips_full_node_and_prefers_cached_images():
-    from granular_dispatch import focused_workers
-    hosts=[{'host':n} for n in ('full','cold','cached')]
-    def client(host):
-        instance=Mock()
-        def call(op,args=None,**kwargs):
-            if op=='resource.capacity':return {'available_mb':500 if host['host']=='full' else 5000,'available_cpus':4}
-            if op=='image.inspect':return {'id':'cached'} if host['host']=='cached' else None
-            raise AssertionError(op)
-        instance.call.side_effect=call;return instance
-    with patch('granular_dispatch.AgentClient',side_effect=client):
-        assert focused_workers(hosts,['test'],{'test':{'image':'tools'}})==[hosts[2]]
-
-
-def test_focused_worker_selection_keeps_fallbacks_when_every_node_is_full():
-    from granular_dispatch import focused_workers
-    hosts=[{'host':'one'},{'host':'two'}]
-    with patch('granular_dispatch.AgentClient') as client:
-        client.return_value.call.return_value={'available_mb':0,'available_cpus':0}
-        assert focused_workers(hosts,['test'],{'test':{'image':'tools'}})==hosts
 
 
 def test_transport_recovery_keeps_same_operation_and_reports_reconnection(monkeypatch):

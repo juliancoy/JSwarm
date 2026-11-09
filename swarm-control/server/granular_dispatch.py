@@ -30,31 +30,6 @@ def recover_transport(operation, stopped, deadline, report):
     raise TimeoutError('Worker session deadline exceeded during reconnection')
 
 
-def focused_workers(hosts,tasks,specs):
-    """Choose from current capacity and cached images, rather than host order."""
-    memory=max(specs[t].get('memory_mb',1536) for t in tasks)+512
-    cpus=max(specs[t].get('cpus',1) for t in tasks)+1
-    images={PYTHON,*[specs[t]['image'] for t in tasks]}
-    def probe(item):
-        index,host=item;client=AgentClient(host)
-        try:
-            available=client.call('resource.capacity',timeout=10)
-            host['admission_capacity']=available
-            if available.get('available_mb',0)<memory or available.get('available_cpus',0)<cpus:return None
-            cached=0
-            for image in images:
-                try:cached+=bool(client.call('image.inspect',{'image':image},timeout=10))
-                except (OSError,RuntimeError):pass
-            return (-cached,index,host)
-        except (OSError,RuntimeError):return None
-        finally:client.close()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(5,len(hosts))) as pool:
-        ready=[row for row in pool.map(probe,enumerate(hosts)) if row is not None]
-    # If nobody currently fits, retain independent workers rather than pinning
-    # the queue to one full or unreachable machine until its session expires.
-    return [row[2] for row in sorted(ready,key=lambda r:r[:2])[:len(tasks)]] if ready else hosts
-
-
 def execute(service, hosts, images):
     SUITES = __import__('copy').deepcopy(__import__('distributed_worker').SUITES)
     run = service.run
@@ -74,10 +49,10 @@ def execute(service, hosts, images):
         service.save()
 
     submissions=SubmissionQueue('application-tests:'+run['id'])
-    for task in tasks:
-        spec=SUITES[task]
-        submissions.submit({'id':task,'kind':'application-test','command':spec['test'],
-            'repositories':run['repositories'],'resources':{'cpus':spec.get('cpus',1),'memory_mb':spec.get('memory_mb',1536)}})
+    # Publish the run atomically, without one durable disk commit per shard.
+    submissions.submit_many([{'id':task,'kind':'application-test','command':SUITES[task]['test'],
+        'repositories':run['repositories'],'resources':{'cpus':SUITES[task].get('cpus',1),
+        'memory_mb':SUITES[task].get('memory_mb',1536)}} for task in tasks])
     queue_tokens={}
 
     preparation_bases=list(dict.fromkeys(SUITES[t].get('base',t) for t in run['pending_tasks']))
@@ -96,13 +71,9 @@ def execute(service, hosts, images):
             service.save()
         return
 
-    if run.get('selection') and not include_p2p and not gpu.hosts and len(hosts) > len(tasks):
-        chosen=focused_workers(hosts,tasks,SUITES)
-        for host in [h for h in hosts if h not in chosen]:
-            host.update(status='passed',not_executed=True,preparation='No additional worker needed for this focused request')
-        hosts=chosen
-
-    def worker(index, host):
+    # Every enrolled worker competes for the same pending work. Image setup is
+    # independent, and claims happen only after its dependencies are ready.
+    def worker(index, host, bases):
         client = AgentClient(host)
         ident = run['id'].split('-')[0] + '-' + uuid.uuid4().hex[:8]
         active = set()
@@ -111,6 +82,7 @@ def execute(service, hosts, images):
         close_sent = False
         ready = False
         ready_bases=set()
+        eligible_tasks={t for t in tasks if SUITES[t].get('base',t) in bases}
         preparing=True
         p2p_released=False
         started = time.monotonic()
@@ -118,7 +90,7 @@ def execute(service, hosts, images):
         baselines = cache.baselines(run)
         def finish_unused(stop=False):
             with service.lock:
-                unused=not include_p2p and not run.get('stop_requested') and not run['pending_tasks'] and not active and not host['jobs']
+                unused=not include_p2p and not run.get('stop_requested') and not eligible_tasks.intersection(run['pending_tasks']) and not active and not host['jobs']
             if not unused:return False
             if stop:client.call('job.stop',{'id':ident},timeout=40)
             with service.lock:
@@ -131,7 +103,6 @@ def execute(service, hosts, images):
                 host.update(status='preparing', preparation='Preparing persistent file worker')
                 service.save()
             # Machines initialize independently. No fleet-wide image/setup barrier.
-            bases = preparation_bases
             for image in dict.fromkeys([PYTHON] + [SUITES[b]['image'] for b in bases]):
                 if run.get('stop_requested'):return
                 if finish_unused():return
@@ -147,7 +118,7 @@ def execute(service, hosts, images):
                 host.pop('preparation', None)
                 # Keep the agent request bounded even if another worker already
                 # produced thousands of log lines while this machine initialized.
-                manifest = {'id':ident,'granular':True,'task_catalog':tasks,'p2p_parallel':not network.done.is_set(),
+                manifest = {'id':ident,'granular':True,'task_catalog':[t for t in tasks if t in eligible_tasks],'p2p_parallel':not network.done.is_set(),
                             'source_sha256':run['source_sha256'],
                             'repositories':{name:{key:repo[key] for key in ('url','commit')} for name,repo in run['repositories'].items()},
                             'hosts':[{'host':h['host'],'suites':bases if h is host else [],
@@ -213,7 +184,7 @@ def execute(service, hosts, images):
                         while len(outgoing)<128:
                             available={'available_cpus':budget['cpus']-sum(SUITES[t].get('cpus',1) for t in active),
                                 'available_mb':budget['memory_mb']-sum(SUITES[t].get('memory_mb',1536) for t in active)}
-                            selected=submissions.claim(host['host'],available,eligible=[t for t in run['pending_tasks'] if SUITES[t].get('base',t) in ready_bases])
+                            selected=submissions.claim(host['host'],available,eligible=[t for t in run['pending_tasks'] if t in eligible_tasks and SUITES[t].get('base',t) in ready_bases])
                             if selected is None:break
                             task=selected['id'];run['pending_tasks'].remove(task);queue_tokens[task]=selected['token']
                             submissions.update(task,selected['token'],state='accepted',task_id=ident)
@@ -234,7 +205,7 @@ def execute(service, hosts, images):
                         host['active_tasks'] = sorted(active)
                         # Once all work is claimed, slow workers finish their own files;
                         # faster workers are never forced to repeat a suite or wait idle.
-                        closed = not run['pending_tasks'] and not active
+                        closed = not eligible_tasks.intersection(run['pending_tasks']) and not active
                         available = [h for h in hosts if h.get('capacity') and h['status'] != 'unavailable']
                         if (run['pending_tasks'] and len(available) == len([h for h in hosts if h['status'] != 'unavailable'])
                                 and not any(claim(list(run['pending_tasks']),SUITES,h['capacity'],set()) is not None for h in available)):
@@ -279,9 +250,24 @@ def execute(service, hosts, images):
                 host.update(active_tasks=[], finished=now(), duration_seconds=round(time.monotonic() - started, 2))
                 service.save()
 
+    # Start the Python lane before preparing heavier browser/toolchain images.
+    # Each node drains eligible work independently; a cold image cannot hold up
+    # jobs that can execute with an image already prepared on that node.
+    image_groups={}
+    for base in preparation_bases:
+        image_groups.setdefault(SUITES[base]['image'],[]).append(base)
+    groups=sorted(image_groups.values(),key=lambda bases:SUITES[bases[0]]['image']!=PYTHON)
+
+    def drain(index,host):
+        for bases in groups:
+            if run.get('stop_requested') or host.get('status')=='unavailable':break
+            with service.lock:
+                if not any(SUITES[t].get('base',t) in bases for t in run['pending_tasks']):continue
+            worker(index,host,bases)
+
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(hosts)) as pool:
-            futures = [pool.submit(worker, index, host) for index, host in enumerate(hosts)]
+            futures = [pool.submit(drain, index, host) for index, host in enumerate(hosts)]
             for future in concurrent.futures.as_completed(futures):future.result()
     finally:
         network.join()
