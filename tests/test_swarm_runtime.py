@@ -205,6 +205,21 @@ def test_generic_jobs_use_their_own_group_and_no_genome_labels(tmp_path):
 
     assert acquisition.args[1]['sink']=='cpu'
     assert 'org.lifetech.sink=cpu' in argv
+    assert argv[argv.index('--pids-limit')+1]=='32'
+    with patch.object(runtime,'AgentClient') as client,patch.object(runtime.subprocess,'Popen',return_value=process) as launch,patch.object(runtime,'cleanup_container',return_value=True):
+        client.return_value.call.side_effect=call
+        runtime.run_job({'host':'local','local':True,'machine':'id'},'sha256:pinned','true',[],str(tmp_path),1,1024,tmp_path/'bounded-threads.json',group='image-processing',pids_limit=128)
+    argv=launch.call_args.args[0]
+    assert argv[argv.index('--pids-limit')+1]=='128'
+
+
+def test_worker_pid_limits_reject_unbounded_values_before_admission(tmp_path):
+    import pytest
+    from scripts import swarm_runtime as runtime
+    for limit in (0,-1,True,31,4097,128.0):
+        with patch.object(runtime,'AgentClient') as client,pytest.raises(ValueError,match='PID limit'):
+            runtime.run_job({},'image','true',[],str(tmp_path),1,1024,tmp_path/'unused.json',group='test',pids_limit=limit)
+        client.assert_not_called()
 
 def test_combined_ram_scratch_is_checked_before_contacting_a_worker(tmp_path):
     import pytest

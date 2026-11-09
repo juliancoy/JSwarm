@@ -187,9 +187,11 @@ def observe_recorded_worker(client,host,name,lease,*,on_observed=None,reconnect_
         time.sleep(poll_seconds)
 
 
-def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_for_capacity=False,on_admitted=None,tmpfs=None,labels=None,container_prefix=None,gpu=None,network='none',shared_cache=None,memory_reservation_mb=None,profiling_context=None,gpu_compute_complete_file=None,run_id=None,shared_caches=None):
+def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_for_capacity=False,on_admitted=None,tmpfs=None,labels=None,container_prefix=None,gpu=None,network='none',shared_cache=None,memory_reservation_mb=None,profiling_context=None,gpu_compute_complete_file=None,run_id=None,shared_caches=None,pids_limit=32):
     """Docker RAM, including bounded tmpfs scratch, fits the acquired lease."""
     validate_job(cpus,memory_mb,group,tmpfs,labels,container_prefix)
+    if type(pids_limit) is not int or not 32<=pids_limit<=4096:
+        raise ValueError('Worker PID limit must be an integer between 32 and 4096')
     if run_id is not None and (not isinstance(run_id,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',run_id)):
         raise ValueError('Run ID must be a bounded operational identifier')
     if profiling_context is not None and (not isinstance(profiling_context,dict) or len(json.dumps(profiling_context))>8192):
@@ -231,6 +233,8 @@ def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_fo
         if not eligible(status):raise CapacityWait('Worker is declining new work')
         if 'renewable-resources' not in status.get('capabilities',[]):raise RuntimeError('Renewable leases unavailable')
         capacity=client.call('resource.capacity',{'group':group})
+        if capacity.get('available_pids',pids_limit)<pids_limit:
+            raise CapacityWait('Insufficient current worker PID capacity')
         if capacity['available_mb']<reservation and ('verified-ram-caches-v1' in status.get('capabilities',[]) or any(w.get('group')=='shared-cache' for w in status.get('workers',[]))):
             from scripts.swarm_shared_cache import reclaim_completed
             if reclaim_completed(host,keep=protected,required_mb=reservation):
@@ -281,7 +285,7 @@ def run_job(host,image,command,mounts,work,cpus,memory_mb,report,*,group,wait_fo
             finally:other.close()
         if 'docker-workers' not in status.get('capabilities',[]):threading.Thread(target=renew,daemon=True).start()
         detached=not host['local']
-        argv=['docker','run','--pull=never','--name',name,'--label','org.lifetech.worker=true','--label','org.lifetech.job='+lease,'--label','org.lifetech.group='+group,'--network',network,'--read-only','--log-driver','local' if detached else 'none','--cpus',str(cpus),'--memory',str(memory_mb)+'m','--memory-swap',str(memory_mb)+'m','--pids-limit','32','--cap-drop','ALL','--security-opt','no-new-privileges','--ulimit','core=0:0','--ulimit','nofile=65536:65536','--user',host.get('container_user','1000:1000'),'-e','TMPDIR=/work/tmp','-w','/work']
+        argv=['docker','run','--pull=never','--name',name,'--label','org.lifetech.worker=true','--label','org.lifetech.job='+lease,'--label','org.lifetech.group='+group,'--network',network,'--read-only','--log-driver','local' if detached else 'none','--cpus',str(cpus),'--memory',str(memory_mb)+'m','--memory-swap',str(memory_mb)+'m','--pids-limit',str(pids_limit),'--cap-drop','ALL','--security-opt','no-new-privileges','--ulimit','core=0:0','--ulimit','nofile=65536:65536','--user',host.get('container_user','1000:1000'),'-e','TMPDIR=/work/tmp','-w','/work']
         if reservation!=memory_mb:argv+=['--memory-reservation',str(reservation)+'m']
         if detached:
             argv+=['--detach']

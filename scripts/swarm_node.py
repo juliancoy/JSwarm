@@ -33,17 +33,34 @@ def build_node_image(image='organization-swarm-node:1'):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(prog='swarm-node',description=__doc__)
-    parser.add_argument('command',nargs='?',default='run',choices=('run','status','drain','resume','update','enroll','monitor','telemetry','dashboard','performance','build'))
+    parser.add_argument('command',nargs='?',default='run',choices=('run','status','drain','resume','update','enroll','join','monitor','telemetry','dashboard','performance','build','speed-test'))
     parser.add_argument('--serve',action='store_true',help='Run the built-in map backend in the foreground (dashboard command)')
     parser.add_argument('--prefix',default='lifetech-')
     parser.add_argument('--all',action='store_true',help='Apply a maintenance command to the enrolled fleet')
     parser.add_argument('--node',action='append',help='Select an enrolled node for maintenance; default is the fleet')
     parser.add_argument('--reason',default='Owner-requested maintenance')
     parser.add_argument('--watch',action='store_true',help='Retry an update when a node is offline or busy')
-    parser.add_argument('--address',help='Verified enrollment SSH address')
+    parser.add_argument('--address',help='Enrollment SSH address or explicit speed-test destination IP')
     parser.add_argument('--target',help='Enrollment target: user@hostname.local')
+    parser.add_argument('--origin',default='https://compai.lifetech.fyi',help='Trusted HTTPS swarm console for browser sign-in')
+    parser.add_argument('--name',help='New node name for browser enrollment (hostname.local)')
+    parser.add_argument('--bytes',type=int,default=64*1024*1024,help='Bytes per speed-test direction (maximum 256 MiB)')
+    parser.add_argument('--transport',choices=('ssh','tcp','mptcp'),default='ssh',help='Speed-test data transport')
+    parser.add_argument('--rounds',type=int,default=3,help='Speed-test rounds (1–5)')
     args=parser.parse_args(argv)
     sys.path.insert(0,str(ROOT/'scripts'))
+    if args.command=='speed-test':
+        if not args.node or len(args.node)!=1:parser.error('speed-test requires one --node enrolled-host.local')
+        from scripts.swarm_speed_test import run
+        options={}
+        if args.address:options['address']=args.address
+        if args.transport!='ssh':options['transport']=args.transport
+        print(json.dumps(run(args.node[0],args.bytes,args.rounds,**options),indent=2))
+        return
+    if args.command=='join':
+        from node_signon import join
+        join(args.origin,args.name)
+        return main(['run','--prefix',args.prefix])
     if args.command=='build':
         print('Built swarm node image: '+build_node_image())
         return

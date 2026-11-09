@@ -14,6 +14,116 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def discover_test_sources():
+    """Include the working repository and sibling checkouts in a workspace."""
+    cwd = Path.cwd().resolve()
+    result = subprocess.run(['git', '-C', str(cwd), 'rev-parse', '--show-toplevel'],
+                            capture_output=True, text=True)
+    root = Path(result.stdout.strip()) if result.returncode == 0 else cwd
+    roots = {root}
+    for child in root.iterdir():
+        if child.is_dir() and not child.is_symlink() and (child / '.git').exists():
+            roots.add(child)
+    return sorted(roots)
+
+
+def run_logged_test(command, sources=()):
+    """Run a host test once per input fingerprint, keeping evidence by its source."""
+    import datetime
+    import fcntl
+    import hashlib
+    import platform
+    import time
+    import uuid
+
+    automatic = not sources
+    paths = sorted({Path(source).resolve(strict=True) for source in
+                    (sources or discover_test_sources())})
+    if not paths or not command:
+        raise ValueError('A test command and its source inputs are required')
+    # A directory owns its log; a file keeps its log immediately beside it.
+    logs = [path / '.test-log.jsonl' if path.is_dir()
+            else path.with_name(path.name + '.test-log.jsonl') for path in paths]
+    excluded = {'.git', '__pycache__', '.pytest_cache', 'node_modules', '.venv', '.test-output'}
+
+    def fingerprint():
+        digest = hashlib.sha256()
+        def add(value):
+            data = value if isinstance(value, bytes) else str(value).encode()
+            digest.update(len(data).to_bytes(8, 'big'))
+            digest.update(data)
+        add(Path.cwd().resolve())
+        add(json.dumps(command))
+        add(sys.version)
+        add(sys.executable)
+        add(platform.platform())
+        add(json.dumps(dict(os.environ), sort_keys=True))
+        add(Path(__file__).read_bytes())
+        for path in paths:
+            add(path)
+            if automatic and (path / '.git').exists():
+                listing = subprocess.run(
+                    ['git', '-C', str(path), 'ls-files', '--cached', '--others',
+                     '--exclude-standard', '-z'], capture_output=True, check=True)
+                files = sorted({path / os.fsdecode(name) for name in listing.stdout.split(b'\0')
+                                if name and not excluded.intersection(Path(os.fsdecode(name)).parts)
+                                and not os.fsdecode(name).endswith(('.test-log.jsonl', '.test-log.jsonl.lock'))})
+            else:
+                files = [path] if path.is_file() else sorted(
+                    item for item in path.rglob('*')
+                    if item.is_file() and not excluded.intersection(item.relative_to(path).parts)
+                    and not item.name.endswith(('.test-log.jsonl', '.test-log.jsonl.lock')))
+            for item in files:
+                add(item)
+                if item.is_symlink():
+                    add(os.readlink(item))
+                if not item.is_file():
+                    add('missing-or-directory')
+                    continue
+                add(item.stat().st_mode)
+                add(item.read_bytes())
+        return digest.hexdigest()
+
+    # Serialize matching source sets, including concurrent launcher invocations.
+    with logs[0].with_name(logs[0].name + '.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        before = fingerprint()
+        if logs[0].exists():
+            for line in reversed(logs[0].read_text().splitlines()):
+                try:
+                    previous = json.loads(line)
+                except ValueError:
+                    continue
+                if previous.get('fingerprint') == before and previous.get('inputs_stable'):
+                    print(f'Reusing test result ({previous["returncode"]}): {logs[0]}', flush=True)
+                    return previous['returncode']
+        output_dir = logs[0].parent / '.test-output'
+        output_dir.mkdir(exist_ok=True)
+        output = output_dir / (uuid.uuid4().hex + '.log')
+        started = time.monotonic()
+        record = {'date': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                  'command': command, 'cwd': str(Path.cwd()), 'sources': list(map(str, paths)),
+                  'fingerprint': before, 'output': str(output), 'automatic_sources': automatic}
+        code = 1
+        completed = False
+        try:
+            with output.open('w') as stream:
+                try:
+                    code = subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT).returncode
+                except OSError as error:
+                    stream.write(str(error) + '\n')
+                    code = 127
+                completed = True
+        finally:
+            record.update(returncode=code, duration_seconds=time.monotonic() - started,
+                          inputs_stable=completed and fingerprint() == before)
+            for log in logs:
+                with log.open('a') as stream:
+                    stream.write(json.dumps(record, sort_keys=True) + '\n')
+            print(f'Test result ({code}): {output}', flush=True)
+        return code
+
+
 def portal_ready(port):
     """Inspect the actual local portal, rather than the Docker process alone."""
     import ssl
@@ -118,11 +228,15 @@ def container_login(args, name):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--test-source', action='append', type=Path, default=[],
+                        help='Optional explicit input scope; defaults to automatic repository/workspace discovery.')
+    parser.add_argument('--test', nargs=argparse.REMAINDER,
+                        help='Run a host test command with automatic change detection and adjacent logs. Must be last.')
     parser.add_argument('--stop', action='store_true', help='Stop Organization services and containers, preserving data.')
     parser.add_argument('--all', action='store_true', help='With --stop, stop all enrolled LAN nodes too.')
     parser.add_argument('--memory-pressure-benchmark',choices=['run','status'],help='Benchmark a complete alignment shard under FS-Cache RAM pressure.')
-    parser.add_argument('--monitor-view',choices=['deploy','status'],help='Publish monitor assets without restarting nodes or workers.')
-    parser.add_argument('--pipeline-view',choices=['deploy','status'],help='Publish the read-only shard pipeline without restarting compute workers.')
+    parser.add_argument('--monitor-view',choices=['deploy','status','device-controls','authenticated-nodes'],help='Publish monitor assets without restarting nodes or workers.')
+    parser.add_argument('--pipeline-view',choices=['deploy','status','device-controls','authenticated-nodes'],help='Publish the read-only shard pipeline without restarting compute workers.')
     parser.add_argument('--network-reference-cache',choices=['build','test','qualify','status','stop'],help='Test and inspect launcher-managed FS-Cache over LAN; does not change production placement.')
     parser.add_argument('--shared-reference',choices=['prepare','enable','status'],help='Manage the validated stock-BWA shared index for memory-constrained workers.')
     parser.add_argument('--node-alignment',choices=['build','qualify','deploy','status'],help='Manage qualified node-owned BWA CPU/GPU execution and shared reference mounts.')
@@ -153,6 +267,10 @@ def parse_args(argv=None):
     parser.add_argument('--vm-timeout', type=int, default=5400, help='Total VM run timeout in seconds (default: 5400).')
     parser.add_argument('--vm-image-archive', type=Path, help='Optional docker-save archive to preload inside the VM.')
     args = parser.parse_args(argv)
+    if args.test is not None and not args.test:
+        parser.error('--test requires a command')
+    if args.test_source and args.test is None:
+        parser.error('--test-source requires --test')
     if args.all and not args.stop:
         parser.error('--all requires --stop')
     if args.recreate_launcher and (args.release or args.vm or args.peer_enroll or args.peer_register):
@@ -216,6 +334,8 @@ def start_codecollective_preview():
 
 def main(argv=None):
     args = parse_args(argv)
+    if args.test is not None:
+        return run_logged_test(args.test, args.test_source)
     if args.stop:
         from scripts.stop_organization import stop
         return stop(ROOT, fleet=args.all)

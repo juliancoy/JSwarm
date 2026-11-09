@@ -187,7 +187,7 @@ def collect(host,source,previous):
 def snapshot(name):
     config=json.loads(CONFIG.read_text())
     if name not in config['peers']:raise ValueError('Unknown enrolled machine')
-    host={'host':name,'agent_endpoint':'http://'+config['peers'][name]+':8790'}
+    host={'host':name,'agent_route':'auto','agent_endpoint':'http://'+config['peers'][name]+':8790'}
     with LOCK:
         row=CACHE.setdefault(name,{'value':{'host':name,'status':'loading'},'updated':0,'busy':False})
         if not row['busy'] and time.monotonic()-row['updated']>=1:

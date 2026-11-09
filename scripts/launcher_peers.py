@@ -838,7 +838,8 @@ class JobGateway:
         app.router.add_get('/launcher/status',self.browser)
         for route in ('policy','request','master','enroll','reconnect','phone-pair','owner-unlock','jobs-stop'):app.router.add_post('/launcher/'+route,self.browser)
         app.router.add_route('*','/{path:.*}',NodePipelineWeb(self.agent).handle)
-        self.runner=web.AppRunner(app,access_log=None);await self.runner.setup()
+        self.runner=web.AppRunner(app,access_log=None)
+        await self.runner.setup()
         await web.TCPSite(self.runner,'127.0.0.1',8791).start()
         import socket
         if socket.has_ipv6:

@@ -1,0 +1,100 @@
+{
+  "source": "compai.local",
+  "peer": "julian-latitude.local",
+  "destination_address": "10.42.0.222",
+  "transport": "MPTCP using swarm transport_socket; SSH control",
+  "scope": "Application throughput with SHA256 verification; setup reported separately; not raw link capacity",
+  "timestamp": "2026-11-09T01:52:57Z",
+  "measurements": [
+    {
+      "bytes": 268435456,
+      "seconds": 0.9826,
+      "Mbps": 2185.57,
+      "setup_seconds": 0.3136,
+      "sha256_verified": true,
+      "mptcp": {
+        "negotiated": true,
+        "tcp_fallback": false,
+        "additional_subflows": 1,
+        "subflows_total": 2
+      },
+      "from": "compai.local",
+      "to": "julian-latitude.local"
+    },
+    {
+      "bytes": 268435456,
+      "seconds": 0.9566,
+      "Mbps": 2244.94,
+      "setup_seconds": 0.3121,
+      "sha256_verified": true,
+      "mptcp": {
+        "negotiated": true,
+        "tcp_fallback": false,
+        "additional_subflows": 1,
+        "subflows_total": 2
+      },
+      "from": "julian-latitude.local",
+      "to": "compai.local"
+    },
+    {
+      "bytes": 268435456,
+      "seconds": 1.1443,
+      "Mbps": 1876.72,
+      "setup_seconds": 0.3171,
+      "sha256_verified": true,
+      "mptcp": {
+        "negotiated": true,
+        "tcp_fallback": false,
+        "additional_subflows": 1,
+        "subflows_total": 2
+      },
+      "from": "compai.local",
+      "to": "julian-latitude.local"
+    },
+    {
+      "bytes": 268435456,
+      "seconds": 0.9315,
+      "Mbps": 2305.47,
+      "setup_seconds": 0.3307,
+      "sha256_verified": true,
+      "mptcp": {
+        "negotiated": true,
+        "tcp_fallback": false,
+        "additional_subflows": 1,
+        "subflows_total": 2
+      },
+      "from": "julian-latitude.local",
+      "to": "compai.local"
+    },
+    {
+      "bytes": 268435456,
+      "seconds": 1.0268,
+      "Mbps": 2091.48,
+      "setup_seconds": 0.3318,
+      "sha256_verified": true,
+      "mptcp": {
+        "negotiated": true,
+        "tcp_fallback": false,
+        "additional_subflows": 1,
+        "subflows_total": 2
+      },
+      "from": "compai.local",
+      "to": "julian-latitude.local"
+    },
+    {
+      "bytes": 268435456,
+      "seconds": 0.9918,
+      "Mbps": 2165.33,
+      "setup_seconds": 0.3172,
+      "sha256_verified": true,
+      "mptcp": {
+        "negotiated": true,
+        "tcp_fallback": false,
+        "additional_subflows": 1,
+        "subflows_total": 2
+      },
+      "from": "julian-latitude.local",
+      "to": "compai.local"
+    }
+  ]
+}

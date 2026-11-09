@@ -1,0 +1,64 @@
+{
+  "source": "compai.local",
+  "peer": "julian-latitude.local",
+  "destination_address": "10.42.0.222",
+  "transport": "Direct TCP synthetic data; SSH control; one stream",
+  "scope": "Application throughput with SHA256 verification; setup reported separately; not raw link capacity",
+  "timestamp": "2026-11-09T01:53:07Z",
+  "measurements": [
+    {
+      "bytes": 268435456,
+      "seconds": 0.9757,
+      "Mbps": 2201.02,
+      "setup_seconds": 0.335,
+      "sha256_verified": true,
+      "from": "compai.local",
+      "to": "julian-latitude.local"
+    },
+    {
+      "bytes": 268435456,
+      "seconds": 0.9166,
+      "Mbps": 2342.83,
+      "setup_seconds": 0.3232,
+      "sha256_verified": true,
+      "from": "julian-latitude.local",
+      "to": "compai.local"
+    },
+    {
+      "bytes": 268435456,
+      "seconds": 0.9247,
+      "Mbps": 2322.43,
+      "setup_seconds": 0.3259,
+      "sha256_verified": true,
+      "from": "compai.local",
+      "to": "julian-latitude.local"
+    },
+    {
+      "bytes": 268435456,
+      "seconds": 0.915,
+      "Mbps": 2347.08,
+      "setup_seconds": 0.3055,
+      "sha256_verified": true,
+      "from": "julian-latitude.local",
+      "to": "compai.local"
+    },
+    {
+      "bytes": 268435456,
+      "seconds": 1.0284,
+      "Mbps": 2088.26,
+      "setup_seconds": 0.3252,
+      "sha256_verified": true,
+      "from": "compai.local",
+      "to": "julian-latitude.local"
+    },
+    {
+      "bytes": 268435456,
+      "seconds": 0.9773,
+      "Mbps": 2197.31,
+      "setup_seconds": 0.3296,
+      "sha256_verified": true,
+      "from": "julian-latitude.local",
+      "to": "compai.local"
+    }
+  ]
+}

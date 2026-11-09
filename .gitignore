@@ -29,3 +29,8 @@ local.properties
 coverage/
 playwright-report/
 test-results/
+.test-output/
+*.test-log.jsonl
+*.test-log.jsonl.lock
+.test-log.jsonl
+.test-log.jsonl.lock

@@ -142,8 +142,14 @@ def finished_cache_keys(host,path=None):
                 value=json.loads(request or '{}')
                 if not isinstance(value,dict):return set()
                 finished=state in ('completed','failed','cancelled')
-                if not finished and (value.get('inputs_ready') is False or state=='preparing' and not request):return set()
                 keys=set(bindings(value,node))
+                if (not finished and state in ('accepted','preparing')
+                        and (value.get('inputs_ready') is False or not request)
+                        and value.get('cache_claims_version')!=1):
+                    # Legacy preparation cannot enumerate its future bindings.
+                    # Protect its own node, rather than disabling every node.
+                    owner=value.get('worker_host') or node
+                    if not owner or owner.split('#',1)[0]==physical or keys:return set()
                 (terminal if finished else protected).update(keys)
     except (OSError,ValueError,sqlite3.Error):return set()
     return terminal-protected
@@ -201,11 +207,13 @@ def park_verified_owner(host,cache,row):
         command(host,['docker','update','--cpus','0.1',cache['container']])
 
 
-def ensure(host,image,files,load,metrics=None):
+def ensure(host,image,files,load,metrics=None,*,on_bound=None):
     """Load once; callback streams files into the admitted owner container."""
     key,value=contract(image,files);shm_mb=math.ceil(sum(r['bytes'] for r in files.values())/1024**2)+16
     cache={**value,'host':host['host'],'key':key,'container':'swarm-job-'+key[:32],'volume':'swarm-cache-'+key[:32],
            'memory_mb':shm_mb+128,'shm_mb':shm_mb}
+    # Publish queue ownership before inspecting/reusing an existing cache.
+    if on_bound:on_bound(cache)
     owner=inspect(host,'container',cache['container']);volume=inspect(host,'volume',cache['volume'])
     if volume:validate_volume(volume,cache)
     if owner and ((owner['Config'].get('Labels') or {}).get(OWNER)!=key or owner.get('Image')!=image):raise ValueError('Shared cache owner differs')
@@ -273,7 +281,7 @@ def mount_args(host,cache,target='/dev/shm',primary=True):
     return ['--mount','type=volume,src='+cache['volume']+',dst='+target+',readonly,volume-nocopy','--label',label+'='+cache['container']]
 
 
-def ensure_derived(host,image,identity,build,load):
+def ensure_derived(host,image,identity,build,load,*,on_bound=None):
     """Materialize an immutable object once on its local owner, then reuse RAM.
 
     The lookup is metadata only; Docker names, seals and the existing pool remain
@@ -289,6 +297,7 @@ def ensure_derived(host,image,identity,build,load):
     if metadata.exists():
         record=json.loads(metadata.read_text());cache=record['cache']
         if record.get('identity')!=identity or cache.get('image')!=image:raise ValueError('Immutable object lookup changed')
+        if on_bound:on_bound({**cache,'host':host['host']})
         owner=inspect(host,'container',cache['container'])
         if owner and ready(host,cache,owner):
             return record
@@ -299,7 +308,7 @@ def ensure_derived(host,image,identity,build,load):
             if not p.is_file() or p.is_symlink():raise ValueError('Derived objects must be flat regular files')
             with p.open('rb') as stream:digest=hashlib.file_digest(stream,'sha256').hexdigest()
             files[p.name]={'bytes':p.stat().st_size,'sha256':digest}
-        cache=ensure(host,image,files,lambda owner:load(owner,root,files))
+        cache=ensure(host,image,files,lambda owner:load(owner,root,files),on_bound=on_bound)
     record={'identity':identity,'cache':cache}
     from scripts.swarm_runtime import atomic_json
     atomic_json(metadata,record)

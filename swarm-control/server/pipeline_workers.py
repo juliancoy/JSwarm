@@ -36,7 +36,7 @@ def project(host, status, observed):
 def collect(host, address):
     client = None
     try:
-        client = AgentClient({'host': host, 'agent_endpoint': 'http://' + address + ':8790'})
+        client = AgentClient({'host': host, 'agent_route':'auto','agent_endpoint': 'http://' + address + ':8790'})
         items = project(host, client.call('status', timeout=4), time.time())
         with LOCK:
             CACHE[host].update(items=items, observed=time.monotonic(), error=None)

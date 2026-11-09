@@ -113,20 +113,6 @@ python JSwarm/scripts/deploy_swarm_inputs.py --publish
 python JSwarm/scripts/deploy_swarm_inputs.py --status
 ```
 
-Validation, publication, rollback and rolling deployment share the coordinator's
-`~/.local/state/swarm-control/input-deployment.lock`. A competing command fails
-with the holder's operation, host and PID; it does not queue an older publication.
-The OS releases the lock when its owner exits. Never delete the lock file to
-bypass a running deployment. Preparation also captures the desired artifact;
-publication refuses it if another release advanced while the source was frozen.
-
-Every changed publication has a strictly increasing deployment `generation`,
-reported by publication, status and rollout reports. Repeating the current
-publication is a no-op. Ordinary publication rejects previously superseded node
-code and artifacts; explicit rollback restores verified older code as a new,
-higher generation. Interrupted publications leave the selected release intact,
-and retries advance past any reserved generation.
-
 Publication runs the required release checks, verifies that bundled sources did not
 change during validation, and atomically selects the artifact. The existing
 `swarm-input-deployment.service` follows that publication and replaces one enrolled
@@ -255,3 +241,85 @@ For a node whose jobs use rootless Docker, the existing node service runs a
 short-lived host network helper before startup. Its only capability is
 `NET_ADMIN`; it maintains the same port 80 rules without exposing the system
 Docker socket to the node or running another HTTP process.
+
+
+### Node-to-node speed test
+
+From an enrolled node, run:
+
+```sh
+./swarm-node speed-test --node julian-latitude.local
+```
+
+The test uses existing batch-mode SSH access and remote Python 3. It transfers
+64 MiB in each direction for three rounds, verifies SHA-256 at each receiver,
+and prints JSON with explicit endpoints, elapsed seconds, and decimal Mbps.
+SSH compression is disabled. Results include encryption and receiver acknowledgement; SSH connection setup
+is reported separately. They measure application throughput rather than
+raw Ethernet capacity. SSH mode needs no remote installation, listener, or
+service restart. Each transfer has a 30-second deadline. Override `--bytes` (up to
+268435456) and `--rounds` (1–5) to change the bounded workload.
+
+To isolate the wired path from SSH encryption and hostname address selection:
+
+```sh
+./swarm-node speed-test --node julian-latitude.local --address 10.42.0.222 --transport tcp --bytes 268435456
+```
+
+Use the peer's current wired IP. `--address` retains SSH host-key verification
+against the enrolled node name. The JSON records the destination IP.
+TCP mode starts a temporary single-connection listener bound to that address,
+with a random token delivered over verified SSH and a 30-second remote timeout.
+It sends only synthetic test data without encryption, verifies SHA-256, and
+removes the listener when the connection finishes. SSH remains the default.
+On November 8, 2026, Latitude's `.local` name resolved to Wi-Fi (`10.42.0.71`),
+while its USB Ethernet address was `10.42.0.222`; the old enrolled `.137` address
+was unreachable. Explicit wired TCP measured median 2.309 Gbps CompAI → Latitude
+and 2.299 Gbps Latitude → CompAI across three 256 MiB transfers per direction.
+CompAI's Ethernet negotiated at 2500 Mb/s. Application throughput includes
+protocol and verification costs and is lower than physical link speed.
+
+Use the built-in swarm MPTCP socket factory for both ends of the benchmark:
+
+```sh
+./swarm-node speed-test --node julian-latitude.local --address 10.42.0.222 --transport mptcp --bytes 268435456
+```
+
+This mode reuses `launcher_registry.transport_socket`, including its remote
+implementation streamed over verified SSH, and reports Linux `MPTCP_INFO` for
+each connection. `negotiated` and `tcp_fallback` distinguish genuine MPTCP from
+TCP fallback. Kernel subflow counts can include connection attempts; they do
+not prove that every subflow is established or carrying data. No endpoint or
+routing configuration is changed by the benchmark.
+A November 8 repeat comparison measured median MPTCP 2.091/2.245 Gbps versus
+TCP 2.201/2.343 Gbps (CompAI → Latitude / Latitude → CompAI). Live `ss -tni`
+inspection showed the primary wired subflow transferring data and an extra
+subflow from CompAI's `172.20.20.20` Wi-Fi address to Latitude's wired address
+in `SYN-SENT`. These measurements establish MPTCP negotiation, not bandwidth
+aggregation across working wired and wireless paths.
+# Logged host tests
+
+From the Organization directory, run tests through the master launcher:
+
+```sh
+python3 run.py --test python3 -m unittest discover -s JSwarm/tests -p test_logged_runner.py
+```
+
+Source discovery is automatic: the current Git repository and its immediate
+child repositories are fingerprinted using tracked files and nonignored new
+files. Content edits, additions, deletions, and renames invalidate the recorded
+result without requiring a commit. Git-ignored files and generated test logs
+are excluded. Without Git, the current directory is scanned instead.
+This conservatively reruns the command when any discovered repository input
+changes; it does not infer which individual tests cover a changed file.
+For narrower scope or ignored/external dependencies, repeat `--test-source` for
+all relevant code, tests, configuration, and fixtures (files or directories).
+Explicit sources replace automatic discovery. Put `--test` and its command last.
+Each input or discovered repository gets an adjacent `*.test-log.jsonl` (directories use `.test-log.jsonl`)
+with the command, UTC date, input fingerprint, duration, exit code, and output
+path. Output is retained in an adjacent `.test-output/` directory.
+Matching inputs, command, Python runtime, and environment reuse the recorded exit
+code, including failures. Changed inputs run again; interrupted runs and inputs
+modified during a test are not reused. This applies to commands invoked through
+`--test`; direct test commands do not pass through the launcher.
+

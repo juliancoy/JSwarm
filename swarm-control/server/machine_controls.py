@@ -44,7 +44,7 @@ def enrolled(name):
     config = json.loads(CONFIG.read_text())
     if name not in config['peers']:
         raise ValueError('Unknown enrolled machine')
-    return config, {'host': name, 'agent_endpoint': 'http://' + config['peers'][name] + ':8790'}
+    return config, {'host': name, 'agent_route':'auto','agent_endpoint': 'http://' + config['peers'][name] + ':8790'}
 
 
 def project(name, status):
