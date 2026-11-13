@@ -14,6 +14,7 @@ import time
 
 from scripts.swarm_runtime import AgentClient, CONFIG, atomic_json
 from scripts.swarm_shared_cache import contract
+from scripts.launcher_discovery import resolve_endpoint
 
 PLAN=Path.home()/'.local/state/swarm-control/submission/paged-cache/deployment.json'
 SERVICE='paged-reference'
@@ -327,7 +328,9 @@ def deploy_fleet(plan=None,names=None):
         plan=publish(plan['source'],plan['files'],plan['image'],plan['export'],aliases=aliases)
     selected=list(names or cfg['peers'])
     if any(n not in cfg['peers'] for n in selected):raise ValueError('Use enrolled node names')
-    def host(name):return {'host':name,'local':name==cfg['name'],'lan_address':cfg['peers'][name],'agent_endpoint':'http://'+cfg['peers'][name]+':8790'}
+    def host(name):
+        endpoint,addresses=resolve_endpoint(name)
+        return {'host':name,'local':name==cfg['name'],'lan_address':addresses[0],'resolved_addresses':addresses,'agent_endpoint':endpoint}
     rows={}
     try:rows[plan['source']]=deploy_node(host(plan['source']),plan)
     except Exception as error:
@@ -365,8 +368,11 @@ def discover_aliases(plan):
     from concurrent.futures import ThreadPoolExecutor
     cfg=json.loads(CONFIG.read_text());network=ipaddress.ip_network(plan['address']+'/24',strict=False)
     def probe(item):
-        name,address=item;host={'host':name,'local':name==cfg['name'],'agent_endpoint':'http://'+address+':8790'};client=AgentClient(host)
+        name,address=item;client=None
         try:
+            endpoint,addresses=resolve_endpoint(name)
+            host={'host':name,'local':name==cfg['name'],'agent_endpoint':endpoint}
+            client=AgentClient(host)
             status=client.call('status',timeout=10)
             values=[]
             for raw in status.get('addresses',[]):
@@ -375,7 +381,8 @@ def discover_aliases(plan):
                 if ip.version==4 and ip in network:values.append(str(ip))
             return name,sorted(set(values)|{address})
         except Exception:return name,plan.get('aliases',{}).get(name,[address])
-        finally:client.close()
+        finally:
+            if client:client.close()
     with ThreadPoolExecutor(max_workers=min(5,len(cfg['peers']))) as pool:return dict(pool.map(probe,cfg['peers'].items()))
 
 

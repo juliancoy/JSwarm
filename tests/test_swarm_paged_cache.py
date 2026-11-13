@@ -24,11 +24,14 @@ def test_explicit_public_immutable_plan_and_read_only_allowlist():
 
 
 def test_every_selected_machine_is_provisioned_after_source(tmp_path,monkeypatch):
+    monkeypatch.setattr(pager,'resolve_endpoint',lambda name:('http://'+name+'.swarm.local:8790',['10.42.0.222']))
     cfg=tmp_path/'peers.json';cfg.write_text(json.dumps({'name':'source','peers':{'target':'10.42.0.2','source':'10.42.0.1','rootless':'10.42.0.3'}}))
     monkeypatch.setattr(pager,'CONFIG',cfg);calls=[]
     monkeypatch.setattr(pager,'PLAN',tmp_path/'deployment.json')
     monkeypatch.setattr(pager,'discover_aliases',lambda p:p.get('aliases',{}))
     def deploy(host,p):
+        assert host['agent_endpoint']=='http://'+host['host']+'.swarm.local:8790'
+        assert host['lan_address']=='10.42.0.222'
         if host['host']!='source':assert calls[0]=='source'
         calls.append(host['host']);return {'ready':True}
     monkeypatch.setattr(pager,'deploy_node',deploy)
@@ -38,6 +41,7 @@ def test_every_selected_machine_is_provisioned_after_source(tmp_path,monkeypatch
 
 
 def test_unavailable_pager_preserves_verified_fallback_for_node(tmp_path,monkeypatch):
+    monkeypatch.setattr(pager,'resolve_endpoint',lambda name:('http://'+name+'.swarm.local:8790',['10.42.0.222']))
     cfg=tmp_path/'peers.json';cfg.write_text(json.dumps({'name':'source','peers':{'source':'10.42.0.1','target':'10.42.0.2'}}))
     monkeypatch.setattr(pager,'CONFIG',cfg)
     monkeypatch.setattr(pager,'PLAN',tmp_path/'deployment.json')
