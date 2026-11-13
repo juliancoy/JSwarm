@@ -27,9 +27,10 @@ if settings.get('root'):
  for item in [home/'DNA',root]:
   if item.is_symlink():raise ValueError('Export root cannot be a symlink')
   item.mkdir(parents=True,exist_ok=True,mode=0o700)
-pending=config/'filesystem.tmp';pending.write_text(json.dumps(settings));pending.chmod(0o600);pending.replace(config/'filesystem.json')
 revision=hashlib.sha256(json.dumps(p['files'],sort_keys=True).encode()).hexdigest()
 release=home/'.local/share/swarm-filesystem'/revision;release.mkdir(parents=True,exist_ok=True)
+settings['client_release']=str(release);settings['local_gateway']=True
+pending=config/'filesystem.tmp';pending.write_text(json.dumps(settings));pending.chmod(0o600);pending.replace(config/'filesystem.json')
 for name,source in p['files'].items():
  target=release/name;target.parent.mkdir(parents=True,exist_ok=True)
  if target.exists() and target.read_text()!=source:raise ValueError('Immutable filesystem client changed')
@@ -37,7 +38,7 @@ for name,source in p['files'].items():
 # Only the small mount adapter is installed here. Bulk scientific data stays in RAM.
 deps=home/'.local/share/swarm-filesystem/dependencies'
 if not (deps/'fuse.py').exists():
- subprocess.run([sys.executable,'-m','pip','install','--disable-pip-version-check','--no-cache-dir','--target',str(deps),'fusepy==3.0.1','cryptography>=43','zeroconf>=0.151,<1'],check=True,stdout=subprocess.DEVNULL)
+ subprocess.run([sys.executable,'-m','pip','install','--disable-pip-version-check','--no-cache-dir','--no-deps','--target',str(deps),'fusepy==3.0.1'],check=True,stdout=subprocess.DEVNULL)
 mountpoint=home/'SwarmDNA';mountpoint.mkdir(exist_ok=True)
 unit=home/'.config/systemd/user/swarm-filesystem.service';unit.parent.mkdir(parents=True,exist_ok=True)
 import shlex
@@ -77,6 +78,10 @@ def deploy_fleet(names=None):
                                        capture_output=True, text=True, timeout=180)
             if completed.returncode:raise RuntimeError(completed.stderr[-700:])
             result[name] = json.loads(completed.stdout)
+            from scripts.swarm_filesystem import request
+            # Start/attach the capsule and its stable local gateway socket.
+            check = client.call('filesystem.rpc', request(settings, 'status'), timeout=45)
+            if check.get('result', {}).get('namespace') != settings['namespace']:raise RuntimeError('Filesystem namespace verification failed')
         except Exception as error:result[name] = {'active': False, 'reason': str(error)[:800]}
         finally:
             if client:client.close()

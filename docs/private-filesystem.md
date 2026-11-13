@@ -44,9 +44,14 @@ opens with `O_NOFOLLOW`.
 
 The mount uses direct I/O with kernel metadata caching disabled, so the custom
 versioned RAM tiers coordinate reads. The host needs `/dev/fuse`, libfuse2 and
-`fusermount`; the deployment installs the small Python adapter dependencies in
-an owner-private directory. The mount is owner-only. Docker consumers must run
+`fusermount`; deployment installs only the pure Python fusepy adapter in an
+owner-private directory. A private local Unix socket forwards network calls
+through the node capsule, so older host Python versions do not need the node's
+cryptography packages. The node restores that gateway on startup. The mount is owner-only. Docker consumers must run
 with a compatible owner identity and explicitly bind the mount as appropriate.
+The RAM-only worker policy accepts this enrolled FUSE mount, while continuing
+to reject ordinary disk bind mounts. Owner capsules receive host mount events
+through a slave bind; they cannot propagate mounts back to the host.
 
 This initial interface supports regular-file random reads/writes, creation,
 truncation, directories, removal and rename. It does not provide atomic append,

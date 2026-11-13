@@ -62,6 +62,7 @@ class Filesystem:
             cache.reserve = 8*1024**2
         self.cache = cache
         self.seen = {}
+        self.remotes = {}
         self.lock = threading.RLock()
 
     def dispatch(self, value):
@@ -103,6 +104,25 @@ class Filesystem:
         finally:os.close(fd)
 
     def operation(self, settings, op, args):
+        if op == 'route':
+            # The FUSE adapter uses only host stdlib + fusepy. Network crypto
+            # stays in the standard Python 3.12 node capsule, independent of the
+            # host's Python version and without copying a controller key.
+            import sys
+            release = Path(settings['client_release'])
+            sys.path[:0] = [str(release), str(release/'swarm-control/server')]
+            from agent_client import AgentClient
+            from scripts.launcher_discovery import resolve_endpoint
+            node = args['node']
+            if node not in [settings['origin'], *settings.get('peers', [])]:raise PermissionError('Unenrolled filesystem route')
+            if args['action'] == 'route':raise ValueError('Recursive filesystem route')
+            with self.lock:
+                if node not in self.remotes:
+                    endpoint, _ = resolve_endpoint(node)
+                    self.remotes[node] = AgentClient({'host': node, 'agent_endpoint': endpoint})
+                remote = self.remotes[node]
+            return remote.call('filesystem.rpc', request(settings, args['action'], **args['args']),
+                               timeout=3 if args['action'].startswith('cache.') else 60)
         if op in ('cache.get', 'cache.put'):
             key, length = args['key'], args['length']
             if type(length) is not int or not 0 < length <= BLOCK:raise ValueError('Invalid block size')
@@ -196,7 +216,10 @@ def serve(config):
         daemon_threads = True
     path.unlink(missing_ok=True)
     with Server(str(path), Handler) as server:
-        path.chmod(0o600);server.serve_forever()
+        path.chmod(0o600)
+        pending = config.parent/'filesystem.sock.tmp';pending.unlink(missing_ok=True)
+        pending.symlink_to(path.name);pending.replace(config.parent/'filesystem.sock')
+        server.serve_forever()
 
 
 class Proxy:

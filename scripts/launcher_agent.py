@@ -1885,6 +1885,14 @@ class Agent:
             stream_root=self.config.parent/stream_directory
             stream_root.mkdir(mode=0o700,parents=True,exist_ok=True)
         self.commands=load_command_runtime().CommandProxy(self,COMMAND_RUNTIME_SOURCE or (Path(__file__).resolve().parent/'launcher_commands.py').read_text())
+        if (self.config.parent/'filesystem.json').exists():
+            def start_filesystem():
+                try:
+                    runtime = load_filesystem_runtime()
+                    settings = json.loads((self.config.parent/'filesystem.json').read_text())
+                    self.dispatch('filesystem.rpc', runtime.request(settings, 'status'))
+                except Exception as error:self.filesystem_error = str(error)[:200]
+            threading.Thread(target=start_filesystem, daemon=True, name='node-filesystem').start()
         self.stream_work=load_stream_runtime(stream_root).Engine(self,ResourceLease,worker_policy,state_root=stream_root)
         from concurrent.futures import ThreadPoolExecutor
         self.control_executor=ThreadPoolExecutor(max_workers=max(2,min(4,os.cpu_count() or 2)),thread_name_prefix='launcher-control')

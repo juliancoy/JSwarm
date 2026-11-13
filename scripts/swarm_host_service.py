@@ -11,14 +11,15 @@ def systemctl(*args, **kwargs):
         command = ['systemctl', '--user', *args]
     else:
         # Reuse the local enrolled runtime image; no SSH or privileged container.
-        # Host /usr supplies the host systemctl and its matching shared libraries.
+        # Host /usr supplies systemctl and matching libraries. Host PID visibility,
+        # already used by the standard node, lets sd-bus verify its host peer.
         home = Path.home()
         uid = home.stat().st_uid
         mapping = [list(map(int, row.split())) for row in Path('/proc/self/uid_map').read_text().splitlines()]
         host_uid = next(outside+uid-inside for inside, outside, count in mapping if inside <= uid < inside+count)
         image = subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{.Id}}',
                                          'organization-launcher:webrtc-1'], text=True).strip()
-        command = ['docker', 'run', '--rm', '--pull=never', '--network', 'none',
+        command = ['docker', 'run', '--rm', '--pull=never', '--pid', 'host', '--network', 'none',
                    '--user', f'{os.getuid()}:{os.getgid()}', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
                    '--read-only', '--env', 'HOME='+str(home),
                    '--env', 'XDG_RUNTIME_DIR=/run/user/'+str(host_uid),

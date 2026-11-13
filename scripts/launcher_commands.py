@@ -22,7 +22,12 @@ if len(swaps.read_text().splitlines())>1:raise ValueError('RAM-only workers requ
 for value in json.loads(sys.argv[1]):
  p=pathlib.Path(value).resolve(strict=True)
  kind=subprocess.check_output(['findmnt','-n','-o','FSTYPE','--target',str(p)],text=True).strip()
- if kind not in ('tmpfs','ramfs'):raise ValueError('RAM-only worker mount is not RAM-backed: '+value+' ('+kind+')')
+ if kind not in ('tmpfs','ramfs'):
+  config=pathlib.Path.home()/'.config/lifetech-launcher/filesystem.json'
+  settings=json.loads(config.read_text()) if config.exists() else {}
+  source=subprocess.check_output(['findmnt','-n','-o','SOURCE','--target',str(p)],text=True).strip()
+  if not (kind.startswith('fuse') and p.is_relative_to(pathlib.Path.home()/'SwarmDNA') and source=='swarm-'+settings.get('namespace','')):
+   raise ValueError('RAM-only worker mount is not RAM-backed or an enrolled network filesystem: '+value+' ('+kind+')')
 print(json.dumps({'validated':True}))
 '''
 
@@ -166,7 +171,7 @@ class CommandService:
                             read_only=True,cap_drop=['ALL'],security_opt=['no-new-privileges'],mem_limit='1024m',memswap_limit='1024m',pids_limit=1024,
                             tmpfs={'/tmp':'rw,nosuid,nodev,size=64m,mode=1777'},working_dir=str(home),
                             environment={'HOME':str(home),'DOCKER_HOST':endpoint,'PYTHONDONTWRITEBYTECODE':'1',**({'JSWARM_OWNER_RUNTIME':'1'} if serve_script else {})},
-                            volumes={str(home):{'bind':str(home),'mode':'rw'},socket_path:{'bind':socket_path,'mode':'rw'},'/etc/machine-id':{'bind':'/etc/machine-id','mode':'ro'},
+                            volumes={str(home):{'bind':str(home),'mode':'rw,rslave'},socket_path:{'bind':socket_path,'mode':'rw'},'/etc/machine-id':{'bind':'/etc/machine-id','mode':'ro'},
                                      '/dev':{'bind':'/dev','mode':'ro'}},
                             restart_policy={'Name':'unless-stopped'},healthcheck={'test':['NONE']})
                     if (container.labels or {}).get('org.lifetech.owner-home')!=str(home):raise ValueError('Owner runtime identity differs')

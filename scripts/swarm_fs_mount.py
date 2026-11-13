@@ -15,11 +15,10 @@ PROJECT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(PROJECT), str(PROJECT/'swarm-control/server')]
 from scripts.swarm_filesystem import BLOCK, block_key, request
 from scripts.run_input_cache import ram_cache
-from agent_client import AgentClient
 
 
 class Client:
-    def __init__(self, settings, factory=AgentClient, cache=None):
+    def __init__(self, settings, factory=None, cache=None):
         self.settings = settings
         self.clients = {}
         self.factory = factory
@@ -28,10 +27,26 @@ class Client:
         self.counters = {'local_hits': 0, 'peer_hits': 0, 'origin_reads': 0, 'durable_writes': 0}
 
     def call(self, node, operation, **args):
+        if self.settings.get('local_gateway'):
+            import socket
+            from scripts.swarm_filesystem import canonical
+            value = request(self.settings, 'route', node=node, action=operation, args=args)
+            path = Path.home()/'.config/lifetech-launcher/filesystem.sock'
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                connection.settimeout(65);connection.connect(str(path));connection.sendall(canonical(value)+b'\n')
+                with connection.makefile('rb') as stream:raw = stream.readline(1024**2)
+            reply = json.loads(raw)
+            if not reply['ok']:raise OSError(errno.EIO, reply.get('error', 'Filesystem gateway failed'))
+            wrapped = reply['result']
+            if 'errno' in wrapped:raise OSError(wrapped['errno'], os.strerror(wrapped['errno']))
+            value = wrapped['result']
+            if 'errno' in value:raise OSError(value['errno'], os.strerror(value['errno']))
+            return value['result']
         if node not in self.clients:
             from scripts.launcher_discovery import resolve_endpoint
+            from agent_client import AgentClient
             endpoint, _ = resolve_endpoint(node)
-            self.clients[node] = self.factory({'host': node, 'agent_endpoint': endpoint})
+            self.clients[node] = (self.factory or AgentClient)({'host': node, 'agent_endpoint': endpoint})
         value = self.clients[node].call('filesystem.rpc', request(self.settings, operation, **args), timeout=3 if operation.startswith('cache.') else 60)
         if 'errno' in value:raise OSError(value['errno'], os.strerror(value['errno']))
         return value['result']
@@ -99,6 +114,12 @@ class Client:
 
 def mount(settings, mountpoint, foreground=False):
     from fuse import FUSE, FuseOSError, Operations
+    if settings.get('local_gateway'):
+        gateway = Path.home()/'.config/lifetech-launcher/filesystem.sock'
+        deadline = time.monotonic()+90
+        while not gateway.exists():
+            if time.monotonic() > deadline:raise OSError(errno.ETIMEDOUT, 'Node filesystem gateway unavailable')
+            time.sleep(.25)
     client = Client(settings)
     def checked(function):
         def wrapped(*args, **kwargs):

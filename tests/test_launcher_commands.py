@@ -178,6 +178,7 @@ def test_rootless_owner_runtime_does_not_request_unmapped_supplementary_groups(t
         options=client.containers.create.call_args.kwargs
         assert options['user']=='0:0' and options['group_add']==[]
         assert str(home) in options['volumes'] and options['cap_drop']==['ALL']
+        assert options['volumes'][str(home)]['mode']=='rw,rslave'
         assert options['volumes']['/etc/machine-id']=={'bind':'/etc/machine-id','mode':'ro'}
         assert options['volumes']['/dev']=={'bind':'/dev','mode':'ro'}
         if persistent:

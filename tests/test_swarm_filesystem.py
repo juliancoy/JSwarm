@@ -118,3 +118,34 @@ def test_publication_embeds_filesystem_and_ram_cache():
     exec(values[-1], namespace)
     assert namespace['CACHE_SOURCE'].startswith('"""Private bounded block cache')
     assert 'Filesystem' in namespace
+
+
+def test_host_mount_routes_through_local_node_without_host_crypto(fs, tmp_path, monkeypatch):
+    import socketserver
+    import threading
+    import tempfile
+    import shutil
+    from scripts.swarm_filesystem import canonical
+    root, settings, service, call = fs
+    home = Path(tempfile.mkdtemp(prefix='swfs-'));config = home/'.config/lifetech-launcher';config.mkdir(parents=True)
+    settings.update(client_release=str(Path(__file__).parents[1]), local_gateway=True)
+    service.config.write_text(json.dumps(settings))
+    (root/'network').write_bytes(b'portable host adapter')
+    class Agent:
+        def __init__(self, host):pass
+        def call(self, op, value, **kwargs):return service.dispatch(value)
+    monkeypatch.setattr('agent_client.AgentClient', Agent)
+    monkeypatch.setattr('scripts.launcher_discovery.resolve_endpoint', lambda n: ('http://'+n+':8790', ['127.0.0.1']))
+    monkeypatch.setattr(Path, 'home', lambda: home)
+    class Handler(socketserver.StreamRequestHandler):
+        def handle(self):
+            value = json.loads(self.rfile.readline())
+            self.wfile.write(canonical({'ok': True, 'result': service.dispatch(value)})+b'\n')
+    server = socketserver.ThreadingUnixStreamServer(str(config/'filesystem.sock'), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True);thread.start()
+    try:
+        client = Client(settings, cache=InputCache(tmp_path/'host-ram', reserve=0))
+        assert client.read('/network', 100, 0) == b'portable host adapter'
+        assert client.write('/network', b'NEW', 0) == 3
+        assert (root/'network').read_bytes().startswith(b'NEW')
+    finally:server.shutdown();server.server_close();thread.join();shutil.rmtree(home)

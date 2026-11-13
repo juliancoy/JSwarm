@@ -17,3 +17,4 @@ def test_owner_capsule_uses_host_bus_without_ssh_or_privilege(monkeypatch, tmp_p
     assert 'type=bind,src=/usr,dst=/usr,readonly' in args
     assert any(value.startswith('DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/') for value in args)
     assert args[-2:] == ['--user', 'daemon-reload']
+    assert args[args.index('--pid')+1] == 'host'
