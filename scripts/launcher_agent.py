@@ -5,6 +5,7 @@ import contextlib
 import fcntl
 import hashlib
 import json
+import logging
 import math
 import io
 import os
@@ -17,10 +18,56 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import threading
 import time
 import urllib.request
 import urllib.error
+
+
+def write_job_state(path, state):
+    """Never truncate the previous checkpoint before the replacement is durable."""
+    path=Path(path)
+    encoded=json.dumps(state,allow_nan=False)
+    fd,name=tempfile.mkstemp(prefix='.state-',suffix='.tmp',dir=path.parent)
+    temporary=Path(name)
+    try:
+        with os.fdopen(fd,'w') as stream:
+            stream.write(encoded);stream.flush();os.fsync(stream.fileno())
+        temporary.replace(path)
+        directory=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY)
+        try:os.fsync(directory)
+        finally:os.close(directory)
+    finally:temporary.unlink(missing_ok=True)
+
+
+def recover_job_states(root, remove_containers):
+    """Isolate damaged legacy checkpoints without guessing their worker outcome."""
+    errors=[]
+    for path in Path(root).glob('*/state.json'):
+        if path.parent.is_symlink() or path.is_symlink():continue
+        try:
+            try:
+                state=json.loads(path.read_text())
+                if not isinstance(state,dict) or not isinstance(state.get('status'),str) or not state['status']:
+                    raise ValueError('Invalid job checkpoint shape')
+            except ValueError:
+                quarantine=path.with_name('state.corrupt-'+secrets.token_hex(12)+'.json')
+                path.rename(quarantine)
+                error='Unreadable job checkpoint; original preserved in '+quarantine.name
+                write_job_state(path,{'status':'unknown','error':error,'recovery_required':True})
+                errors.append({'job':path.parent.name,'error':error})
+                logging.warning('Job %s: %s',path.parent.name,error)
+                continue
+            if state.get('status') in ('running','starting'):
+                (path.parent/'STOP').touch()
+                state.update(status='interrupted',error='Agent restarted during execution')
+                write_job_state(path,state)
+                remove_containers(path.parent.name)
+        except OSError as error:
+            errors.append({'job':path.parent.name,'error':str(error)})
+            logging.warning('Cannot recover job %s: %s',path.parent.name,error)
+    return errors
 
 
 class NvidiaSampler:
@@ -812,7 +859,7 @@ def prune_workspaces(root,active=(),mounts=(),*,now=None,budget=WORKSPACE_BUDGET
             state.update(workspace_retained=False,workspace_bytes=0)
             removed.append(folder.name)
             if folder.name in keep:retained-=size
-        temporary=folder/'state.json.tmp';temporary.write_text(json.dumps(state));temporary.replace(folder/'state.json')
+        write_job_state(folder/'state.json',state)
         if not source.exists() and now-finished>30*86400:shutil.rmtree(folder)
     for _,folder,state,_ in reversed(records):
         results=folder/'results'
@@ -1907,14 +1954,7 @@ class Agent:
             self.remove_containers(path.parent.name.removesuffix('-p2p'))
             shutil.rmtree(path.parent)
         # A process restart must never pretend that a previous job is still running.
-        for path in self.root.glob('*/state.json'):
-            if path.parent.is_symlink() or path.is_symlink():continue
-            state = json.loads(path.read_text())
-            if state.get('status') in ('running', 'starting'):
-                (path.parent/'STOP').touch()
-                state.update(status='interrupted', error='Agent restarted during execution')
-                path.write_text(json.dumps(state))
-                self.remove_containers(path.parent.name)
+        self.job_recovery_errors=recover_job_states(self.root,self.remove_containers)
         threading.Thread(target=self.maintain_storage,daemon=True).start()
         self.worker_event_process=None
         self.worker_event_thread=threading.Thread(target=self.watch_docker_workers,daemon=True,name='docker-worker-journal')
@@ -2527,6 +2567,7 @@ class Agent:
                     'machine':hashlib.sha256(machine.read_bytes()).hexdigest(),'hostname':socket.gethostname(),
                     'addresses':addresses,'platform':info.get('OSType','unknown')+'/'+info.get('Architecture','unknown'),
                     'routing':getattr(self,'routing_status',{'status':'pending'}),
+                    'job_recovery_errors':getattr(self,'job_recovery_errors',[]),
                     'worker_policy':policy,'capabilities':['controller-signature','github-jobs','p2p-browser','cancel','events','layer-pull','registry-read','peer-layer-cache','mptcp-transport','file-queue','snapshot-stage','event-wait','shared-resources','renewable-resources','docker-workers','durable-docker-workers-v1','execution-accounting-v1','persistent-command-pipes-v1','generic-workers','encrypted-backup','gpu-kernel','telemetry-push','performance-v1','builtin-monitor','stream-work-v1','independent-job-sinks-v1','node-command-v1','gpu-resource-inventory-v1','resource-events-v1','node-maintenance-recipes-v1','verified-ram-caches-v1','cache-cleanup-v1','node-cache-v1','cache-metrics-v1','worker-storage-v1','node-web-v1','private-filesystem-v1'],
                     'cache_summary':getattr(getattr(self,'cache_manager',None),'summary',{}),'enrolled_peers':sorted(config['peers']),'storage':self.storage_status,'storage_policy':self.worker_storage_policy(),
                     'hardware':self.hardware(info),
@@ -2784,7 +2825,7 @@ class Agent:
             self.jobs[ident]=job
             with self.changed:self.changed.notify_all()
             self.busy()
-            (folder/'state.json').write_text(json.dumps({'status':'running'}))
+            write_job_state(folder/'state.json',{'status':'running'})
             self.active_workers.add(ident)
             threading.Thread(target=self.worker,args=(ident,work,index,job),daemon=True).start()
             return {'id':ident,'status':'running'}
@@ -2956,7 +2997,7 @@ class Agent:
             with self.changed:self.changed.notify_all()
             self.busy()
             job['finished_at']=time.time()
-            (folder/'state.json').write_text(json.dumps({key:value for key,value in job.items() if key!='events'}))
+            write_job_state(folder/'state.json',{key:value for key,value in job.items() if key!='events'})
             with self.lock:self.active_workers.discard(ident)
             self.cleanup_workspaces()
 

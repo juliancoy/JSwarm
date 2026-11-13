@@ -129,3 +129,41 @@ def test_startup_leaves_recreated_stream_and_cache_containers_to_their_own_journ
     agent.recover_docker_workers()
     assert agent.worker_journal.get(JOB)['container_id']=='c'*64
     assert [call.args[0][1] for call in run.call_args_list]==['ps','inspect']
+
+
+@pytest.mark.parametrize('raw',[b'',b'{"status":',b'null',b'[]',b'{}',b'\xff'])
+def test_corrupt_legacy_state_does_not_block_other_jobs(tmp_path,raw):
+    broken=tmp_path/'broken';broken.mkdir();(broken/'state.json').write_bytes(raw)
+    (broken/'source').mkdir();(broken/'source'/'keep').write_text('evidence')
+    running=tmp_path/'running';running.mkdir();(running/'state.json').write_text('{"status":"running"}')
+    completed=tmp_path/'completed';completed.mkdir();(completed/'state.json').write_text('{"status":"completed"}')
+    remove=Mock()
+    errors=module.recover_job_states(tmp_path,remove)
+    assert len(errors)==1 and errors[0]['job']=='broken'
+    assert next(broken.glob('state.corrupt-*.json')).read_bytes()==raw
+    assert json.loads((broken/'state.json').read_text())['status']=='unknown'
+    assert (broken/'source'/'keep').read_text()=='evidence'
+    assert not (broken/'STOP').exists()
+    assert json.loads((running/'state.json').read_text())['status']=='interrupted'
+    assert (running/'STOP').exists()
+    assert json.loads((completed/'state.json').read_text())['status']=='completed'
+    remove.assert_called_once_with('running')
+    module.recover_job_states(tmp_path,remove)
+    assert len(list(broken.glob('state.corrupt-*.json')))==1
+    remove.assert_called_once_with('running')
+
+
+def test_failed_checkpoint_write_preserves_previous_json(tmp_path,monkeypatch):
+    path=tmp_path/'state.json';path.write_text('{"status":"running"}')
+    def full(*args):raise OSError('disk full')
+    monkeypatch.setattr(module.os,'fsync',full)
+    with pytest.raises(OSError,match='disk full'):module.write_job_state(path,{'status':'completed'})
+    assert json.loads(path.read_text())=={'status':'running'}
+    assert list(tmp_path.iterdir())==[path]
+
+
+def test_state_recovery_skips_symlinks(tmp_path):
+    outside=tmp_path/'outside.json';outside.write_text('broken')
+    folder=tmp_path/'job';folder.mkdir();(folder/'state.json').symlink_to(outside)
+    remove=Mock();assert module.recover_job_states(tmp_path,remove)==[]
+    assert outside.read_text()=='broken';remove.assert_not_called()
