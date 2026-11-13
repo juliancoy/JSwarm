@@ -30,7 +30,9 @@ then use a bounded local RAM cache, remote RAM peers, and finally the origin.
 Blocks are 256 KiB. Cache identities include namespace, path, origin version and
 block offset. The existing block cache checks its stored payload digest and
 uses locks and LRU eviction. Each mount and each node filesystem capsule starts
-with a 16 MiB cache; payload caching never falls back to worker disk. Origin disk
+with a 16 MiB cache; payload caching never falls back to worker disk. The
+owner capsule uses its existing private `/tmp` tmpfs because its host `/dev`
+view is read-only. Origin disk
 reads also benefit from the kernel page cache. Failed peers cool down for one
 minute and do not become alternative durable owners.
 

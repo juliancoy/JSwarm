@@ -55,10 +55,21 @@ class Filesystem:
             module = types.ModuleType('filesystem_input_cache')
             source = CACHE_SOURCE or (Path(__file__).parent/'run_input_cache.py').read_text()
             exec(compile(source, 'run_input_cache.py', 'exec'), module.__dict__)
-            cache = module.ram_cache(budget=16*1024**2)
-            # Owner capsules have a bounded /dev/shm. The general host cache's
-            # 128 MiB reserve would prohibit every admission on Docker's 64 MiB
-            # tmpfs; preserve 8 MiB here while keeping the same LRU implementation.
+            # The standard owner capsule exposes host /dev read-only, including
+            # /dev/shm. Its existing private /tmp mount is a bounded tmpfs.
+            # Check the actual mount type before selecting it; never use disk.
+            private_ram = any(
+                row.split()[4] == '/tmp' and row.split(' - ', 1)[1].split()[0] in ('tmpfs', 'ramfs')
+                for row in Path('/proc/self/mountinfo').read_text().splitlines())
+            if private_ram:
+                root = Path('/tmp')/('swarm-filesystem-cache-'+str(os.getuid()))
+                root.mkdir(mode=0o700, exist_ok=True)
+                if root.is_symlink() or root.stat().st_uid != os.getuid():raise ValueError('Unsafe filesystem RAM cache owner')
+                cache = module.InputCache(root, budget=16*1024**2, reserve=8*1024**2)
+            else:cache = module.ram_cache(budget=16*1024**2)
+            # The general host cache's 128 MiB reserve would prohibit every
+            # admission in the capsule's 64 MiB tmpfs. Preserve 8 MiB here while
+            # keeping the same bounded LRU implementation.
             cache.reserve = 8*1024**2
         self.cache = cache
         self.seen = {}
