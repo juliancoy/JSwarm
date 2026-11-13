@@ -105,3 +105,13 @@ def test_gateway_handles_own_node_without_lan_resolution(tmp_path):
     request=SimpleNamespace(headers={'X-Lifetech-Peer':'worker.local'},read=AsyncMock(return_value=b'encrypted'))
     assert asyncio.run(gateway.request(request)) is response
     agent.handle.assert_awaited_once_with(request)
+
+
+def test_signed_subprocess_preserves_gateway_route_and_journal():
+    from scripts.swarm_command import caller_record
+    host={'host':'worker.local','local':False,'machine':'signed-machine',
+          'agent_endpoint':'http://worker-swarm.local:8790','agent_route':'auto'}
+    command=runtime.shell_command(host,['true'])
+    assert command[command.index('--route')+1]=='auto'
+    assert command[-2:]==['--','true']
+    assert caller_record(host,'a'*32,['true'])['agent_route']=='auto'

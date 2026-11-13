@@ -54,8 +54,9 @@ def shell_command(host,command):
     if host['local']:return command
     if not host.get('agent_endpoint') or not host.get('machine'):
         raise ValueError('Enrolled command endpoint and machine identity required; no SSH fallback')
+    route=['--route',host['agent_route']] if host.get('agent_route') in ('auto','webrtc') else []
     return [sys.executable,str(ROOT/'scripts/swarm_command.py'),'--host',host['host'],
-            '--endpoint',host['agent_endpoint'],'--machine',host['machine'],'--',*command]
+            '--endpoint',host['agent_endpoint'],'--machine',host['machine'],*route,'--',*command]
 
 
 def eligible(status):

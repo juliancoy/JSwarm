@@ -36,7 +36,7 @@ def journal_root():
 def caller_record(host,ident,argv):
     namespace=os.readlink('/proc/self/ns/pid')
     name=socket.gethostname()
-    return {'id':ident,'host':host['host'],'machine':host['machine'],'agent_endpoint':host['agent_endpoint'],'pid':os.getpid(),
+    return {'id':ident,'host':host['host'],'machine':host['machine'],'agent_endpoint':host['agent_endpoint'],'agent_route':host.get('agent_route'),'pid':os.getpid(),
         'start':process_start(os.getpid()),'namespace':namespace,
         'boot':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
         'container':name if Path('/.dockerenv').exists() and re.fullmatch('[0-9a-f]{12,64}',name) else None,
@@ -68,7 +68,9 @@ def reap_orphan_clients(root=None,factory=None,*,host=None):
             record=json.loads(path.read_text())
             if host is not None and record['host']!=host:continue
             if not re.fullmatch('[0-9a-f]{32}',record['id']) or not caller_gone(record):continue
-            client=factory({'host':record['host'],'machine':record['machine'],'agent_endpoint':record['agent_endpoint']})
+            recovered={'host':record['host'],'machine':record['machine'],'agent_endpoint':record['agent_endpoint']}
+            if record.get('agent_route') in ('auto','webrtc'):recovered['agent_route']=record['agent_route']
+            client=factory(recovered)
             if client.call('status',timeout=5).get('machine')!=record['machine']:continue
             if client.call('command.close',{'id':record['id']},timeout=10).get('closed') is True:
                 path.unlink();closed+=1
@@ -155,8 +157,8 @@ def run(host,argv):
 
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--host',required=True);parser.add_argument('--endpoint',required=True);parser.add_argument('--machine',required=True);parser.add_argument('argv',nargs=argparse.REMAINDER);args=parser.parse_args()
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--host',required=True);parser.add_argument('--endpoint',required=True);parser.add_argument('--machine',required=True);parser.add_argument('--route',choices=('auto','webrtc'));parser.add_argument('argv',nargs=argparse.REMAINDER);args=parser.parse_args()
     signal.signal(signal.SIGTERM,lambda *_:sys.exit(143))
-    try:raise SystemExit(run({'host':args.host,'agent_endpoint':args.endpoint,'machine':args.machine},args.argv[1:] if args.argv[:1]==['--'] else args.argv))
+    try:raise SystemExit(run({'host':args.host,'agent_endpoint':args.endpoint,'machine':args.machine,'agent_route':args.route},args.argv[1:] if args.argv[:1]==['--'] else args.argv))
     except BrokenPipeError:raise SystemExit(1)
     except Exception as error:print(type(error).__name__+': '+str(error),file=sys.stderr);raise SystemExit(1)

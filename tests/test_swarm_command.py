@@ -1,14 +1,17 @@
 import json
 import os
 import sys
+import pytest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 from scripts import swarm_command as command
 
 
-def test_recovery_closes_only_proven_dead_owner(tmp_path):
+@pytest.mark.parametrize('route',[None,'auto','webrtc'])
+def test_recovery_closes_only_proven_dead_owner(tmp_path,route):
     host={'host':'worker.local','machine':'enrolled-id','agent_endpoint':'http://127.0.0.1:8790'}
+    if route:host['agent_route']=route
     live=command.caller_record(host,'a'*32,['secret payload'])
     dead={**live,'id':'b'*32,'start':'impossible-start'}
     for row in (live,dead):command.save_caller(tmp_path/(row['id']+'.json'),row)

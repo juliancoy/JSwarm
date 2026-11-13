@@ -1,9 +1,11 @@
 """Bounded host integration check for the node's actual mDNS publication path."""
 import datetime
+import argparse
 import hashlib
 import json
 from pathlib import Path
 import subprocess
+import shlex
 import sys
 import time
 import uuid
@@ -13,6 +15,9 @@ from scripts.launcher_registry import listener_addresses
 
 
 def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--peer',help='Optional enrolled .local SSH peer for a cross-LAN resolution and TCP check')
+    args=parser.parse_args()
     project=Path(__file__).resolve().parents[1]
     files=[project/'scripts/launcher_discovery.py',project/'scripts/launcher_registry.py',Path(__file__)]
     result={'utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -37,6 +42,12 @@ def main():
             except OSError:
                 if time.monotonic()>=deadline:raise
                 time.sleep(1)
+        if args.peer:
+            config=json.loads((Path.home()/'.config/lifetech-launcher/peers.json').read_text())
+            if args.peer not in config['peers']:raise ValueError('Use an enrolled diagnostic peer')
+            code="import socket,json;name="+repr(service_hostname(node))+";s=socket.create_connection((name,8790),timeout=5);print(json.dumps({'hostname':name,'connected_address':s.getpeername()[0]}));s.close()"
+            reply=subprocess.check_output(['ssh','-o','BatchMode=yes','-o','ConnectTimeout=8',args.peer,'python3 -c '+shlex.quote(code)],text=True,timeout=30)
+            result['peer_probe']=json.loads(reply)
     except Exception as error:
         result.update(result='failed',error=repr(error))
         raise
