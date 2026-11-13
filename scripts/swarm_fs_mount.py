@@ -78,10 +78,12 @@ class Client:
                 self.counters['origin_reads'] += 1
                 # One remote copy is enough; avoid multiplying every read across
                 # the fleet. Peer failures never prevent an origin-backed read.
-                for peer in self.settings.get('peers', [])[:1]:
+                for peer in self.settings.get('peers', []):
                     if self.cooldown.get(peer, 0) > time.monotonic():continue
-                    try:self.call(peer, 'cache.put', key=key, length=length, data=row['data'])
-                    except (OSError, RuntimeError, ValueError):pass
+                    try:
+                        self.call(peer, 'cache.put', key=key, length=length, data=row['data'])
+                        break
+                    except (OSError, RuntimeError, ValueError):self.cooldown[peer] = time.monotonic()+60
                 return data
             data = self.cache.lookup(key, length, 0)
             if data is None:data = self.cache.block(key, length, 0, fetch)

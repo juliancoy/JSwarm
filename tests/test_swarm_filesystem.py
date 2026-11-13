@@ -96,6 +96,7 @@ def test_mutations_and_reserve(fs):
 
 def test_peer_cache_local_cache_and_invalidation(fs, tmp_path, monkeypatch):
     root, settings, service, call = fs
+    settings['peers'].insert(0, 'offline.local')
     data = b'x'*(BLOCK+7);(root/'reads').write_bytes(data)
     peer_config = tmp_path/'peer.json';peer_config.write_text(json.dumps({k:v for k,v in settings.items() if k != 'root'}))
     peer = Filesystem(peer_config, InputCache(tmp_path/'peer-ram', budget=4*BLOCK, reserve=0))
@@ -104,6 +105,7 @@ def test_peer_cache_local_cache_and_invalidation(fs, tmp_path, monkeypatch):
         def __init__(self, host):self.node = host['host']
         def call(self, op, value, **kwargs):
             assert op == 'filesystem.rpc'
+            if self.node == 'offline.local':raise OSError('Offline cache peer')
             return (service if self.node == settings['origin'] else peer).dispatch(value)
     one = Client(settings, factory=Agent, cache=InputCache(tmp_path/'one', reserve=0))
     two = Client(settings, factory=Agent, cache=InputCache(tmp_path/'two', reserve=0))
