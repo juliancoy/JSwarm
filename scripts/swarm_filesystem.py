@@ -104,6 +104,14 @@ class Filesystem:
         finally:os.close(fd)
 
     def operation(self, settings, op, args):
+        if op == 'mount.status':
+            import subprocess
+            path = Path.home()/'SwarmDNA'
+            result = subprocess.run(['findmnt', '-n', '-o', 'FSTYPE,SOURCE', '--target', str(path)],
+                                    capture_output=True, text=True, timeout=5)
+            fields = result.stdout.split()
+            return {'mounted': len(fields) == 2 and fields[0].startswith('fuse')
+                    and fields[1] == 'swarm-'+settings['namespace'], 'mountpoint': str(path)}
         if op == 'route':
             # The FUSE adapter uses only host stdlib + fusepy. Network crypto
             # stays in the standard Python 3.12 node capsule, independent of the

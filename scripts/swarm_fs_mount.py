@@ -113,6 +113,9 @@ class Client:
 
 
 def mount(settings, mountpoint, foreground=False):
+    import ctypes.util
+    if not ctypes.util.find_library('fuse') and os.getenv('JSWARM_FUSE_LIBRARY'):
+        os.environ['FUSE_LIBRARY_PATH'] = os.environ['JSWARM_FUSE_LIBRARY']
     from fuse import FUSE, FuseOSError, Operations
     if settings.get('local_gateway'):
         gateway = Path.home()/'.config/lifetech-launcher/filesystem.sock'

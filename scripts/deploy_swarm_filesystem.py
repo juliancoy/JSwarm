@@ -1,8 +1,11 @@
 """Install private filesystem configuration and mounts through standard node deployment."""
+import base64
+import hashlib
 import json
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 PROJECT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(PROJECT), str(PROJECT/'swarm-control/server')]
@@ -35,15 +38,28 @@ for name,source in p['files'].items():
  target=release/name;target.parent.mkdir(parents=True,exist_ok=True)
  if target.exists() and target.read_text()!=source:raise ValueError('Immutable filesystem client changed')
  target.write_text(source)
+if not settings.get('fuse',True):
+ unit=home/'.config/systemd/user/swarm-filesystem.service'
+ if unit.exists():
+  namespace={};exec(p['files']['scripts/swarm_host_service.py'],namespace)
+  namespace['systemctl']('disable','--now',unit.name,check=True,capture_output=True)
+ print(json.dumps({'active':True,'fuse':False,'mounted':False,'revision':revision}))
+ raise SystemExit(0)
 # Only the small mount adapter is installed here. Bulk scientific data stays in RAM.
 deps=home/'.local/share/swarm-filesystem/dependencies'
 if not (deps/'fuse.py').exists():
  subprocess.run([sys.executable,'-m','pip','install','--disable-pip-version-check','--no-cache-dir','--no-deps','--target',str(deps),'fusepy==3.0.1'],check=True,stdout=subprocess.DEVNULL)
+if p.get('library'):
+ import base64
+ library=p['library'];data=base64.b64decode(library['data'],validate=True)
+ if hashlib.sha256(data).hexdigest()!=library['sha256']:raise ValueError('FUSE library checksum differs')
+ pending=deps/'libfuse.so.2.tmp';pending.write_bytes(data);pending.replace(deps/'libfuse.so.2')
+ (deps/'libfuse.copyright').write_text(library['copyright'])
 mountpoint=home/'SwarmDNA';mountpoint.mkdir(exist_ok=True)
 unit=home/'.config/systemd/user/swarm-filesystem.service';unit.parent.mkdir(parents=True,exist_ok=True)
 import shlex
 execstart=shlex.join(['/usr/bin/python3',str(release/'scripts/swarm_fs_mount.py'),str(mountpoint),'--foreground'])
-text='[Unit]\nDescription=Private swarm filesystem backed by Latitude\nAfter=network-online.target\n[Service]\nType=simple\nEnvironment="PYTHONPATH='+str(deps)+'"\nEnvironment=PYTHONDONTWRITEBYTECODE=1\nExecStart='+execstart+'\nRestart=on-failure\nRestartSec=10\nTimeoutStopSec=20\nUMask=0077\n[Install]\nWantedBy=default.target\n'
+text='[Unit]\nDescription=Private swarm filesystem backed by Latitude\nAfter=network-online.target\n[Service]\nType=simple\nEnvironment="PYTHONPATH='+str(deps)+'"\nEnvironment="JSWARM_FUSE_LIBRARY='+str(deps/'libfuse.so.2')+'"\nEnvironment=PYTHONDONTWRITEBYTECODE=1\nExecStart='+execstart+'\nRestart=on-failure\nRestartSec=10\nTimeoutStopSec=20\nUMask=0077\n[Install]\nWantedBy=default.target\n'
 changed=not unit.exists() or unit.read_text()!=text
 unit.write_text(text)
 namespace={};exec(p['files']['scripts/swarm_host_service.py'],namespace);systemctl=namespace['systemctl']
@@ -58,9 +74,16 @@ print(json.dumps({'active':active,'mountpoint':str(mountpoint),'revision':revisi
 def deploy_fleet(names=None):
     if not PLAN.exists():return {}
     plan = json.loads(PLAN.read_text())
+    if type(plan.get('fuse', True)) is not bool:raise ValueError('fuse must be true or false')
     enrolled = json.loads(CONFIG.read_text())
     if plan['origin'] not in enrolled['peers']:raise ValueError('Unenrolled filesystem origin')
     files = {name: (PROJECT/name).read_text() for name in FILES}
+    library = None
+    if plan.get('fuse', True) and plan.get('fuse_library'):
+        artifact = plan['fuse_library'];data = Path(artifact['path']).read_bytes()
+        if hashlib.sha256(data).hexdigest() != artifact['sha256']:raise ValueError('Pinned FUSE library changed')
+        library = {'data': base64.b64encode(data).decode(), 'sha256': artifact['sha256'],
+                   'copyright': Path(artifact['copyright']).read_text()}
     result = {}
     for name in names or enrolled['peers']:
         client = None
@@ -69,10 +92,12 @@ def deploy_fleet(names=None):
             host = {'host': name, 'local': name == enrolled['name'], 'agent_endpoint': endpoint, 'resolved_addresses': addresses}
             client = AgentClient(host);status = client.call('status', timeout=5)
             attest_addresses(host, status);host['machine'] = status['machine']
-            settings = {k: v for k, v in plan.items() if k != 'root'}
+            settings = {k: v for k, v in plan.items() if k not in ('root', 'fuse_library')}
+            settings.setdefault('fuse', True)
             settings['peers'] = [n for n in enrolled['peers'] if n != name and n != plan['origin']]
             if name == plan['origin']:settings['root'] = plan['root']
-            payload = {'machine': host['machine'], 'settings': settings, 'files': files}
+            if library and status.get('platform') not in ('linux/x86_64', 'linux/amd64'):raise ValueError('Pinned FUSE library requires an x86_64 host')
+            payload = {'machine': host['machine'], 'settings': settings, 'files': files, 'library': library}
             updater = LauncherUpdates.__new__(LauncherUpdates)
             completed = subprocess.run(updater.command(host, INSTALL), input=json.dumps(payload),
                                        capture_output=True, text=True, timeout=180)
@@ -82,6 +107,14 @@ def deploy_fleet(names=None):
             # Start/attach the capsule and its stable local gateway socket.
             check = client.call('filesystem.rpc', request(settings, 'status'), timeout=45)
             if check.get('result', {}).get('namespace') != settings['namespace']:raise RuntimeError('Filesystem namespace verification failed')
+            if not settings['fuse']:continue
+            deadline = time.monotonic()+40
+            while True:
+                mounted = client.call('filesystem.rpc', request(settings, 'mount.status'), timeout=10)
+                if mounted.get('result', {}).get('mounted'):
+                    result[name]['mounted'] = True;break
+                if time.monotonic() > deadline:raise RuntimeError('Filesystem service has not produced its enrolled FUSE mount; inspect swarm-filesystem.service')
+                time.sleep(.5)
         except Exception as error:result[name] = {'active': False, 'reason': str(error)[:800]}
         finally:
             if client:client.close()

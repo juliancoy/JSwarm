@@ -13,6 +13,13 @@ The standard rolling updater installs the corresponding owner-only
 `swarm-filesystem.service`. With no plan, this component does nothing.
 Offline nodes remain pending and are retried by the standard updater.
 
+FUSE is enabled by default for a configured namespace. Set `"fuse": false` in
+the controller plan to disable the mount service and skip its dependencies;
+the node filesystem API, local gateway and RAM caches remain available. Set it
+back to `true` (or omit the setting) to restore the mount on standard deployment.
+Hosts without libfuse2 can use the plan's checksum-pinned private fallback library;
+deployment checks its bytes and installs its copyright notice alongside it.
+
 The configured mount is `~/SwarmDNA`. For epigenetics its durable backing is
 Latitude's `~/DNA/epigenetics`. Original DNA-drive files are not automatically
 moved or deleted when the mount is installed.
