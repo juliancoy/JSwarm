@@ -1,7 +1,7 @@
 {
-  "utc": "2026-11-13T19:35:11.967022+00:00",
-  "publication_revision": "3164e5f841bfa72edfbd5a8cb8a8a399b9d675219ed4e68ce750f6579774062a",
-  "generation": 27,
+  "utc": "2026-11-13T19:40:44.811470+00:00",
+  "publication_revision": "35a1f13285a5cd1d67778e46e9acb4312702aa964780dc1268fefb3786759040",
+  "generation": 28,
   "repositories": {
     "Organization": {
       "origin": "https://github.com/juliancoy/Organization.git",
@@ -9,40 +9,71 @@
     },
     "JSwarm": {
       "origin": "https://github.com/juliancoy/JSwarm.git",
-      "commit": "3210cac4d4063af5b31675b7ccf0f44702d60c19"
+      "commit": "19e3b9b4c5425381c65d8567ab38dffa02d0b755"
     },
     "GenomeHarbor": {
       "origin": "https://github.com/juliancoy/GenomeHarbor.git",
       "commit": "aa975bd09310bef01270e3c1cfa8d28d81f5deae"
     }
   },
-  "workspace": "/home/julian/.local/state/swarm-control/git-source/workspaces/cfc6986f36b8ee89060fc90c34c1bf19ae94507e7f7bc16eb3085d038d270477",
+  "workspace": "/home/julian/.local/state/swarm-control/git-source/workspaces/d74896e70abca76bed24ab9cc5a15df5d6e85a6011182020b5606a5ecfa40ee5",
   "controller_service": "swarm-input-deployment.service",
   "standard_rollout": "continuous --watch --parallel",
-  "verified_utc": "2026-11-13T19:36:44.757184+00:00",
+  "verified_utc": "2026-11-13T19:42:56.992056+00:00",
   "verified_nodes": [
     {
       "node": "compai.local",
       "endpoint": "http://compai-swarm.local:8790",
-      "addresses": [
-        "172.20.20.20"
-      ],
       "ready": true,
-      "source_revision": "3164e5f841bfa72edfbd5a8cb8a8a399b9d675219ed4e68ce750f6579774062a"
+      "source_revision": "35a1f13285a5cd1d67778e46e9acb4312702aa964780dc1268fefb3786759040"
     },
     {
       "node": "julian-latitude.local",
       "endpoint": "http://julian-latitude-swarm.local:8790",
-      "addresses": [
-        "10.42.0.71"
-      ],
       "ready": false,
-      "source_revision": "3164e5f841bfa72edfbd5a8cb8a8a399b9d675219ed4e68ce750f6579774062a"
+      "source_revision": "35a1f13285a5cd1d67778e46e9acb4312702aa964780dc1268fefb3786759040"
     }
   ],
+  "http_check": {
+    "command": [
+      "curl",
+      "--noproxy",
+      "*",
+      "-sS",
+      "-L",
+      "-o",
+      "/dev/null",
+      "-w",
+      "%{http_code}",
+      "--max-time",
+      "12",
+      "http://compai-swarm.local:8790/"
+    ],
+    "result": 0,
+    "status": "200",
+    "stderr": ""
+  },
   "pending_nodes": [
     "codecollective.local",
     "julian-inspiron-3793.local",
     "julian-minipc.local"
-  ]
+  ],
+  "controller_readiness_log": {
+    "utc": "2026-11-13T19:43:04.102026+00:00",
+    "command": [
+      "journalctl",
+      "--user",
+      "-u",
+      "swarm-input-deployment.service",
+      "--since",
+      "2026-11-13 14:40:30",
+      "-n",
+      "12",
+      "--no-pager",
+      "-o",
+      "cat"
+    ],
+    "result": 0,
+    "output": "Started swarm-input-deployment.service - Standard fleet launcher and run-input release deployment.\n{\"node\": \"julian-inspiron-3793.local\", \"status\": \"pending\", \"reason\": \"No mDNS endpoint for julian-inspiron-3793.local\", \"seconds\": 20.006}\n{\"node\": \"codecollective.local\", \"status\": \"pending\", \"reason\": \"No mDNS endpoint for codecollective.local\", \"seconds\": 20.007}\n{\"node\": \"julian-minipc.local\", \"status\": \"pending\", \"reason\": \"No mDNS endpoint for julian-minipc.local\", \"seconds\": 20.005}\n{\"node\": \"compai.local\", \"status\": \"current\", \"launcher_revision\": \"35a1f13285a5cd1d67778e46e9acb4312702aa964780dc1268fefb3786759040\", \"ready\": true, \"seconds\": 48.196}\n{\"node\": \"julian-latitude.local\", \"status\": \"current\", \"launcher_revision\": \"35a1f13285a5cd1d67778e46e9acb4312702aa964780dc1268fefb3786759040\", \"ready\": true, \"seconds\": 103.471}\n"
+  }
 }
