@@ -1,0 +1,23 @@
+/home/julian/.local/share/swarm-control/venv/bin/python: No module named pytest
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/tmp/jswarm-source-release-lfxr2h1o/Organization/JSwarm/scripts/deploy_swarm_inputs.py", line 188, in <module>
+    if __name__=='__main__':main()
+                            ^^^^^^
+  File "/tmp/jswarm-source-release-lfxr2h1o/Organization/JSwarm/scripts/deploy_swarm_inputs.py", line 167, in main
+    subprocess.run([sys.executable,'-m','pytest','-q',*suites],cwd=project,env=env,check=True)
+  File "/usr/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['/home/julian/.local/share/swarm-control/venv/bin/python', '-m', 'pytest', '-q', 'tests/test_swarm_mdns_discovery.py', 'scripts/tests/test_launcher_routing.py', 'tests/test_launcher_routing_cleanup.py', 'tests/test_node_web.py', 'tests/test_worker_storage.py', 'tests/test_cache_lifetime.py', 'tests/test_cache_pressure_reclamation.py', 'tests/test_execution_accounting.py', 'tests/test_launcher_streams.py', 'tests/test_swarm_stream_work.py', 'scripts/tests/test_launcher_telemetry.py', 'tests/test_swarm_paged_cache.py', 'tests/test_swarm_shared_cache.py', 'tests/test_agent_cpu_overhead.py', 'tests/test_deployment_lock.py', 'tests/test_node_releases.py', 'tests/test_node_git_source.py', 'tests/test_swarm_node.py', 'tests/test_worker_journal.py', 'tests/test_ram_cache_inventory.py', 'tests/test_node_cache_manager.py', 'tests/test_ram_cache_cleanup_api.py', 'tests/test_swarm_cache_cleanup.py', 'tests/test_swarm_cache_migrate.py', 'tests/test_swarm_pressure_guard.py', 'tests/test_launcher_commands.py', 'tests/test_launcher_peer_supervisor.py', 'tests/test_resource_renewal.py', 'tests/test_swarm_runtime.py', 'tests/test_gpu_inventory.py', 'tests/test_node_execution.py', 'tests/test_swarm_gpu_runtime.py', 'tests/test_rolling_deployment.py', 'tests/test_docker_worker_restart.py', 'swarm-control/server/tests/test_agent_updates.py', 'swarm-control/server/tests/test_agent_sessions.py', 'swarm-control/server/tests/test_fleet_backups.py', 'tests/test_worker_maintenance.py']' returned non-zero exit status 1.
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/julian/Documents/Organization/JSwarm/scripts/deploy_swarm_inputs.py", line 188, in <module>
+    if __name__=='__main__':main()
+                            ^^^^^^
+  File "/home/julian/Documents/Organization/JSwarm/scripts/deploy_swarm_inputs.py", line 156, in main
+    subprocess.run([sys.executable,'-m','scripts.deploy_swarm_inputs','--publish','--frozen-source','--expected-publication',expected],cwd=project,env=env,check=True)
+  File "/usr/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['/home/julian/.local/share/swarm-control/venv/bin/python', '-m', 'scripts.deploy_swarm_inputs', '--publish', '--frozen-source', '--expected-publication', '00000000000000000026-f23f06611a9dbd18d6bbbd6e4d0c00d04e0c11cfc0652d4610bd9645e01ba5b9.json']' returned non-zero exit status 1.

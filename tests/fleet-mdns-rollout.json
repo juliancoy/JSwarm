@@ -1,22 +1,48 @@
 {
-  "utc": "2026-11-13T19:26:04.332660+00:00",
+  "utc": "2026-11-13T19:35:11.967022+00:00",
   "publication_revision": "3164e5f841bfa72edfbd5a8cb8a8a399b9d675219ed4e68ce750f6579774062a",
-  "generation": 26,
+  "generation": 27,
   "repositories": {
-    "GenomeHarbor": {
-      "commit": "aa975bd09310bef01270e3c1cfa8d28d81f5deae",
-      "origin": "https://github.com/juliancoy/GenomeHarbor.git"
+    "Organization": {
+      "origin": "https://github.com/juliancoy/Organization.git",
+      "commit": "43d3057557a16952423598f4636f84b84bdfebf1"
     },
     "JSwarm": {
-      "commit": "cf7c3de19f2528a83fabd2dfa3dbddfbb2e72355",
-      "origin": "https://github.com/juliancoy/JSwarm.git"
+      "origin": "https://github.com/juliancoy/JSwarm.git",
+      "commit": "3210cac4d4063af5b31675b7ccf0f44702d60c19"
     },
-    "Organization": {
-      "commit": "43d3057557a16952423598f4636f84b84bdfebf1",
-      "origin": "https://github.com/juliancoy/Organization.git"
+    "GenomeHarbor": {
+      "origin": "https://github.com/juliancoy/GenomeHarbor.git",
+      "commit": "aa975bd09310bef01270e3c1cfa8d28d81f5deae"
     }
   },
-  "controller_workspace": "/home/julian/.local/state/swarm-control/git-source/workspaces/9db4d10e75a0d22099480a36b04b45f4d2a2ef8a8bdc34e1f00f90020f4d3c0e",
+  "workspace": "/home/julian/.local/state/swarm-control/git-source/workspaces/cfc6986f36b8ee89060fc90c34c1bf19ae94507e7f7bc16eb3085d038d270477",
   "controller_service": "swarm-input-deployment.service",
-  "standard_rollout": "continuous --watch --parallel"
+  "standard_rollout": "continuous --watch --parallel",
+  "verified_utc": "2026-11-13T19:36:44.757184+00:00",
+  "verified_nodes": [
+    {
+      "node": "compai.local",
+      "endpoint": "http://compai-swarm.local:8790",
+      "addresses": [
+        "172.20.20.20"
+      ],
+      "ready": true,
+      "source_revision": "3164e5f841bfa72edfbd5a8cb8a8a399b9d675219ed4e68ce750f6579774062a"
+    },
+    {
+      "node": "julian-latitude.local",
+      "endpoint": "http://julian-latitude-swarm.local:8790",
+      "addresses": [
+        "10.42.0.71"
+      ],
+      "ready": false,
+      "source_revision": "3164e5f841bfa72edfbd5a8cb8a8a399b9d675219ed4e68ce750f6579774062a"
+    }
+  ],
+  "pending_nodes": [
+    "codecollective.local",
+    "julian-inspiron-3793.local",
+    "julian-minipc.local"
+  ]
 }
