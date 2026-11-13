@@ -5,6 +5,21 @@ from scripts import swarm_runtime as runtime
 from scripts import launcher_discovery as discovery
 
 
+def test_direct_dns_sd_resolution_does_not_require_host_nss(monkeypatch):
+    from types import SimpleNamespace
+    info = SimpleNamespace(port=8790, server='worker-swarm.local.',
+        properties={b'node': b'worker.local', b'protocol': b'lifetech-launcher.v1'},
+        parsed_addresses=lambda _: ['10.42.0.222'])
+    zc = MagicMock();zc.get_service_info.return_value = info
+    monkeypatch.setattr(discovery, '_RESOLVER', None)
+    monkeypatch.setattr(discovery, 'Zeroconf', lambda **_: zc)
+    assert discovery.resolve_service('worker.local') == ('worker-swarm.local', ['10.42.0.222'])
+    zc.close.assert_not_called()  # Keep one DNS-SD cache for the node lifetime.
+    info.server = 'unrelated.local.'
+    import pytest
+    with pytest.raises(OSError):discovery.resolve_service('worker.local')
+
+
 def test_service_hostname_is_a_single_mdns_label_even_for_long_node_names():
     assert discovery.service_hostname('compai.local')=='compai-swarm.local'
     node='a'*63+'.local'

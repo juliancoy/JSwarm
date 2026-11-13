@@ -10,6 +10,28 @@ from scripts.swarm_filesystem import Filesystem, request, BLOCK
 from scripts.swarm_fs_mount import Client
 
 
+@pytest.mark.parametrize('requested,available,expected', [
+    ('auto', {'fuse3': 'libfuse3.so.3', 'fuse': 'libfuse.so.2'}, 'libfuse3.so.3'),
+    ('auto', {'fuse': 'libfuse.so.2'}, 'libfuse.so.2'),
+    ('2', {'fuse3': 'libfuse3.so.3', 'fuse': 'libfuse.so.2'}, 'libfuse.so.2'),
+    ('3', {'fuse3': 'libfuse3.so.3'}, 'libfuse3.so.3'),
+])
+def test_selects_system_fuse_major(requested, available, expected, monkeypatch):
+    from scripts.swarm_fs_mount import select_system_fuse
+    import ctypes.util
+    monkeypatch.setattr(ctypes.util, 'find_library', available.get)
+    monkeypatch.setenv('FUSE_LIBRARY_PATH', '')
+    assert select_system_fuse({'fuse_version': requested}) == expected
+    assert os.environ['FUSE_LIBRARY_PATH'] == expected
+
+
+def test_missing_requested_fuse_version_fails_without_bundled_library(monkeypatch):
+    from scripts.swarm_fs_mount import select_system_fuse
+    import ctypes.util
+    monkeypatch.setattr(ctypes.util, 'find_library', lambda name: 'libfuse.so.2' if name == 'fuse' else None)
+    with pytest.raises(OSError):select_system_fuse({'fuse_version': '3'})
+
+
 @pytest.fixture
 def fs(tmp_path):
     root = tmp_path/'data';root.mkdir()

@@ -1,6 +1,6 @@
 """Mount a private node filesystem with local and peer RAM read caches.
 
-Host requirements: libfuse2, fusermount and fusepy. No signing key is needed.
+Host requirements: system libfuse2 or libfuse3, fusermount, and mfusepy. No signing key is needed.
 """
 import base64
 import errno
@@ -112,11 +112,22 @@ class Client:
         return written
 
 
-def mount(settings, mountpoint, foreground=False):
+def select_system_fuse(settings):
     import ctypes.util
-    if not ctypes.util.find_library('fuse') and os.getenv('JSWARM_FUSE_LIBRARY'):
-        os.environ['FUSE_LIBRARY_PATH'] = os.environ['JSWARM_FUSE_LIBRARY']
-    from fuse import FUSE, FuseOSError, Operations
+    requested = str(settings.get('fuse_version', 'auto'))
+    if requested not in ('auto', '2', '3'):raise ValueError('fuse_version must be auto, 2 or 3')
+    names = ['fuse3', 'fuse'] if requested == 'auto' else ['fuse3' if requested == '3' else 'fuse']
+    for name in names:
+        library = ctypes.util.find_library(name)
+        if library:
+            os.environ['FUSE_LIBRARY_PATH'] = library
+            return library
+    raise OSError(errno.ENODEV, 'No compatible system FUSE library installed')
+
+
+def mount(settings, mountpoint, foreground=False):
+    select_system_fuse(settings)
+    from mfusepy import FUSE, FuseOSError, Operations
     if settings.get('local_gateway'):
         gateway = Path.home()/'.config/lifetech-launcher/filesystem.sock'
         deadline = time.monotonic()+90

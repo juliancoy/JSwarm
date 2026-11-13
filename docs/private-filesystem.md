@@ -17,8 +17,9 @@ FUSE is enabled by default for a configured namespace. Set `"fuse": false` in
 the controller plan to disable the mount service and skip its dependencies;
 the node filesystem API, local gateway and RAM caches remain available. Set it
 back to `true` (or omit the setting) to restore the mount on standard deployment.
-Hosts without libfuse2 can use the plan's checksum-pinned private fallback library;
-deployment checks its bytes and installs its copyright notice alongside it.
+The adapter uses the system FUSE library. `"fuse_version": "auto"` (the default)
+prefers FUSE3 and falls back to FUSE2. Use `"2"` or `"3"` to select an installed
+major version explicitly. No private libfuse shared library is distributed.
 
 The configured mount is `~/SwarmDNA`. For epigenetics its durable backing is
 Latitude's `~/DNA/epigenetics`. Original DNA-drive files are not automatically
@@ -50,8 +51,8 @@ root mount. Path traversal and symlinks are rejected using directory-relative
 opens with `O_NOFOLLOW`.
 
 The mount uses direct I/O with kernel metadata caching disabled, so the custom
-versioned RAM tiers coordinate reads. The host needs `/dev/fuse`, libfuse2 and
-`fusermount`; deployment installs only the pure Python fusepy adapter in an
+versioned RAM tiers coordinate reads. The host needs `/dev/fuse`, libfuse2 or libfuse3 and
+`fusermount`/`fusermount3`; deployment installs only the pure Python mfusepy adapter in an
 owner-private directory. A private local Unix socket forwards network calls
 through the node capsule, so older host Python versions do not need the node's
 cryptography packages. The node restores that gateway on startup. The mount is owner-only. Docker consumers must run

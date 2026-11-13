@@ -1,6 +1,4 @@
 """Install private filesystem configuration and mounts through standard node deployment."""
-import base64
-import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -47,19 +45,16 @@ if not settings.get('fuse',True):
  raise SystemExit(0)
 # Only the small mount adapter is installed here. Bulk scientific data stays in RAM.
 deps=home/'.local/share/swarm-filesystem/dependencies'
-if not (deps/'fuse.py').exists():
- subprocess.run([sys.executable,'-m','pip','install','--disable-pip-version-check','--no-cache-dir','--no-deps','--target',str(deps),'fusepy==3.0.1'],check=True,stdout=subprocess.DEVNULL)
-if p.get('library'):
- import base64
- library=p['library'];data=base64.b64decode(library['data'],validate=True)
- if hashlib.sha256(data).hexdigest()!=library['sha256']:raise ValueError('FUSE library checksum differs')
- pending=deps/'libfuse.so.2.tmp';pending.write_bytes(data);pending.replace(deps/'libfuse.so.2')
- (deps/'libfuse.copyright').write_text(library['copyright'])
+if not (deps/'mfusepy-3.1.1.dist-info').is_dir():
+ deps.mkdir(parents=True,exist_ok=True)
+ requirements=deps/'requirements.txt'
+ requirements.write_text('mfusepy==3.1.1 --hash=sha256:69fb70cfc7f7cce595e6ff586f8451d8298f01f18286a157f24f564b24ec5a37\n')
+ subprocess.run([sys.executable,'-m','pip','install','--disable-pip-version-check','--no-cache-dir','--no-deps','--only-binary=:all:','--require-hashes','--target',str(deps),'-r',str(requirements)],check=True,stdout=subprocess.DEVNULL)
 mountpoint=home/'SwarmDNA';mountpoint.mkdir(exist_ok=True)
 unit=home/'.config/systemd/user/swarm-filesystem.service';unit.parent.mkdir(parents=True,exist_ok=True)
 import shlex
 execstart=shlex.join(['/usr/bin/python3',str(release/'scripts/swarm_fs_mount.py'),str(mountpoint),'--foreground'])
-text='[Unit]\nDescription=Private swarm filesystem backed by Latitude\nAfter=network-online.target\n[Service]\nType=simple\nEnvironment="PYTHONPATH='+str(deps)+'"\nEnvironment="JSWARM_FUSE_LIBRARY='+str(deps/'libfuse.so.2')+'"\nEnvironment=PYTHONDONTWRITEBYTECODE=1\nExecStart='+execstart+'\nRestart=on-failure\nRestartSec=10\nTimeoutStopSec=20\nUMask=0077\n[Install]\nWantedBy=default.target\n'
+text='[Unit]\nDescription=Private swarm filesystem backed by Latitude\nAfter=network-online.target\n[Service]\nType=simple\nEnvironment="PYTHONPATH='+str(deps)+'"\nEnvironment=PYTHONDONTWRITEBYTECODE=1\nExecStart='+execstart+'\nRestart=on-failure\nRestartSec=10\nTimeoutStopSec=20\nUMask=0077\n[Install]\nWantedBy=default.target\n'
 changed=not unit.exists() or unit.read_text()!=text
 unit.write_text(text)
 namespace={};exec(p['files']['scripts/swarm_host_service.py'],namespace);systemctl=namespace['systemctl']
@@ -78,12 +73,6 @@ def deploy_fleet(names=None):
     enrolled = json.loads(CONFIG.read_text())
     if plan['origin'] not in enrolled['peers']:raise ValueError('Unenrolled filesystem origin')
     files = {name: (PROJECT/name).read_text() for name in FILES}
-    library = None
-    if plan.get('fuse', True) and plan.get('fuse_library'):
-        artifact = plan['fuse_library'];data = Path(artifact['path']).read_bytes()
-        if hashlib.sha256(data).hexdigest() != artifact['sha256']:raise ValueError('Pinned FUSE library changed')
-        library = {'data': base64.b64encode(data).decode(), 'sha256': artifact['sha256'],
-                   'copyright': Path(artifact['copyright']).read_text()}
     result = {}
     for name in names or enrolled['peers']:
         client = None
@@ -96,8 +85,7 @@ def deploy_fleet(names=None):
             settings.setdefault('fuse', True)
             settings['peers'] = [n for n in enrolled['peers'] if n != name and n != plan['origin']]
             if name == plan['origin']:settings['root'] = plan['root']
-            if library and status.get('platform') not in ('linux/x86_64', 'linux/amd64'):raise ValueError('Pinned FUSE library requires an x86_64 host')
-            payload = {'machine': host['machine'], 'settings': settings, 'files': files, 'library': library}
+            payload = {'machine': host['machine'], 'settings': settings, 'files': files}
             updater = LauncherUpdates.__new__(LauncherUpdates)
             completed = subprocess.run(updater.command(host, INSTALL), input=json.dumps(payload),
                                        capture_output=True, text=True, timeout=180)

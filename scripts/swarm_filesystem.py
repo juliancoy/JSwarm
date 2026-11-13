@@ -119,15 +119,25 @@ class Filesystem:
             import sys
             release = Path(settings['client_release'])
             sys.path[:0] = [str(release), str(release/'swarm-control/server')]
-            from agent_client import AgentClient
-            from scripts.launcher_discovery import resolve_endpoint
+            from agent_client import AgentClient, multipath_connection
+            from scripts.launcher_discovery import service_hostname, resolve_service
             node = args['node']
             if node not in [settings['origin'], *settings.get('peers', [])]:raise PermissionError('Unenrolled filesystem route')
             if args['action'] == 'route':raise ValueError('Recursive filesystem route')
             with self.lock:
                 if node not in self.remotes:
-                    endpoint, _ = resolve_endpoint(node)
-                    self.remotes[node] = AgentClient({'host': node, 'agent_endpoint': endpoint})
+                    endpoint = 'http://'+service_hostname(node)+':8790'
+                    remote = AgentClient({'host': node, 'agent_endpoint': endpoint})
+                    if hasattr(remote, 'connection') and not remote.gateway:
+                        def connect(address, timeout=30, source_address=None, **kwargs):
+                            _, addresses = resolve_service(node)
+                            last = None
+                            for ip in addresses:
+                                try:return multipath_connection((ip, address[1]), timeout, source_address, **kwargs)
+                                except OSError as error:last = error
+                            raise last or OSError('No current mDNS route')
+                        remote.connection._create_connection = connect
+                    self.remotes[node] = remote
                 remote = self.remotes[node]
             return remote.call('filesystem.rpc', request(settings, args['action'], **args['args']),
                                timeout=3 if args['action'].startswith('cache.') else 60)

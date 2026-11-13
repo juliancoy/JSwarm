@@ -4,6 +4,28 @@ import threading
 from zeroconf import IPVersion, ServiceBrowser, ServiceInfo, Zeroconf
 
 SERVICE = '_lifetech._tcp.local.'
+_RESOLVER = None
+_RESOLVER_LOCK = threading.Lock()
+
+
+def resolve_service(node, timeout=5000):
+    """Resolve DNS-SD directly when a container has no host NSS mDNS module."""
+    global _RESOLVER
+    with _RESOLVER_LOCK:
+        if _RESOLVER is None:
+            import atexit
+            _RESOLVER = Zeroconf(unicast=True, ip_version=IPVersion.V4Only)
+            atexit.register(_RESOLVER.close)
+        zc = _RESOLVER
+    info = zc.get_service_info(SERVICE, node+'.'+SERVICE, timeout=timeout)
+    if (not info or info.port != 8790
+            or info.server.rstrip('.') not in (service_hostname(node), node)
+            or info.properties.get(b'node') != node.encode()
+            or info.properties.get(b'protocol') != b'lifetech-launcher.v1'):
+        raise OSError('No enrolled mDNS advertisement for '+node)
+    addresses = info.parsed_addresses(IPVersion.V4Only)
+    if not addresses:raise OSError('No mDNS addresses for '+node)
+    return info.server.rstrip('.'), addresses
 
 
 def service_hostname(node):
