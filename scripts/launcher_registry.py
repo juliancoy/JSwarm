@@ -68,6 +68,21 @@ def lan_paths(rows, peers):
     return sorted(paths,key=lambda path:(path['device'].startswith('wl'),path['device'],path['address']))
 
 
+def listener_addresses(rows):
+    """mDNS/listeners follow physical interfaces independently of saved peer IPs."""
+    import ipaddress
+    result=[]
+    for row in sorted(rows,key=lambda r:(r['ifname'].startswith('wl'),r['ifname'])):
+        if not row['ifname'].startswith(('en','eth','wl')) or row.get('operstate')!='UP':continue
+        if row.get('linkinfo',{}).get('info_kind'):continue
+        for address in row.get('addr_info',[]):
+            if address.get('family')!='inet' or address.get('scope')!='global':continue
+            ip=ipaddress.ip_address(address['local'])
+            if ip.version==4 and ip.is_private and not (ip.is_loopback or ip.is_unspecified):
+                if str(ip) not in result:result.append(str(ip))
+    return result
+
+
 def reconcile_lan_routing(peers):
     """Run in the host network namespace with NET_ADMIN, without host mounts."""
     import json

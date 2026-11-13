@@ -372,7 +372,8 @@ class LauncherUpdates:
         from agent_client import AgentClient,CONFIG
         settings=json.loads(CONFIG.read_text())
         if host['host'] not in settings['peers']:raise ValueError('Use an enrolled node name')
-        endpoint=host.get('agent_endpoint') or 'http://'+settings['peers'][host['host']]+':8790'
+        from scripts.launcher_discovery import resolve_endpoint
+        endpoint=host.get('agent_endpoint') or resolve_endpoint(host['host'])[0]
         client=AgentClient({**host,'agent_endpoint':endpoint})
         try:status=client.call('status',timeout=10)
         finally:client.close()
@@ -447,8 +448,9 @@ class LauncherUpdates:
         if host.get('machine') and host['machine']!=status['machine']:raise ValueError('Update machine identity changed')
         if 'node-command-v1' not in status.get('capabilities',[]):
             raise RuntimeError('Signed node command API unavailable; enroll or recover the node explicitly')
+        from scripts.launcher_discovery import resolve_endpoint
         owner={**host,'local':False,'machine':status['machine'],
-               'agent_endpoint':host.get('agent_endpoint') or 'http://'+settings['peers'][name]+':8790'}
+               'agent_endpoint':host.get('agent_endpoint') or resolve_endpoint(name)[0]}
         return shell_command(owner,['python3','-c',code])
 
     def cancel_pending(self,host,status):

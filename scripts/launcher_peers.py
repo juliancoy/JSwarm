@@ -213,9 +213,18 @@ class NodePipelineWeb:
                     port=8091;authority=owner.netloc
                 if request.path.startswith('/api/v1/master/codex/'):raise web.HTTPForbidden()
             else:
-                address=config['peers'][config['coordinator']];port=8790
+                from launcher_discovery import resolve_endpoint
+                from urllib.parse import urlsplit
+                try:address=urlsplit((await asyncio.to_thread(resolve_endpoint,config['coordinator']))[0]).hostname
+                except OSError as error:raise web.HTTPBadGateway(text='Coordinator mDNS unavailable') from error
+                port=8790
                 authority=config['coordinator']+':8790'
-        else:address=config['peers'][node];port=8790;authority=request.host
+        else:
+            from launcher_discovery import resolve_endpoint
+            from urllib.parse import urlsplit
+            try:address=urlsplit((await asyncio.to_thread(resolve_endpoint,node))[0]).hostname
+            except OSError as error:raise web.HTTPBadGateway(text='Node mDNS unavailable') from error
+            port=8790;authority=request.host
         if request.headers.get('Transfer-Encoding') or len(request.headers.getall('Content-Length',[]))>1:raise web.HTTPBadRequest()
         excluded={'connection','keep-alive','proxy-authenticate','proxy-authorization','te','trailer','transfer-encoding','upgrade','host','origin','forwarded','x-forwarded-for','x-forwarded-host','accept-encoding'}
         headers={key:value for key,value in request.headers.items() if key.lower() not in excluded}
@@ -726,12 +735,16 @@ class JobGateway:
         node=request.headers.get('X-Lifetech-Peer');config=json.loads(self.agent.config.read_text())
         if node not in config['peers']:raise web.HTTPForbidden()
         raw=await request.read()
+        if node==config['name']:
+            return await self.agent.handle(request)
         try:
             timeout=max(1,min(180,float(request.headers.get('X-Lifetech-RPC-Timeout','180'))))
             if request.headers.get('X-Lifetech-Transport')!='webrtc' and node not in config.get('wan_only',[]):
                 try:
                     async with ClientSession(timeout=ClientTimeout(total=timeout,connect=min(3,timeout)),trust_env=False,connector=TCPConnector(socket_factory=transport_socket)) as session:
-                        async with session.post('http://'+config['peers'][node]+':8790/agent/v1',data=raw,allow_redirects=False) as response:
+                        from launcher_discovery import resolve_endpoint
+                        endpoint=(await asyncio.to_thread(resolve_endpoint,node))[0]
+                        async with session.post(endpoint+'/agent/v1',data=raw,allow_redirects=False) as response:
                             if response.status!=200:raise RuntimeError('Agent rejected request')
                             data=bytearray()
                             async for chunk in response.content.iter_chunked(65536):
@@ -772,7 +785,9 @@ class JobGateway:
             if self.telemetry_session is None or self.telemetry_session.closed:
                 self.telemetry_session=ClientSession(trust_env=False,
                     connector=TCPConnector(socket_factory=telemetry_tcp_socket,limit=2,limit_per_host=1,keepalive_timeout=30))
-            raw=await read(self.telemetry_session,'http://'+config['peers'][node]+':8790/agent/v1',
+            from launcher_discovery import resolve_endpoint
+            endpoint=(await asyncio.to_thread(resolve_endpoint,node))[0]
+            raw=await read(self.telemetry_session,endpoint+'/agent/v1',
                            {'Content-Type':'application/octet-stream'})
         else:
             async with ClientSession(timeout=ClientTimeout(total=timeout),trust_env=False) as session:
@@ -1031,10 +1046,10 @@ async def supervise(path,prefix,stopped):
                 desired = {}
                 if all(key in config for key in ('name','peers','key')):
                     desired['lan'] = {key:config[key] for key in ('name','peers','key')}
-                    from launcher_registry import lan_paths
+                    from launcher_registry import listener_addresses
                     import subprocess
                     rows=json.loads(await asyncio.to_thread(subprocess.check_output,['ip','-j','-4','addr'],text=True,timeout=5))
-                    desired['lan']['addresses']=[p['address'] for p in lan_paths(rows,config['peers'])]
+                    desired['lan']['addresses']=listener_addresses(rows)
                     if not desired['lan']['addresses']:
                         desired.pop('lan')
                 if config.get('internet') and not config['internet'].get('pending'):

@@ -14,6 +14,7 @@ sys.path[:0]=[str(ROOT),str(ROOT/'swarm-control/server')]
 from agent_client import AgentClient,CONFIG
 from agent_updates import LauncherUpdates,deployment_lock,publication_token,check_publication
 from input_runtime_release import InputRuntimeRelease
+from scripts.launcher_discovery import resolve_endpoint
 
 
 RELEASES=Path.home()/'.local/state/swarm-control/node-releases'
@@ -27,12 +28,17 @@ def sweep(nodes=None,wait_timeout=3600,published=None,*,parallel=False):
     if any(name not in config['peers'] for name in selected):raise ValueError('Use an enrolled node name')
     def update(name,address,worker):
         started=time.monotonic()
-        host={'host':name,'local':name==config['name'],'lan_address':address,'agent_endpoint':'http://'+address+':8790'}
-        client=AgentClient(host);row={'node':name}
+        host={'host':name,'local':name==config['name']}
+        client=None;row={'node':name}
         try:
+            endpoint,addresses=resolve_endpoint(name)
+            host.update(agent_endpoint=endpoint,resolved_addresses=addresses,lan_address=addresses[0])
+            client=AgentClient(host)
             try:status=client.call('status',timeout=4)
             except (OSError,TimeoutError):
                 client.close()
+                host['agent_route']='auto'
+                client=AgentClient(host)
                 status=worker.owner_status(host)
             if status['node']!=name:raise ValueError('Agent identity mismatch')
             status=worker.ensure(host,client,status,wait_timeout=wait_timeout)
@@ -40,7 +46,8 @@ def sweep(nodes=None,wait_timeout=3600,published=None,*,parallel=False):
                 raise RuntimeError('Desired release is not ready: '+host.get('launcher_update',{}).get('reason',''))
             row.update(status='current',launcher_revision=status['source_revision'],ready=status['ready'])
         except Exception as error:row.update(status='pending',reason=str(error)[:180])
-        finally:client.close()
+        finally:
+            if client:client.close()
         row['seconds']=round(time.monotonic()-started,3)
         print(json.dumps(row),flush=True)
         return row
@@ -114,13 +121,16 @@ def main():
         selected=args.node or list(config['peers'])
         if any(name not in config['peers'] for name in selected):parser.error('Use enrolled node names')
         for name in selected:
-            client=AgentClient({'host':name,'agent_endpoint':'http://'+config['peers'][name]+':8790'})
+            client=None
             try:
+                endpoint,addresses=resolve_endpoint(name)
+                client=AgentClient({'host':name,'agent_endpoint':endpoint})
                 value=client.call('status',timeout=10)
                 rows.append({'node':name,'ready':value.get('ready') is True,
                              'current':value.get('node')==name and value.get('source_revision')==release.revision})
             except Exception as error:rows.append({'node':name,'ready':False,'current':False,'error':type(error).__name__})
-            finally:client.close()
+            finally:
+                if client:client.close()
         print(json.dumps({'revision':release.revision,'generation':release.generation,'nodes':rows}),flush=True)
         if not all(row['ready'] and row['current'] for row in rows):raise SystemExit(1)
         return
@@ -151,7 +161,7 @@ def main():
             check_publication(RELEASES,expected)
             import subprocess
             updater=LauncherUpdates(ROOT,lambda:False,lambda *args:None)
-            suites=['scripts/tests/test_launcher_routing.py','tests/test_launcher_routing_cleanup.py','tests/test_node_web.py','tests/test_worker_storage.py','tests/test_cache_lifetime.py','tests/test_cache_pressure_reclamation.py','tests/test_execution_accounting.py','tests/test_launcher_streams.py','tests/test_swarm_stream_work.py','scripts/tests/test_launcher_telemetry.py','tests/test_swarm_paged_cache.py','tests/test_swarm_shared_cache.py','tests/test_agent_cpu_overhead.py','tests/test_deployment_lock.py','tests/test_node_releases.py','tests/test_node_git_source.py','tests/test_swarm_node.py','tests/test_worker_journal.py','tests/test_ram_cache_inventory.py','tests/test_node_cache_manager.py','tests/test_ram_cache_cleanup_api.py','tests/test_swarm_cache_cleanup.py','tests/test_swarm_cache_migrate.py','tests/test_swarm_pressure_guard.py','tests/test_launcher_commands.py','tests/test_launcher_peer_supervisor.py','tests/test_resource_renewal.py','tests/test_swarm_runtime.py','tests/test_gpu_inventory.py','tests/test_node_execution.py','tests/test_swarm_gpu_runtime.py','tests/test_rolling_deployment.py','tests/test_docker_worker_restart.py','swarm-control/server/tests/test_agent_updates.py','swarm-control/server/tests/test_agent_sessions.py','swarm-control/server/tests/test_fleet_backups.py','tests/test_worker_maintenance.py']
+            suites=['tests/test_swarm_mdns_discovery.py','scripts/tests/test_launcher_routing.py','tests/test_launcher_routing_cleanup.py','tests/test_node_web.py','tests/test_worker_storage.py','tests/test_cache_lifetime.py','tests/test_cache_pressure_reclamation.py','tests/test_execution_accounting.py','tests/test_launcher_streams.py','tests/test_swarm_stream_work.py','scripts/tests/test_launcher_telemetry.py','tests/test_swarm_paged_cache.py','tests/test_swarm_shared_cache.py','tests/test_agent_cpu_overhead.py','tests/test_deployment_lock.py','tests/test_node_releases.py','tests/test_node_git_source.py','tests/test_swarm_node.py','tests/test_worker_journal.py','tests/test_ram_cache_inventory.py','tests/test_node_cache_manager.py','tests/test_ram_cache_cleanup_api.py','tests/test_swarm_cache_cleanup.py','tests/test_swarm_cache_migrate.py','tests/test_swarm_pressure_guard.py','tests/test_launcher_commands.py','tests/test_launcher_peer_supervisor.py','tests/test_resource_renewal.py','tests/test_swarm_runtime.py','tests/test_gpu_inventory.py','tests/test_node_execution.py','tests/test_swarm_gpu_runtime.py','tests/test_rolling_deployment.py','tests/test_docker_worker_restart.py','swarm-control/server/tests/test_agent_updates.py','swarm-control/server/tests/test_agent_sessions.py','swarm-control/server/tests/test_fleet_backups.py','tests/test_worker_maintenance.py']
             project=Path(__file__).resolve().parents[1]
             env={**os.environ,'PYTHONPATH':os.pathsep.join(map(str,(project/'swarm-control/server',ROOT,project.parent/'GenomeHarbor/tests')))}
             subprocess.run([sys.executable,'-m','pytest','-q',*suites],cwd=project,env=env,check=True)

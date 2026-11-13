@@ -11,7 +11,7 @@ class LauncherUpdateTests(unittest.TestCase):
         self.updates=LauncherUpdates(Path(__file__).resolve().parents[3],lambda:False,self.progress)
         self.updates.git_source={'repositories':{name:{'origin':'https://example.com/'+name+'.git','commit':'a'*40}
                        for name in ('Organization','JSwarm','GenomeHarbor')},'installer':'# test Git installer\n'}
-        self.host={'host':'worker','lan_address':'10.42.0.2'}
+        self.host={'host':'worker','lan_address':'10.42.0.2','agent_endpoint':'http://worker.swarm.local:8790'}
         self.status={'node':'worker','machine':'a'*64,'ready':True,'source_revision':'old','active_jobs':[],'capabilities':['node-command-v1']}
 
     def test_stream_and_command_runtimes_are_in_the_verified_release(self):
@@ -36,7 +36,7 @@ class LauncherUpdateTests(unittest.TestCase):
             self.updates.stage(self.host,self.status)
         command=run.call_args.args[0]
         self.assertTrue(command[1].endswith('swarm_command.py'))
-        self.assertIn('http://10.42.0.2:8790',command)
+        self.assertIn('http://worker.swarm.local:8790',command)
         self.assertIn('a'*64,command)
         self.assertNotIn('ssh',command)
         import json
@@ -178,7 +178,7 @@ def test_offline_update_never_falls_back_to_local_process_or_ssh(monkeypatch):
     monkeypatch.setattr('agent_client.AgentClient',Mock(return_value=client))
     execute=Mock(side_effect=AssertionError('Offline update attempted a subprocess'))
     monkeypatch.setattr('agent_updates.subprocess.run',execute)
-    with pytest.raises(OSError,match='Offline'):updates.command({'host':'worker','local':True},'pass')
+    with pytest.raises(OSError,match='Offline'):updates.command({'host':'worker','local':True,'agent_endpoint':'http://worker.swarm.local:8790'},'pass')
     execute.assert_not_called();client.close.assert_called_once()
 
 

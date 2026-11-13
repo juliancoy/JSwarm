@@ -142,36 +142,10 @@ class AgentSessions:
         self.progress(host,'unavailable',host['session'])
 
     def accessible(self):
-        import sys,ipaddress,subprocess
+        import sys
         sys.path.insert(0,str(self.root/'scripts'))
-        from zeroconf import ServiceBrowser,Zeroconf,IPVersion
-        from launcher_discovery import SERVICE
+        from launcher_discovery import resolve_endpoint
         config=json.loads(CONFIG.read_text())
-        address=config['peers'][config['name']]
-        rows=json.loads(subprocess.check_output(['ip','-j','-4','addr','show','dev','enp7s0'],text=True,timeout=5))
-        networks=[ipaddress.ip_network(a['local']+'/'+str(a['prefixlen']),strict=False) for row in rows for a in row.get('addr_info',[]) if a.get('scope')=='global']
-        if not any(address==a['local'] for row in rows for a in row.get('addr_info',[])):raise RuntimeError('Enrolled coordinator address is not on Ethernet enp7s0')
-        found={}
-        class Listener:
-            def add_service(inner,zc,kind,name):inner.update_service(zc,kind,name)
-            def remove_service(inner,zc,kind,name):found.pop(name,None)
-            def update_service(inner,zc,kind,name):
-                info=zc.get_service_info(kind,name,timeout=1500)
-                if not info:return
-                node=info.properties.get(b'node',b'').decode(errors='replace')
-                if node not in config['peers'] or info.port!=8790:return
-                if info.properties.get(b'agent')!=PROTOCOL.encode():return
-                if config['peers'][node] not in info.parsed_addresses(IPVersion.V4Only):return
-                found[name]=(node,'http://'+config['peers'][node]+':8790')
-        zc=Zeroconf(interfaces=[address],ip_version=IPVersion.V4Only)
-        browser=ServiceBrowser(zc,SERVICE,listener=Listener())
-        try:
-            deadline=time.monotonic()+4
-            while time.monotonic()<deadline:
-                if self.stopped():raise InterruptedError('Agent discovery stopped')
-                time.sleep(.1)
-            endpoints=dict(list(found.values()))
-        finally:browser.cancel();zc.close()
         reachable=[]
         for host in self.hosts:
             enrolled=config['peers'][host['host']]
@@ -181,10 +155,12 @@ class AgentSessions:
                 host.update(agent_endpoint='http://127.0.0.1:8791',agent_route='webrtc',transport='webrtc',
                             lan_address=enrolled,expected_machine=config['enrolled_machines'][host['host']],discovery='Approved WAN enrollment')
                 reachable.append(host);continue
-            if not any(ipaddress.ip_address(enrolled) in network for network in networks):
-                self.reject(host,'Enrolled agent endpoint is outside the coordinator Ethernet LAN');continue
-            host['discovery']='DNS-SD' if host['host'] in endpoints else 'Enrolled endpoint; DNS-SD announcement absent'
-            host.update(agent_endpoint=endpoints.get(host['host'],'http://'+enrolled+':8790'),lan_address=enrolled)
+            try:
+                endpoint,addresses=resolve_endpoint(host['host'])
+            except OSError as error:
+                self.reject(host,str(error));continue
+            host.update(agent_endpoint=endpoint,resolved_addresses=addresses,
+                        lan_address=addresses[0],discovery='mDNS service hostname')
             reachable.append(host)
         return reachable
 
@@ -209,7 +185,9 @@ class AgentSessions:
                     client=AgentClient(host);value=client.call('status',timeout=30)
                 if host.get('expected_machine') and value.get('machine')!=host['expected_machine']:raise RuntimeError('Approved WAN machine identity differs')
                 if value.get('protocol')!=PROTOCOL:raise RuntimeError('Agent protocol mismatch')
-                if host.get('transport')!='webrtc' and host['lan_address'] not in value.get('addresses',[]):raise RuntimeError('Agent address is not on an attested physical interface')
+                if host.get('transport')!='webrtc':
+                    from launcher_discovery import attest_addresses
+                    attest_addresses(host,value)
                 if value.get('worker_policy',{}).get('accepting_jobs') is False:
                     host['worker_policy']=value['worker_policy']
                     raise RuntimeError(value['worker_policy']['reason'])
@@ -223,7 +201,9 @@ class AgentSessions:
                 if value.get('worker_policy',{}).get('accepting_jobs') is False:
                     host['worker_policy']=value['worker_policy']
                     raise RuntimeError(value['worker_policy']['reason'])
-                if host.get('transport')!='webrtc' and host['lan_address'] not in value['addresses']:raise RuntimeError('Agent address is not on an attested physical interface')
+                if host.get('transport')!='webrtc':
+                    from launcher_discovery import attest_addresses
+                    attest_addresses(host,value)
                 host['session']={'status':'ready','verified':True,'verified_at':time.time(),'transport':PROTOCOL,'machine':value['machine'],'capabilities':value['capabilities']}
                 host['agent_status']=value
                 host['hardware']=value.get('hardware',{})

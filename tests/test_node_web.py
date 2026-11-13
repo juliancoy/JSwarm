@@ -86,6 +86,7 @@ def test_pipeline_assets_are_bundled_into_the_standard_node_revision():
 
 
 def test_native_api_routing_does_not_depend_on_the_retired_nginx_view(tmp_path,monkeypatch):
+    monkeypatch.setattr('launcher_discovery.resolve_endpoint',lambda node:('http://'+node[:-6]+'.swarm.local:8790',['10.42.0.1']))
     aiohttp=pytest.importorskip('aiohttp')
     from aiohttp import web
     from aiohttp.test_utils import TestClient,TestServer
@@ -108,7 +109,7 @@ def test_native_api_routing_does_not_depend_on_the_retired_nginx_view(tmp_path,m
             monkeypatch.setattr(aiohttp,'ClientSession',Session)
             response=await client.get('/api/tasks/pipeline',headers={'Host':'jswarm.localhost'})
             assert await response.json()=={'ok':True}
-            assert calls[-1][1]=='http://10.42.0.1:8790/api/tasks/pipeline'
+            assert calls[-1][1]=='http://compai.swarm.local:8790/api/tasks/pipeline'
             settings['name']='compai.local';path.write_text(json.dumps(settings))
             for route,expected in [('/api/tasks/pipeline',8792),('/api/tasks/genome-datasets',8792),('/api/v1/swarm/genome-results',8091),('/api/resources',8795),('/api/health',8089)]:
                 response=await client.get(route,headers={'Host':'jswarm.localhost'});await response.read()

@@ -4,6 +4,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 from task_events import EventStore
 
 class EventStoreTests(unittest.TestCase):
@@ -87,3 +88,49 @@ class EventStoreTests(unittest.TestCase):
         self.store.append_batch(rows);self.store.append_batch(rows)
         self.assertEqual(self.store.history('r')['total_events'],5)
         self.assertEqual([e['payload']['line'] for e in self.store.history('r')['events']],['1','2','3','4','5'])
+
+    def test_poll_timestamps_refresh_current_state_without_history(self):
+        self.store.observe({'id':'r','updated':1,'children':[{'id':'a','sampled_at':1,'status':'running'}]})
+        fresh={'id':'r','updated':2,'children':[{'id':'a','sampled_at':2,'status':'running'}]}
+        self.store.observe(fresh)
+        self.assertEqual(self.store.history()['total_events'],1)
+        self.assertEqual(self.store.list_runs(),[fresh])
+        fresh['children'][0]['status']='passed'
+        self.store.observe(fresh)
+        event=self.store.history()['events'][-1]
+        self.assertEqual(event['kind'],'state-change')
+        self.assertIn({'path':['children',0,'status'],'value':'passed'},event['payload']['changes'])
+
+    def test_large_state_is_not_duplicated_in_events(self):
+        run={'id':'r','status':'running','children':[{'id':str(i),'detail':'x'*5000} for i in range(500)]}
+        self.store.observe(run)
+        run['status']='passed'
+        self.store.observe(run)
+        events=self.store.history()['events']
+        self.assertLess(sum(len(json.dumps(e['payload'])) for e in events),10000)
+        self.assertEqual(self.store.list_runs(),[run])
+
+    def test_retention_preserves_current_state_cursors_ids_and_guards(self):
+        with patch('task_events.time.time',return_value=1):
+            self.store.observe({'id':'r','status':'running'})
+        with patch('task_events.time.time',return_value=100000):
+            self.store.ingest_lines('peer','r',[(1,{'kind':'log','line':'retained'})])
+        self.assertEqual(self.store.retain_history(now=100001,days=1),1)
+        self.assertEqual(self.store.cursor('peer'),1)
+        self.assertEqual(self.store.list_runs()[0]['status'],'running')
+        self.assertEqual(self.store.history()['events'][0]['id'],2)
+        self.store.append('r','peer','log',{'line':'new'})
+        newest=self.store.history()['events'][-1]
+        budget=len(json.dumps(newest['payload'],separators=(',',':')))
+        self.store.retain_history(max_bytes=budget)
+        self.assertEqual([e['id'] for e in self.store.history()['events']],[3])
+        with self.assertRaises(sqlite3.IntegrityError):
+            with self.store.connect() as db:db.execute('DELETE FROM events')
+        with self.store.connect() as db:
+            self.assertEqual(db.execute('PRAGMA integrity_check').fetchone()[0],'ok')
+
+    def test_zero_budget_removes_history_only(self):
+        self.store.observe({'id':'r','status':'passed'})
+        self.assertEqual(self.store.retain_history(max_bytes=0),1)
+        self.assertEqual(self.store.history()['total_events'],0)
+        self.assertEqual(len(self.store.list_runs()),1)

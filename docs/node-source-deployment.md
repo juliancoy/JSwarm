@@ -64,3 +64,17 @@ separate running process: deploy its orchestration from the same managed Git
 workspace with `genomics_followup_controller.deploy_orchestration`. That procedure
 preserves the scientific executor binding and hands off existing queue claims;
 fetching a checkout alone does not update modules already loaded by a controller.
+
+## mDNS endpoint ownership
+
+The normal node supervisor binds its swarm API to current UP physical Ethernet
+and Wi-Fi IPv4 interfaces. Saved enrollment addresses do not select listeners.
+Its DNS-SD service publishes a dedicated name such as `compai.swarm.local`,
+separate from Avahi's `compai.local` host records, which may include Docker bridges.
+Swarm discovery and node web proxy connections use service hostnames. A legacy
+`hostname.local` lookup is retained while nodes receive a rolling update; no saved
+IP endpoint is used as a discovery fallback. Enrollment still authorizes node
+names, authenticated status must attest a resolved physical address, and existing
+worker admission holds remain effective. Explicit WAN enrollment keeps its
+existing authenticated gateway path. Standard source publication and fleet update
+install this behavior without changing Avahi configuration or rebuilding images.

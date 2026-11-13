@@ -72,12 +72,15 @@ def discover(required_image=None, names=None):
     if required_image and not expected:raise RuntimeError('Approved local requested image unavailable')
     def check(item):
         name,address=item
-        host={'host':name,'local':name==config['name'],'lan_address':address,'agent_endpoint':'http://'+address+':8790'}
+        host={'host':name,'local':name==config['name']}
         client=None
         try:
+            from scripts.launcher_discovery import resolve_endpoint,attest_addresses
+            endpoint,addresses=resolve_endpoint(name)
+            host.update(agent_endpoint=endpoint,resolved_addresses=addresses)
             client=AgentClient(host);status=client.call('status',timeout=15)
             if not eligible(status):raise RuntimeError('Agent is unavailable or declining jobs')
-            if address not in status.get('addresses',[]):raise RuntimeError('Agent address attestation failed')
+            attest_addresses(host,status)
             host['machine']=status['machine'];host['capabilities']=status.get('capabilities',[])
             if 'node-command-v1' not in status.get('capabilities',[]):raise RuntimeError('Launcher command transport unavailable; update required')
             limits=subprocess.check_output(shell_command(host,['docker','info','--format','{{json .MemoryLimit}} {{json .SwapLimit}}']),text=True,stderr=subprocess.DEVNULL,timeout=30).split()

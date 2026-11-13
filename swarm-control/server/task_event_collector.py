@@ -154,9 +154,11 @@ def collect_peers(store):
 
 
 def run():
-    store=EventStore();last_peer=0
+    store=EventStore();last_peer=0;last_retention=0
     while True:
         try:
+            if time.monotonic()-last_retention>300:
+                store.retain_history();last_retention=time.monotonic()
             collect_once(store)
             if time.monotonic()-last_peer>30:
                 collect_peers(store);last_peer=time.monotonic()
