@@ -268,7 +268,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
             batch={'session':'a'*32,'samples':[{'sequence':1,'kind':'cpu','sampled_at':now,
                    'value':{'status':'live','sampled_at':now,'percent':25,'cpus':4}}]}
             try:
-                with patch('aiohttp.ClientSession',side_effect=session_factory):
+                with patch('aiohttp.ClientSession',side_effect=session_factory),patch('launcher_discovery.resolve_endpoint',return_value=('http://127.0.0.1:8790',['127.0.0.1'])):
                     for _ in range(3):
                         reply=await gateway.master_call('metrics.publish',batch,'tcp',timeout=6)
                         self.assertEqual(reply['sequences'],[1])

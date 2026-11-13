@@ -1,5 +1,6 @@
 """Real Docker evidence for worker discovery and host/container singleton fencing."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import threading
@@ -7,7 +8,8 @@ from types import SimpleNamespace
 import uuid
 from scripts.launcher_agent import Agent,launcher_lock
 
-IMAGE='python:3.12-bookworm'
+# These fixtures need only the standard library, not the full buildpack image.
+IMAGE=os.environ.get('SWARM_TEST_IMAGE','python:3.12-slim')
 
 
 def test_worker_survives_launcher_close_and_is_rediscovered(tmp_path,monkeypatch):

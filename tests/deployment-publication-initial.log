@@ -1,0 +1,322 @@
+.........................................ss............................. [ 14%]
+........................................................................ [ 28%]
+......F...........ss.................................................... [ 42%]
+...................................ssssssss............................. [ 57%]
+...................s.................................................... [ 71%]
+........................................................................ [ 85%]
+..........................................FFF......................... [ 99%]
+...                                                                      [100%]
+=================================== FAILURES ===================================
+__ DeliveryTests.test_tcp_reuses_connections_and_reconnects_without_signaling __
+
+self = <test_launcher_telemetry.DeliveryTests testMethod=test_tcp_reuses_connections_and_reconnects_without_signaling>
+
+    async def test_tcp_reuses_connections_and_reconnects_without_signaling(self):
+        import aiohttp
+        from aiohttp import web
+        key=bytes(range(32));transports=[]
+        with tempfile.TemporaryDirectory() as folder:
+            settings={'master':'master','peers':{'master':'127.0.0.1','worker':'127.0.0.1'},'key':key.hex()}
+            receiver=Agent.__new__(Agent);receiver.config=Path(folder)/'master.json'
+            receiver.config.write_text(json.dumps({**settings,'name':'master'}))
+            receiver.lock=threading.RLock();receiver.nonces={};receiver.nonce_lock=threading.Lock();receiver.telemetry=LauncherTelemetry(receiver)
+            sender=SimpleNamespace(config=Path(folder)/'worker.json')
+            sender.config.write_text(json.dumps({**settings,'name':'worker'}))
+            gateway=JobGateway(sender)
+            async def handle(request):
+                transports.append(request.transport)
+                response=web.Response(body=await receiver.process(await request.read()))
+                if len(transports)==2:response.force_close()
+                return response
+            app=web.Application();app.router.add_post('/agent/v1',handle)
+            runner=web.AppRunner(app);await runner.setup()
+            site=web.TCPSite(runner,'127.0.0.1',0);await site.start()
+            port=site._server.sockets[0].getsockname()[1]
+            real_session=aiohttp.ClientSession
+            def session_factory(**kwargs):
+                session=real_session(**kwargs);post=session.post
+                session.post=lambda url,**kw:post(url.replace(':8790/',':'+str(port)+'/'),**kw)
+                return session
+            now=time.time()
+            batch={'session':'a'*32,'samples':[{'sequence':1,'kind':'cpu','sampled_at':now,
+                   'value':{'status':'live','sampled_at':now,'percent':25,'cpus':4}}]}
+            try:
+                with patch('aiohttp.ClientSession',side_effect=session_factory):
+                    for _ in range(3):
+>                       reply=await gateway.master_call('metrics.publish',batch,'tcp',timeout=6)
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts/tests/test_launcher_telemetry.py:273: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+scripts/launcher_peers.py:789: in master_call
+    endpoint=(await asyncio.to_thread(resolve_endpoint,node))[0]
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.12/asyncio/threads.py:25: in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.12/concurrent/futures/thread.py:58: in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../scripts/launcher_discovery.py:20: in resolve_endpoint
+    for hostname in (service_hostname(node), node):
+                     ^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+node = 'master'
+
+    def service_hostname(node):
+        """Keep swarm A records separate from Avahi's host/interface records."""
+        import re
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9-]{0,62}\.local', node):
+>           raise ValueError('Expected an enrolled .local node name')
+E           ValueError: Expected an enrolled .local node name
+
+../scripts/launcher_discovery.py:13: ValueError
+___________ test_worker_survives_launcher_close_and_is_rediscovered ____________
+
+tmp_path = PosixPath('/tmp/pytest-of-julian/pytest-4/test_worker_survives_launcher_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7c71e0e55670>
+
+    def test_worker_survives_launcher_close_and_is_rediscovered(tmp_path,monkeypatch):
+        ident=uuid.uuid4().hex;name='genomics-'+ident
+        monkeypatch.setenv('SWARM_RESOURCE_DIR',str(tmp_path/'resources'))
+        (tmp_path/'resources').mkdir();(tmp_path/'resources/docker-workers').touch()
+        def agent():
+            a=Agent.__new__(Agent);a.root=tmp_path;a.config=tmp_path/'config.json';a.lock=threading.RLock()
+            a.pending_resources={};a.busy=lambda:None;a.telemetry=SimpleNamespace(stopped=threading.Event())
+            a.storage_stop=threading.Event();a.browser_timers={};a.browsers=set();a.jobs={}
+            return a
+>       cid=subprocess.check_output(['docker','run','-d','--rm','--pull=never','--name',name,
+            '--label','org.lifetech.worker=true','--label','org.lifetech.job='+ident,
+            '--label','org.lifetech.group=restart-test','--cpus','1','--memory','64m','--pids-limit','32',
+            '--network','none',IMAGE,'python','-c','import time; time.sleep(120)'],text=True).strip()
+
+tests/test_docker_worker_restart.py:22: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/lib/python3.12/subprocess.py:466: in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+input = None, capture_output = False, timeout = None, check = True
+popenargs = (['docker', 'run', '-d', '--rm', '--pull=never', '--name', ...],)
+kwargs = {'stdout': -1, 'text': True}
+process = <Popen: returncode: 125 args: ['docker', 'run', '-d', '--rm', '--pull=never'...>
+stdout = '', stderr = None, retcode = 125
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['docker', 'run', '-d', '--rm', '--pull=never', '--name', 'genomics-75f8b330319f4f53a93f83c97157673e', '--label', 'org.lifetech.worker=true', '--label', 'org.lifetech.job=75f8b330319f4f53a93f83c97157673e', '--label', 'org.lifetech.group=restart-test', '--cpus', '1', '--memory', '64m', '--pids-limit', '32', '--network', 'none', 'python:3.12-bookworm', 'python', '-c', 'import time; time.sleep(120)']' returned non-zero exit status 125.
+
+/usr/lib/python3.12/subprocess.py:571: CalledProcessError
+----------------------------- Captured stderr call -----------------------------
+docker: Error response from daemon: No such image: python:3.12-bookworm
+
+Run 'docker run --help' for more information
+___________________ test_docker_and_host_share_launcher_lock ___________________
+
+tmp_path = PosixPath('/tmp/pytest-of-julian/pytest-4/test_docker_and_host_share_lau0')
+
+    def test_docker_and_host_share_launcher_lock(tmp_path):
+        path=tmp_path/'agent.lock';held=launcher_lock(path)
+        code="import fcntl; f=open('/config/agent.lock','a+'); fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)"
+        cmd=['docker','run','--rm','--pull=never','--network','none','--mount','type=bind,src='+str(tmp_path)+',dst=/config',IMAGE,'python','-c',code]
+        try:
+            r=subprocess.run(cmd,capture_output=True,text=True,timeout=60)
+>           assert r.returncode!=0 and 'BlockingIOError' in r.stderr
+E           assert (125 != 0 and 'BlockingIOError' in "docker: Error response from daemon: No such image: python:3.12-bookworm\n\nRun 'docker run --help' for more information\n")
+E            +  where 125 = CompletedProcess(args=['docker', 'run', '--rm', '--pull=never', '--network', 'none', '--mount', 'type=bind,src=/tmp/py...er: Error response from daemon: No such image: python:3.12-bookworm\n\nRun 'docker run --help' for more information\n").returncode
+E            +  and   "docker: Error response from daemon: No such image: python:3.12-bookworm\n\nRun 'docker run --help' for more information\n" = CompletedProcess(args=['docker', 'run', '--rm', '--pull=never', '--network', 'none', '--mount', 'type=bind,src=/tmp/py...er: Error response from daemon: No such image: python:3.12-bookworm\n\nRun 'docker run --help' for more information\n").stderr
+
+tests/test_docker_worker_restart.py:43: AssertionError
+______ test_real_supervisor_replaces_agent_and_adopts_same_docker_worker _______
+
+tmp_path = PosixPath('/tmp/pytest-of-julian/pytest-4/test_real_supervisor_replaces_0')
+
+    def test_real_supervisor_replaces_agent_and_adopts_same_docker_worker(tmp_path):
+        """Isolated supervisor process replacement; no live node process is touched."""
+        import hashlib,time
+        from scripts import launcher_agent,launcher_peer_supervisor
+        ident=uuid.uuid4().hex;name='genomics-'+ident
+>       worker=subprocess.check_output(['docker','run','-d','--pull=never','--name',name,'--label','org.lifetech.worker=true',
+            '--label','org.lifetech.job='+ident,'--label','org.lifetech.group=restart-test','--cpus','1','--memory','64m',
+            '--pids-limit','32','--network','none',IMAGE,'python','-c','import time; time.sleep(120)'],text=True).strip()
+
+tests/test_docker_worker_restart.py:53: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/lib/python3.12/subprocess.py:466: in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+input = None, capture_output = False, timeout = None, check = True
+popenargs = (['docker', 'run', '-d', '--pull=never', '--name', 'genomics-1c5e5b5b966b44fbb5c906f319b23970', ...],)
+kwargs = {'stdout': -1, 'text': True}
+process = <Popen: returncode: 125 args: ['docker', 'run', '-d', '--pull=never', '--nam...>
+stdout = '', stderr = None, retcode = 125
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['docker', 'run', '-d', '--pull=never', '--name', 'genomics-1c5e5b5b966b44fbb5c906f319b23970', '--label', 'org.lifetech.worker=true', '--label', 'org.lifetech.job=1c5e5b5b966b44fbb5c906f319b23970', '--label', 'org.lifetech.group=restart-test', '--cpus', '1', '--memory', '64m', '--pids-limit', '32', '--network', 'none', 'python:3.12-bookworm', 'python', '-c', 'import time; time.sleep(120)']' returned non-zero exit status 125.
+
+/usr/lib/python3.12/subprocess.py:571: CalledProcessError
+----------------------------- Captured stderr call -----------------------------
+docker: Error response from daemon: No such image: python:3.12-bookworm
+
+Run 'docker run --help' for more information
+=========================== short test summary info ============================
+FAILED scripts/tests/test_launcher_telemetry.py::DeliveryTests::test_tcp_reuses_connections_and_reconnects_without_signaling
+FAILED tests/test_docker_worker_restart.py::test_worker_survives_launcher_close_and_is_rediscovered
+FAILED tests/test_docker_worker_restart.py::test_docker_and_host_share_launcher_lock
+FAILED tests/test_docker_worker_restart.py::test_real_supervisor_replaces_agent_and_adopts_same_docker_worker
+4 failed, 488 passed, 13 skipped, 2 subtests passed in 133.57s (0:02:13)
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/tmp/jswarm-source-release-2r9yf6sk/Organization/JSwarm/scripts/deploy_swarm_inputs.py", line 188, in <module>
+    if __name__=='__main__':main()
+                            ^^^^^^
+  File "/tmp/jswarm-source-release-2r9yf6sk/Organization/JSwarm/scripts/deploy_swarm_inputs.py", line 167, in main
+    subprocess.run([sys.executable,'-m','pytest','-q',*suites],cwd=project,env=env,check=True)
+  File "/usr/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['/home/julian/global/bin/python3', '-m', 'pytest', '-q', 'tests/test_swarm_mdns_discovery.py', 'scripts/tests/test_launcher_routing.py', 'tests/test_launcher_routing_cleanup.py', 'tests/test_node_web.py', 'tests/test_worker_storage.py', 'tests/test_cache_lifetime.py', 'tests/test_cache_pressure_reclamation.py', 'tests/test_execution_accounting.py', 'tests/test_launcher_streams.py', 'tests/test_swarm_stream_work.py', 'scripts/tests/test_launcher_telemetry.py', 'tests/test_swarm_paged_cache.py', 'tests/test_swarm_shared_cache.py', 'tests/test_agent_cpu_overhead.py', 'tests/test_deployment_lock.py', 'tests/test_node_releases.py', 'tests/test_node_git_source.py', 'tests/test_swarm_node.py', 'tests/test_worker_journal.py', 'tests/test_ram_cache_inventory.py', 'tests/test_node_cache_manager.py', 'tests/test_ram_cache_cleanup_api.py', 'tests/test_swarm_cache_cleanup.py', 'tests/test_swarm_cache_migrate.py', 'tests/test_swarm_pressure_guard.py', 'tests/test_launcher_commands.py', 'tests/test_launcher_peer_supervisor.py', 'tests/test_resource_renewal.py', 'tests/test_swarm_runtime.py', 'tests/test_gpu_inventory.py', 'tests/test_node_execution.py', 'tests/test_swarm_gpu_runtime.py', 'tests/test_rolling_deployment.py', 'tests/test_docker_worker_restart.py', 'swarm-control/server/tests/test_agent_updates.py', 'swarm-control/server/tests/test_agent_sessions.py', 'swarm-control/server/tests/test_fleet_backups.py', 'tests/test_worker_maintenance.py']' returned non-zero exit status 1.
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/julian/Documents/Organization/scripts/deploy_swarm_inputs.py", line 188, in <module>
+    if __name__=='__main__':main()
+                            ^^^^^^
+  File "/home/julian/Documents/Organization/scripts/deploy_swarm_inputs.py", line 156, in main
+    subprocess.run([sys.executable,'-m','scripts.deploy_swarm_inputs','--publish','--frozen-source','--expected-publication',expected],cwd=project,env=env,check=True)
+  File "/usr/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['/home/julian/global/bin/python3', '-m', 'scripts.deploy_swarm_inputs', '--publish', '--frozen-source', '--expected-publication', '00000000000000000024-7c2e3ba7ed85ee5b647ebf2ba541dfc3c9e1f8179f2bb1280d1290a6de70b80c.json']' returned non-zero exit status 1.
