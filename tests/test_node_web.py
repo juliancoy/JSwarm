@@ -23,6 +23,7 @@ def test_native_aliases_reuse_existing_node_endpoints():
     assert peers.pipeline_target(config,'compai.jswarm.localhost')=='compai.local'
     assert peers.pipeline_target(config,'minipc.jswarm.localhost')=='julian-minipc.local'
     assert peers.pipeline_target(config,'compai.local:8790')=='compai.local'
+    assert peers.pipeline_target(config,'compai-swarm.local:8790')=='compai.local'
     for host in ('evil.test','compai.jswarm.localhost.evil','user@compai.jswarm.localhost','compai.local:8797'):
         with pytest.raises(ValueError):peers.pipeline_target(config,host)
 
@@ -60,6 +61,8 @@ def test_native_http_routes_serve_pipeline_and_enforce_origin(tmp_path,monkeypat
             assert body['node']=='codecollective.local'
             assert body['nodes'][1]['direct_url']=='http://10.42.0.1/pipeline.html'
             assert 'key' not in body
+            response=await client.get('/pipeline.html',headers={'Host':'codecollective-swarm.local:8790'})
+            assert response.status==200
             response=await client.get('/pipeline.html',headers={'Host':'evil.test'})
             assert response.status==421
             response=await client.post('/api/tasks/machine/control',headers={'Host':'jswarm.localhost','Origin':'http://evil.test'})

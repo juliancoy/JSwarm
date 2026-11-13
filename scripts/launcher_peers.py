@@ -51,6 +51,7 @@ def telemetry_tcp_socket(address_info):
 
 def pipeline_configuration(settings):
     import ipaddress,re
+    from launcher_discovery import service_hostname
     peers={name:(value['address'] if isinstance(value,dict) else value) for name,value in settings['peers'].items()}
     own=settings['name'];master=settings.get('master') or 'compai.local'
     if own not in peers or master not in peers:raise ValueError('Local node and coordinator must be enrolled')
@@ -61,6 +62,7 @@ def pipeline_configuration(settings):
         ip=ipaddress.ip_address(address)
         if ip.version!=4 or not ip.is_private or ip.is_loopback or ip.is_unspecified:raise ValueError('Expected an enrolled LAN IPv4 address')
         aliases[short+'.jswarm.localhost']=name
+        aliases[service_hostname(name)]=name
     # Friendly names are optional; the full enrolled name always remains valid.
     for name in peers:
         short=name.removesuffix('.local').removeprefix('julian-')
