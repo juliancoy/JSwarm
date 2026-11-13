@@ -14,6 +14,25 @@ def release_source():
     return source
 
 
+def test_published_components_import_without_developer_workspace(tmp_path):
+    import os
+    import subprocess
+    import sys
+    from deployment_components import snapshot
+    components = snapshot(Path(__file__).parents[1])
+    for name, component in components.items():
+        target = tmp_path/name;target.mkdir()
+        for relative, source in component['files'].items():
+            path = target/relative;path.parent.mkdir(parents=True, exist_ok=True);path.write_text(source)
+        module = 'swarm_paged_cache' if name == 'public-pager' else 'deploy_swarm_filesystem'
+        code = ("import sys;sys.path[:0]=[sys.argv[1],sys.argv[1]+'/swarm-control/server'];"
+                "from scripts import "+module+" as component;"
+                "assert component.__file__.startswith(sys.argv[1]+'/');"
+                "from scripts.launcher_discovery import resolve_endpoint")
+        subprocess.run([sys.executable, '-I', '-c', code, str(target)], cwd=target,
+                       env={**os.environ, 'HOME': str(tmp_path)}, check=True, capture_output=True, text=True)
+
+
 def test_publication_is_immutable_and_uses_existing_agent_revision(tmp_path):
     source=release_source()
     path=source.publish(tmp_path)
