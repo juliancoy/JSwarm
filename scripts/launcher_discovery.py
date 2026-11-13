@@ -11,7 +11,11 @@ def service_hostname(node):
     import re
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9-]{0,62}\.local', node):
         raise ValueError('Expected an enrolled .local node name')
-    return node[:-6] + '.swarm.local'
+    label=node[:-6] + '-swarm'
+    if len(label)>63:
+        import hashlib
+        label=node[:-6][:48]+'-'+hashlib.sha256(node.encode()).hexdigest()[:8]+'-swarm'
+    return label + '.local'
 
 
 def resolve_endpoint(node):

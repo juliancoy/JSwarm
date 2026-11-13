@@ -5,6 +5,14 @@ from scripts import swarm_runtime as runtime
 from scripts import launcher_discovery as discovery
 
 
+def test_service_hostname_is_a_single_mdns_label_even_for_long_node_names():
+    assert discovery.service_hostname('compai.local')=='compai-swarm.local'
+    node='a'*63+'.local'
+    hostname=discovery.service_hostname(node)
+    assert hostname.count('.')==1 and len(hostname.split('.')[0])<=63
+    assert hostname==discovery.service_hostname(node)
+
+
 def configure(tmp_path, monkeypatch, *, resolved='10.42.0.222', attested='10.42.0.222', accepting=True):
     config = tmp_path / 'peers.json'
     config.write_text(json.dumps({'name': 'controller.local', 'peers': {'worker.local': '10.42.0.137'}}))
@@ -25,7 +33,7 @@ def test_mdns_endpoint_survives_changed_enrolled_ip(tmp_path, monkeypatch):
     factory = configure(tmp_path, monkeypatch)
     host, = runtime.discover()
     assert host['eligible']
-    assert factory.call_args.args[0]['agent_endpoint'] == 'http://worker.swarm.local:8790'
+    assert factory.call_args.args[0]['agent_endpoint'] == 'http://worker-swarm.local:8790'
     assert host['lan_address'] == '10.42.0.222'
 
 
@@ -47,13 +55,13 @@ def test_legacy_name_is_only_a_dns_rollout_fallback(monkeypatch):
     calls=[]
     def resolve(name,*args,**kwargs):
         calls.append(name)
-        if name.endswith('.swarm.local'):raise discovery.socket.gaierror('not published yet')
+        if name.endswith('-swarm.local'):raise discovery.socket.gaierror('not published yet')
         return [(2,1,6,'',('10.42.0.71',8790))]
     monkeypatch.setattr(discovery.socket,'getaddrinfo',resolve)
     endpoint,addresses=discovery.resolve_endpoint('worker.local')
     assert endpoint=='http://worker.local:8790'
     assert addresses==['10.42.0.71']
-    assert calls==['worker.swarm.local','worker.local']
+    assert calls==['worker-swarm.local','worker.local']
 
 
 def test_dns_sd_accepts_changed_ip_but_rejects_unrelated_target():
@@ -64,10 +72,10 @@ def test_dns_sd_accepts_changed_ip_but_rejects_unrelated_target():
     instance.name='controller.local';instance.peers={'worker.local':'10.42.0.137'}
     instance.lock=threading.Lock();instance.services={}
     info=SimpleNamespace(properties={b'node':b'worker.local',b'protocol':b'lifetech-launcher.v1'},port=8790,
-                         server='worker.swarm.local.',parsed_addresses=lambda _:['10.42.0.222'])
+                         server='worker-swarm.local.',parsed_addresses=lambda _:['10.42.0.222'])
     zc=Mock();zc.get_service_info.return_value=info
     instance.update_service(zc,discovery.SERVICE,'service')
-    assert instance.endpoint('worker.local')==('worker.swarm.local',8790)
+    assert instance.endpoint('worker.local')==('worker-swarm.local',8790)
     info.server='attacker.local.'
     instance.update_service(zc,discovery.SERVICE,'service')
     assert instance.endpoint('worker.local') is None

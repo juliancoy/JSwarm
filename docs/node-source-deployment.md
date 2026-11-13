@@ -69,7 +69,7 @@ fetching a checkout alone does not update modules already loaded by a controller
 
 The normal node supervisor binds its swarm API to current UP physical Ethernet
 and Wi-Fi IPv4 interfaces. Saved enrollment addresses do not select listeners.
-Its DNS-SD service publishes a dedicated name such as `compai.swarm.local`,
+Its DNS-SD service publishes a dedicated name such as `compai-swarm.local`,
 separate from Avahi's `compai.local` host records, which may include Docker bridges.
 Swarm discovery and node web proxy connections use service hostnames. A legacy
 `hostname.local` lookup is retained while nodes receive a rolling update; no saved

@@ -6,7 +6,7 @@ from scripts import deploy_swarm_inputs as deploy
 
 
 def setup_deployment(monkeypatch,tmp_path):
-    monkeypatch.setattr(deploy,'resolve_endpoint',lambda node:('http://'+node+'.swarm.local:8790',['10.42.0.1']))
+    monkeypatch.setattr(deploy,'resolve_endpoint',lambda node:('http://'+node+'-swarm.local:8790',['10.42.0.1']))
     config=tmp_path/'peers.json'
     config.write_text(json.dumps({'name':'first','peers':{'first':'10.42.0.1','second':'10.42.0.2'}}))
     monkeypatch.setattr(deploy,'CONFIG',config)
