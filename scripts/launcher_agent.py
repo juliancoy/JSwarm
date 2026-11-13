@@ -631,7 +631,7 @@ class ResourceLease:
 
 VERSION = 'lifetech-agent.v1'
 LIMIT = 1024 * 1024
-UNPRIVILEGED_OPS={'status','metrics','metrics.publish','metrics.fleet','worker.policy','image.inspect','registry.read','tests.request','tests.status','stream.capabilities'}
+UNPRIVILEGED_OPS={'status','metrics','metrics.publish','metrics.fleet','worker.policy','image.inspect','registry.read','tests.request','tests.status','stream.capabilities','filesystem.rpc'}
 
 
 def gpu_worker_commitments(released=()):
@@ -1316,6 +1316,24 @@ def load_cache_runtime():
     if name not in sys.modules:
         module = types.ModuleType(name)
         exec(compile(source, name, 'exec'), module.__dict__)
+        sys.modules[name] = module
+    return sys.modules[name]
+
+
+FILESYSTEM_RUNTIME_SOURCE = ''
+
+
+def load_filesystem_runtime():
+    import types
+    source = FILESYSTEM_RUNTIME_SOURCE
+    if not source:
+        folder = Path(__file__).resolve().parent
+        source = (folder/'swarm_filesystem.py').read_text() + '\nCACHE_SOURCE = ' + repr((folder/'run_input_cache.py').read_text()) + '\n' + "\nif __name__ == '__main__':\n    import sys\n    serve(sys.argv[2])\n"
+    name = 'filesystem_' + hashlib.sha256(source.encode()).hexdigest()
+    if name not in sys.modules:
+        module = types.ModuleType(name)
+        exec(compile(source, name, 'exec'), module.__dict__)
+        module.RUNTIME_SOURCE = source
         sys.modules[name] = module
     return sys.modules[name]
 
@@ -2281,6 +2299,15 @@ class Agent:
         self.validate_worker_storage(paths)
 
     def dispatch(self, op, args):
+        if op == 'filesystem.rpc':
+            # The filesystem capsule independently verifies a namespace-scoped
+            # MAC. Possession of the mesh transport key alone grants no access.
+            if not hasattr(self, 'filesystem'):
+                with self.lock:
+                    if not hasattr(self, 'filesystem'):
+                        runtime = load_filesystem_runtime()
+                        self.filesystem = runtime.Proxy(self, runtime.RUNTIME_SOURCE)
+            return self.filesystem.call(args)
         if op=='resource.events':
             if (set(args)!={'after','timeout'} or type(args['after']) is not int or args['after']<0
                     or type(args['timeout']) not in (float,int) or not 0<=args['timeout']<=25):raise ValueError('Invalid resource event cursor')
@@ -2492,7 +2519,7 @@ class Agent:
                     'machine':hashlib.sha256(machine.read_bytes()).hexdigest(),'hostname':socket.gethostname(),
                     'addresses':addresses,'platform':info.get('OSType','unknown')+'/'+info.get('Architecture','unknown'),
                     'routing':getattr(self,'routing_status',{'status':'pending'}),
-                    'worker_policy':policy,'capabilities':['controller-signature','github-jobs','p2p-browser','cancel','events','layer-pull','registry-read','peer-layer-cache','mptcp-transport','file-queue','snapshot-stage','event-wait','shared-resources','renewable-resources','docker-workers','durable-docker-workers-v1','execution-accounting-v1','persistent-command-pipes-v1','generic-workers','encrypted-backup','gpu-kernel','telemetry-push','performance-v1','builtin-monitor','stream-work-v1','independent-job-sinks-v1','node-command-v1','gpu-resource-inventory-v1','resource-events-v1','node-maintenance-recipes-v1','verified-ram-caches-v1','cache-cleanup-v1','node-cache-v1','cache-metrics-v1','worker-storage-v1','node-web-v1'],
+                    'worker_policy':policy,'capabilities':['controller-signature','github-jobs','p2p-browser','cancel','events','layer-pull','registry-read','peer-layer-cache','mptcp-transport','file-queue','snapshot-stage','event-wait','shared-resources','renewable-resources','docker-workers','durable-docker-workers-v1','execution-accounting-v1','persistent-command-pipes-v1','generic-workers','encrypted-backup','gpu-kernel','telemetry-push','performance-v1','builtin-monitor','stream-work-v1','independent-job-sinks-v1','node-command-v1','gpu-resource-inventory-v1','resource-events-v1','node-maintenance-recipes-v1','verified-ram-caches-v1','cache-cleanup-v1','node-cache-v1','cache-metrics-v1','worker-storage-v1','node-web-v1','private-filesystem-v1'],
                     'cache_summary':getattr(getattr(self,'cache_manager',None),'summary',{}),'enrolled_peers':sorted(config['peers']),'storage':self.storage_status,'storage_policy':self.worker_storage_policy(),
                     'hardware':self.hardware(info),
                     'preparations':[key for key,j in self.jobs.items() if j['status']=='running' and j.get('prepare_only')],

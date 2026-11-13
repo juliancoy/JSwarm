@@ -31,6 +31,9 @@ def main():
             if runtime.is_file():
                 sources['launcher_agent.py']+=('\n'+constant+' = '+repr(runtime.read_text())+'\n').encode()
         monitor=folder.parent/'ramtop/ramtop'
+        if (folder/'swarm_filesystem.py').is_file():
+            filesystem = (folder/'swarm_filesystem.py').read_text() + '\nCACHE_SOURCE = ' + repr((folder/'run_input_cache.py').read_text()) + '\n' + "\nif __name__ == '__main__':\n    import sys\n    serve(sys.argv[2])\n"
+            sources['launcher_agent.py'] += ('\nFILESYSTEM_RUNTIME_SOURCE = '+repr(filesystem)+'\n').encode()
         if (monitor/'bundle.py').is_file():
             import runpy
             bundle=runpy.run_path(str(monitor/'bundle.py'))['encoded_runtime'](monitor)

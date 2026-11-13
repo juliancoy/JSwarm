@@ -221,6 +221,8 @@ class LauncherUpdates:
         self.files['launcher_agent.py'] += '\n# Durable streaming runtime is part of this same verified launcher release.\nSTREAM_RUNTIME_SOURCE = '+repr((folder/'launcher_streams.py').read_text())+'\n'
         self.files['launcher_agent.py'] += '\n# Durable streaming runtime is part of this same verified launcher release.\nCACHE_RUNTIME_SOURCE = '+repr((folder/'launcher_cache.py').read_text())+'\n'
         self.files['launcher_agent.py'] += '\n# Signed command runtime shares this same verified release.\nCOMMAND_RUNTIME_SOURCE = '+repr((folder/'launcher_commands.py').read_text())+'\n'
+        filesystem = (folder/'swarm_filesystem.py').read_text() + '\nCACHE_SOURCE = ' + repr((folder/'run_input_cache.py').read_text()) + '\n' + "\nif __name__ == '__main__':\n    import sys\n    serve(sys.argv[2])\n"
+        self.files['launcher_agent.py'] += '\n# Writable filesystem and bounded RAM cache share the node release.\nFILESYSTEM_RUNTIME_SOURCE = '+repr(filesystem)+'\n'
         self.files['launcher_agent.py'] += '\n# The supervisor version is part of the published release identity.\nSUPERVISOR_SHA256 = '+repr(hashlib.sha256(self.supervisor_source.encode()).hexdigest())+'\n'
         self.capabilities=set()
         for node in ast.walk(ast.parse(self.files['launcher_agent.py'])):
@@ -265,7 +267,7 @@ class LauncherUpdates:
         instance.git_source=value.get('git_source')
         if instance.git_source is not None:require_git_source(instance.git_source)
         instance.components=value.get('components',{})
-        if set(instance.components)-{'public-pager'}:raise ValueError('Unknown deployment component')
+        if set(instance.components)-{'public-pager','private-filesystem'}:raise ValueError('Unknown deployment component')
         for component in instance.components.values():validate(component)
         content={key:value.get(key,{}) if key=='components' else value[key] for key in ('schema','revision','files','supervisor_source','supervisor_sha256','components')}
         if 'git_source' in value:content['git_source']=value['git_source']

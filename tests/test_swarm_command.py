@@ -33,6 +33,20 @@ def test_identity_mismatch_retains_recovery_record(tmp_path):
     assert path.exists() and client.call.call_count==1
 
 
+@pytest.mark.parametrize('same_machine',[True,False])
+def test_recovery_uses_current_mdns_endpoint_only_for_matching_machine(tmp_path,same_machine):
+    old={'host':'worker.local','machine':'expected','agent_endpoint':'http://10.42.0.137:8790'}
+    row=command.caller_record(old,'e'*32,[]);row['start']='gone'
+    command.save_caller(tmp_path/(row['id']+'.json'),row)
+    current={**old,'machine':'expected' if same_machine else 'replacement',
+             'agent_endpoint':'http://worker-swarm.local:8790','agent_route':'auto'}
+    client=Mock();client.call.side_effect=[{'machine':'expected'},{'closed':True}]
+    factory=Mock(return_value=client)
+    assert command.reap_orphan_clients(tmp_path,factory,current_host=current)==int(same_machine)
+    if same_machine:factory.assert_called_once_with(current)
+    else:factory.assert_not_called()
+
+
 def test_foreign_live_namespace_is_preserved():
     row=command.caller_record({'host':'w','machine':'m','agent_endpoint':'http://w'},'d'*32,[])
     row.update(namespace='foreign',container='a'*12)

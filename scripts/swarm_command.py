@@ -56,7 +56,7 @@ def caller_gone(record):
     return 'no such object' in result.stderr.lower() or 'no such container' in result.stderr.lower()
 
 
-def reap_orphan_clients(root=None,factory=None,*,host=None):
+def reap_orphan_clients(root=None,factory=None,*,host=None,current_host=None):
     factory=factory or AgentClient
     root=Path(root) if root is not None else journal_root()
     if not root.exists():return 0
@@ -70,6 +70,10 @@ def reap_orphan_clients(root=None,factory=None,*,host=None):
             if not re.fullmatch('[0-9a-f]{32}',record['id']) or not caller_gone(record):continue
             recovered={'host':record['host'],'machine':record['machine'],'agent_endpoint':record['agent_endpoint']}
             if record.get('agent_route') in ('auto','webrtc'):recovered['agent_route']=record['agent_route']
+            if current_host is not None:
+                if current_host['host']!=record['host'] or current_host['machine']!=record['machine']:continue
+                recovered['agent_endpoint']=current_host['agent_endpoint']
+                if current_host.get('agent_route') in ('auto','webrtc'):recovered['agent_route']=current_host['agent_route']
             client=factory(recovered)
             if client.call('status',timeout=5).get('machine')!=record['machine']:continue
             if client.call('command.close',{'id':record['id']},timeout=10).get('closed') is True:
@@ -102,7 +106,7 @@ def input_reader(fd, inputs, stopped):
 def run(host,argv):
     # An offline peer must not delay commands on a healthy worker. Its
     # retained journals are reconciled when that peer is contacted again.
-    reap_orphan_clients(host=host['host'])
+    reap_orphan_clients(host=host['host'],current_host=host)
     client=AgentClient(host);ident=uuid.uuid4().hex;started=False;start_requested=False
     journal=journal_root()/(ident+'.json')
     input_stopped=threading.Event();reader=None

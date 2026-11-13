@@ -13,7 +13,7 @@ import secrets
 import time
 
 PROTOCOL='lifetech-agent.v1'
-UNPRIVILEGED_OPS={'status','metrics','metrics.publish','metrics.fleet','worker.policy','image.inspect','registry.read','tests.request','tests.status','stream.capabilities'}
+UNPRIVILEGED_OPS={'status','metrics','metrics.publish','metrics.fleet','worker.policy','image.inspect','registry.read','tests.request','tests.status','stream.capabilities','filesystem.rpc'}
 SIGNING_KEY=Path.home()/'.config/map-master/controller-signing.key'
 CONFIG=Path(os.getenv('LIFETECH_PEER_CONFIG',str(Path.home()/'.config/lifetech-launcher/peers.json')))
 

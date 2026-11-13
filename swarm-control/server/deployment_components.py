@@ -14,6 +14,10 @@ FILES=('scripts/__init__.py','scripts/swarm_paged_cache.py','scripts/swarm_runti
        'swarm-control/server/agent_client.py','swarm-control/server/agent_updates.py',
        'swarm-control/server/deployment_components.py')
 
+FILESYSTEM_FILES=tuple(dict.fromkeys((*FILES, 'scripts/deploy_swarm_filesystem.py',
+    'scripts/swarm_filesystem.py','scripts/swarm_fs_mount.py','scripts/run_input_cache.py',
+    'scripts/launcher_discovery.py','scripts/swarm_host_service.py')))
+
 
 def digest(files):return hashlib.sha256(json.dumps(files,sort_keys=True,separators=(',',':')).encode()).hexdigest()
 
@@ -21,11 +25,16 @@ def digest(files):return hashlib.sha256(json.dumps(files,sort_keys=True,separato
 def snapshot(root):
     files={name:(Path(root)/name).read_text() for name in FILES}
     value={'schema':'jswarm-pager-component.v1','sha256':digest(files),'files':files}
-    validate(value);return {'public-pager':value}
+    validate(value)
+    filesystem={'schema':'jswarm-filesystem-component.v1',
+                'files':{name:(Path(root)/name).read_text() for name in FILESYSTEM_FILES}}
+    filesystem['sha256']=digest(filesystem['files']);validate(filesystem)
+    return {'public-pager':value,'private-filesystem':filesystem}
 
 
 def validate(value):
-    if value.get('schema')!='jswarm-pager-component.v1' or set(value['files'])!=set(FILES):raise ValueError('Incomplete pager component')
+    expected={'jswarm-pager-component.v1':FILES,'jswarm-filesystem-component.v1':FILESYSTEM_FILES}.get(value.get('schema'))
+    if expected is None or set(value['files'])!=set(expected):raise ValueError('Incomplete deployment component')
     if digest(value['files'])!=value.get('sha256'):raise ValueError('Pager component checksum mismatch')
     for name,source in value['files'].items():compile(source,name,'exec')
     return value
@@ -44,7 +53,8 @@ def deploy(value,names):
             folder.rename(target)
     for name,source in value['files'].items():
         if (target/name).read_text()!=source:raise ValueError('Installed pager component changed')
-    code="import json,sys;from scripts.swarm_paged_cache import PLAN,deploy_fleet;print(json.dumps(deploy_fleet(names=json.loads(sys.argv[1])) if PLAN.exists() else {}))"
+    module='swarm_paged_cache' if value['schema']=='jswarm-pager-component.v1' else 'deploy_swarm_filesystem'
+    code="import json,sys;from scripts."+module+" import PLAN,deploy_fleet;print(json.dumps(deploy_fleet(names=json.loads(sys.argv[1])) if PLAN.exists() else {}))"
     env={**os.environ,'PYTHONPATH':str(target)+os.pathsep+str(target/'swarm-control/server')}
     result=subprocess.run([sys.executable,'-c',code,json.dumps(names)],cwd=target,env=env,capture_output=True,text=True,timeout=1200)
     if result.returncode:raise RuntimeError('Published pager component failed: '+result.stderr[-600:])
