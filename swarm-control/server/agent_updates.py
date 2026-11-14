@@ -239,6 +239,8 @@ class LauncherUpdates:
         """Load a deployable Git-backed publication."""
         instance=cls._read_publication(path,stopped,progress)
         require_git_source(instance.git_source)
+        from deployment_components import validate
+        for component in instance.components.values():validate(component)
         return instance
 
     @classmethod
@@ -268,7 +270,7 @@ class LauncherUpdates:
         if instance.git_source is not None:require_git_source(instance.git_source)
         instance.components=value.get('components',{})
         if set(instance.components)-{'public-pager','private-filesystem'}:raise ValueError('Unknown deployment component')
-        for component in instance.components.values():validate(component)
+        for component in instance.components.values():validate(component,historical=True)
         content={key:value.get(key,{}) if key=='components' else value[key] for key in ('schema','revision','files','supervisor_source','supervisor_sha256','components')}
         if 'git_source' in value:content['git_source']=value['git_source']
         content_id=hashlib.sha256(json.dumps(content,sort_keys=True).encode()).hexdigest()

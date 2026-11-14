@@ -192,3 +192,23 @@ def test_asset_bundle_identity_is_independent_of_python_gzip_os_header(monkeypat
     linux=build(3);portable=build(255)
     assert linux.files==portable.files
     assert linux.revision==portable.revision
+
+
+def test_historical_pager_layout_can_be_replaced_but_not_deployed(tmp_path):
+    from deployment_components import digest, validate
+    source=release_source();path=source.publish(tmp_path)
+    value=json.loads(path.read_text())
+    component=value['components']['public-pager']
+    del component['files']['scripts/launcher_discovery.py']
+    component['sha256']=digest(component['files'])
+    content={key:value[key] for key in ('schema','revision','files','supervisor_source','supervisor_sha256','components','git_source')}
+    identity=hashlib.sha256(json.dumps(content,sort_keys=True).encode()).hexdigest()
+    value['artifact_versions']={identity:1};path.write_text(json.dumps(value))
+    with pytest.raises(ValueError,match='Incomplete deployment component'):
+        LauncherUpdates.published(path,lambda:False,Mock())
+    updated=source.publish(tmp_path)
+    assert updated!=path and source.generation==2
+    assert LauncherUpdates.published(updated,lambda:False,Mock()).components==source.components
+    component['files']['unexpected.py']=''
+    component['sha256']=digest(component['files'])
+    with pytest.raises(ValueError,match='Incomplete deployment component'):validate(component,historical=True)

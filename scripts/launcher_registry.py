@@ -159,15 +159,21 @@ def reconcile_lan_routing(peers):
             'scheduler':'kernel','connections':subprocess.check_output(['ss','-Mani'],text=True,timeout=5)[-12000:]}
 
 
-def reconcile_node_web_ports(address):
+def reconcile_node_web_ports(address, addresses=None):
     """Own only these NAT tables; HTTP stays in the unprivileged main node."""
     import hashlib,ipaddress,json,subprocess
     address=str(ipaddress.IPv4Address(address))
     if not ipaddress.ip_address(address).is_private or ipaddress.ip_address(address).is_loopback:
         raise ValueError('Expected an enrolled LAN address')
+    addresses=sorted(set(addresses if addresses is not None else [address]))
+    for value in addresses:
+        ip=ipaddress.IPv4Address(value)
+        if not ip.is_private or ip.is_loopback or ip.is_unspecified:
+            raise ValueError('Expected physical LAN addresses')
+    forwards=' '.join(f'ip daddr {value} tcp dport 80 dnat to {value}:8790;' for value in addresses)
     definitions={
-        'ip':f'chain prerouting {{ type nat hook prerouting priority -100; policy accept; ip daddr {address} tcp dport 80 dnat to {address}:8790; }}\n'
-             f'chain output {{ type nat hook output priority -100; policy accept; ip daddr 127.0.0.1 tcp dport 80 redirect to :8791; ip daddr {address} tcp dport 80 dnat to {address}:8790; }}',
+        'ip':f'chain prerouting {{ type nat hook prerouting priority -100; policy accept; {forwards} }}\n'
+             f'chain output {{ type nat hook output priority -100; policy accept; ip daddr 127.0.0.1 tcp dport 80 redirect to :8791; {forwards} }}',
         'ip6':'chain output { type nat hook output priority -100; policy accept; ip6 daddr ::1 tcp dport 80 redirect to :8791; }'}
     marker='jswarm-node-ui:'+hashlib.sha256(json.dumps(definitions,sort_keys=True).encode()).hexdigest()
     def nft(*args,input=None):
@@ -206,7 +212,8 @@ def _configure_launcher_routing(peers,node_name=None):
     if node_name:
         address=peers[node_name]
         if isinstance(address,dict):address=address['address']
-        source+=inspect.getsource(reconcile_node_web_ports)+'\nreconcile_node_web_ports('+repr(address)+')\n'
+        source+=inspect.getsource(listener_addresses)+'\n'+inspect.getsource(reconcile_node_web_ports)
+        source+='\nimport subprocess\nreconcile_node_web_ports('+repr(address)+', listener_addresses(json.loads(subprocess.check_output(["ip","-j","-4","addr"],text=True))))\n'
     source+='print(json.dumps(reconcile_lan_routing('+repr(dict(peers))+')))\n'
     client=docker.from_env(timeout=20)
     container=None
@@ -216,6 +223,19 @@ def _configure_launcher_routing(peers,node_name=None):
         # The launcher image is already provisioned locally. No pull or host
         # socket mount is needed by this network-only helper. Host nft and its
         # libraries are mounted read-only when maintaining the public port.
+        if any('rootless' in option for option in client.info().get('SecurityOptions',[])):
+            # Host user services may use rootless Docker for jobs while having
+            # an explicitly accessible host engine for network maintenance.
+            host_socket='/var/run/docker.sock'
+            if not Path('/.dockerenv').exists() and os.access(host_socket,os.R_OK|os.W_OK):
+                host_client=docker.DockerClient(base_url='unix://'+host_socket,timeout=20)
+                try:
+                    if any('rootless' in option for option in host_client.info().get('SecurityOptions',[])):
+                        host_client.close()
+                    else:
+                        client.close();client=host_client
+                except Exception:
+                    host_client.close();raise
         if any('rootless' in option for option in client.info().get('SecurityOptions',[])):
             return {'status':'unavailable','error':'Rootless Docker cannot configure host LAN routing; host network configuration is required'}
         if _routing_pending:

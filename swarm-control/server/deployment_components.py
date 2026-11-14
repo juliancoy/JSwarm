@@ -32,9 +32,12 @@ def snapshot(root):
     return {'public-pager':value,'private-filesystem':filesystem}
 
 
-def validate(value):
+def validate(value, *, historical=False):
     expected={'jswarm-pager-component.v1':FILES,'jswarm-filesystem-component.v1':FILESYSTEM_FILES}.get(value.get('schema'))
-    if expected is None or set(value['files'])!=set(expected):raise ValueError('Incomplete deployment component')
+    accepted=[set(expected)] if expected is not None else []
+    if historical and value.get('schema')=='jswarm-pager-component.v1':
+        accepted.append(set(FILES)-{'scripts/launcher_discovery.py'})
+    if set(value['files']) not in accepted:raise ValueError('Incomplete deployment component')
     if digest(value['files'])!=value.get('sha256'):raise ValueError('Pager component checksum mismatch')
     for name,source in value['files'].items():compile(source,name,'exec')
     return value
