@@ -181,7 +181,12 @@ if p['node']==plan['source']:
  else:raise RuntimeError('Public source port not ready')
  paths={n:r['path'] for n,r in plan['files'].items()}
 else:
- state=root/'mount';state.mkdir(exist_ok=True,mode=0o755);state.chmod(0o755);(state/'reference').mkdir(exist_ok=True,mode=0o755)
+ state=root/'mount';state.mkdir(exist_ok=True,mode=0o755);state.chmod(0o755)
+ # An already mounted reference is not a directory to re-create or stat here.
+ # Path.mkdir(exist_ok=True) stats the NFS root after EEXIST, which can observe
+ # a stale namespace during recovery. The helper and page probe verify it below.
+ try:os.mkdir(state/'reference',0o755)
+ except FileExistsError:pass
  row=inspect(name)
  if not row:
   # Bootstrap only: a dedicated shared mount, never propagation of host root.
