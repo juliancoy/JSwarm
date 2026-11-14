@@ -78,3 +78,26 @@ names, authenticated status must attest a resolved physical address, and existin
 worker admission holds remain effective. Explicit WAN enrollment keeps its
 existing authenticated gateway path. Standard source publication and fleet update
 install this behavior without changing Avahi configuration or rebuilding images.
+
+## Private repository source mirrors
+
+When the enrolled node lacks GitHub credentials for Harbor Genetics, seed the
+published commit over its signed owner-command API before the normal rollout:
+
+```sh
+python -m scripts.seed_git_source_mirror --node julian-latitude.local
+python -m scripts.deploy_swarm_inputs --node julian-latitude.local
+```
+
+The controller makes a Git bundle from the exact published source commit. The
+node verifies the transfer SHA-256 and bundle head, stores the bundle with mode
+0600 under its private configuration, and fetches it into a local bare mirror.
+A repository-local URL rewrite lets the unchanged pinned installer fetch the
+GitHub origin from that mirror. The manifest retains its canonical GitHub URL
+and commit ID; all native source and runtime checksum checks still apply. No
+GitHub token or SSH private key is transferred. Refresh the mirror for each new
+private source commit. Previous mirrored commits remain available.
+
+This requires a responsive, enrolled signed command API. It does not authorize
+SSH fallback, restart an unavailable launcher, change worker policy, or activate
+a runtime. Launcher recovery remains a separate owner operation.
