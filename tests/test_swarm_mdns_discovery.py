@@ -149,3 +149,22 @@ def test_numeric_agent_connection_never_calls_host_resolver(monkeypatch):
     sock=MagicMock();monkeypatch.setattr(agent_client.socket,'socket',lambda *args:sock)
     assert agent_client.multipath_connection(('10.42.0.222',8790)) is sock
     sock.connect.assert_called_once_with(('10.42.0.222',8790))
+
+
+def test_named_agent_connection_resolves_dns_sd_without_nss(tmp_path,monkeypatch):
+    import sys
+    from pathlib import Path
+    sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'swarm-control/server'))
+    import agent_client
+    config=tmp_path/'peers.json'
+    config.write_text(json.dumps({'name':'controller.local','peers':{'worker.local':'old-address'},'key':'ab'*32}))
+    monkeypatch.setattr(agent_client,'CONFIG',config)
+    def forbidden(*args,**kwargs):raise AssertionError('Host NSS must not be called')
+    monkeypatch.setattr(agent_client.socket,'getaddrinfo',forbidden)
+    resolver=MagicMock(return_value=('worker-swarm.local',['10.42.0.222']))
+    monkeypatch.setattr(discovery,'resolve_service',resolver)
+    sock=MagicMock();monkeypatch.setattr(agent_client.socket,'socket',lambda *args:sock)
+    client=agent_client.AgentClient({'host':'worker.local','agent_endpoint':'http://worker-swarm.local:8790'})
+    assert client.connection._create_connection(('worker-swarm.local',8790)) is sock
+    resolver.assert_called_once_with('worker.local')
+    sock.connect.assert_called_once_with(('10.42.0.222',8790))
