@@ -462,7 +462,7 @@ def verify_node(host,record,plan):
           '--mount','type=bind,src='+plan['export']+',dst=/export,readonly',source_image,
           'python3','-c',PUBLIC_FILES,json.dumps(plan['files']),'pages','{}']
     source_code='import os;os.execvp('+repr(argv[0])+','+repr(argv)+')'
-    expected=json.loads(subprocess.check_output(host_command(source,source_code),text=True,timeout=30))
+    expected=json.loads(subprocess.check_output(host_command(source,source_code),text=True,timeout=120))
     sockets=json.loads(subprocess.check_output(host_command(host,"import json,os,pathlib;print(json.dumps(['unix:///var/run/docker.sock']+(['unix:///run/user/'+str(os.getuid())+'/docker.sock'] if pathlib.Path('/run/user/'+str(os.getuid())+'/docker.sock').exists() else [])))"),text=True,timeout=20))
     checks=[]
     for socket in sockets:
