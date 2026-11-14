@@ -10,6 +10,8 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import sys
+import shlex
 import time
 
 from scripts.swarm_runtime import AgentClient, CONFIG, atomic_json
@@ -23,6 +25,7 @@ SERVICE='paged-reference'
 def validate(plan):
     if plan.get('schema')!='jswarm-paged-cache.v1' or plan.get('visibility')!='public':
         raise ValueError('Demand paging requires an explicit public artifact plan')
+    if plan.get('transport','node-api') not in ('node-api','ssh'):raise ValueError('Unknown pager deployment transport')
     key=plan_key(plan)
     if plan['runtime']!=runtime_revision():raise ValueError('Republish the pager runtime before deployment')
     if key!=plan['key']:raise ValueError('Paged artifact identity differs')
@@ -42,9 +45,12 @@ def validate(plan):
 def publish(source,files,image,export,path=None,aliases=None):
     """Application opts its public immutable object set into generic deployment."""
     cfg=json.loads(CONFIG.read_text());runtime=runtime_revision()
+    previous=json.loads(Path(path or PLAN).read_text()) if Path(path or PLAN).exists() else {}
     plan={'schema':'jswarm-paged-cache.v1','visibility':'public','key':'','source':source,'runtime':runtime,'aliases':aliases or {},
           'address':cfg['peers'][source],'clients':cfg['peers'],'image':image,'files':files,
           'export':str(Path(export).resolve()),'port':0,'published':time.time()}
+    for name in ('transport','ssh_users'):
+        if name in previous:plan[name]=previous[name]
     plan['key']=plan_key(plan);plan['port']=21000+int(plan['key'][:8],16)%1000
     validate(plan);path=Path(path or PLAN);path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
     atomic_json(path,plan);return plan
@@ -240,8 +246,37 @@ print(json.dumps(record))
 
 
 def host_command(host,code):
+    settings=json.loads(PLAN.read_text()) if PLAN.exists() else {}
+    if host.get('pager_transport',settings.get('transport'))=='ssh':
+        if host.get('local'):return [sys.executable,'-c',code]
+        name=host['host']
+        from scripts.launcher_discovery import service_hostname
+        service_hostname(name)  # SSH remains addressed by the enrolled mDNS name.
+        user=settings.get('ssh_users',{}).get(name)
+        if user and not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]*',user):raise ValueError('Invalid SSH owner')
+        return ['ssh','-4','-o','BatchMode=yes','-o','ConnectTimeout=5',
+                (user+'@' if user else '')+name,shlex.join(['python3','-c',code])]
     from agent_updates import LauncherUpdates
     return LauncherUpdates.__new__(LauncherUpdates).command(host,code)
+
+
+HOST_STATUS=r'''import hashlib,json,pathlib,subprocess
+config=json.loads((pathlib.Path.home()/'.config/lifetech-launcher/peers.json').read_text())
+rows=json.loads(subprocess.check_output(['ip','-j','-4','addr'],text=True))
+addresses=[a['local'] for r in rows if r.get('operstate')=='UP' and not r['ifname'].startswith(('docker','br-','veth','lo')) for a in r.get('addr_info',[]) if a.get('scope')=='global']
+print(json.dumps({'node':config['name'],'machine':hashlib.sha256(pathlib.Path('/etc/machine-id').read_bytes()).hexdigest(),'addresses':addresses,'capabilities':[]}))
+'''
+
+
+def node_status(host):
+    settings=json.loads(PLAN.read_text()) if PLAN.exists() else {}
+    if host.get('pager_transport',settings.get('transport'))=='ssh':
+        value=json.loads(subprocess.check_output(host_command(host,HOST_STATUS),text=True,timeout=15))
+        if value['node']!=host['host']:raise ValueError('SSH node identity differs')
+        return value
+    client=AgentClient(host)
+    try:return client.call('status',timeout=15)
+    finally:client.close()
 
 
 def ensure_image(host,image):
@@ -289,9 +324,7 @@ def require_system_docker(host):
 def deploy_node(host,plan=None):
     plan=validate(plan or current_plan())
     if host['host'] not in plan['clients']:raise ValueError('Node is not in the public export allowlist')
-    client=AgentClient(host)
-    try:status=client.call('status',timeout=15)
-    finally:client.close()
+    status=node_status(host)
     host={**host,'machine':status['machine']}
     require_system_docker(host)
     execution_image=ensure_image(host,plan['image'])
@@ -329,6 +362,10 @@ def deploy_fleet(plan=None,names=None):
     selected=list(names or cfg['peers'])
     if any(n not in cfg['peers'] for n in selected):raise ValueError('Use enrolled node names')
     def host(name):
+        if plan.get('transport')=='ssh':
+            from scripts.launcher_discovery import service_hostname
+            return {'host':name,'local':name==cfg['name'],'pager_transport':'ssh',
+                    'agent_endpoint':'http://'+service_hostname(name)+':8790'}
         endpoint,addresses=resolve_endpoint(name)
         return {'host':name,'local':name==cfg['name'],'lan_address':addresses[0],'resolved_addresses':addresses,'agent_endpoint':endpoint}
     rows={}
@@ -370,10 +407,14 @@ def discover_aliases(plan):
     def probe(item):
         name,address=item;client=None
         try:
-            endpoint,addresses=resolve_endpoint(name)
-            host={'host':name,'local':name==cfg['name'],'agent_endpoint':endpoint}
-            client=AgentClient(host)
-            status=client.call('status',timeout=10)
+            if plan.get('transport')=='ssh':
+                host={'host':name,'local':name==cfg['name'],'pager_transport':'ssh'}
+                status=node_status(host)
+            else:
+                endpoint,addresses=resolve_endpoint(name)
+                host={'host':name,'local':name==cfg['name'],'agent_endpoint':endpoint}
+                client=AgentClient(host)
+                status=client.call('status',timeout=10)
             values=[]
             for raw in status.get('addresses',[]):
                 try:ip=ipaddress.ip_address(raw)

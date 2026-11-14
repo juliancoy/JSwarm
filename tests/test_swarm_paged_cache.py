@@ -5,6 +5,30 @@ import pytest
 from scripts import swarm_paged_cache as pager
 
 
+@pytest.fixture(autouse=True)
+def isolated_deployment_plan(tmp_path,monkeypatch):
+    monkeypatch.setattr(pager,'PLAN',tmp_path/'deployment.json')
+
+
+def test_ssh_transport_quotes_code_and_uses_enrolled_name(tmp_path):
+    import shlex
+    pager.PLAN.write_text(json.dumps({'transport':'ssh','ssh_users':{'worker.local':'owner'}}))
+    code="print('literal $HOME and `commands`')"
+    command=pager.host_command({'host':'worker.local'},code)
+    assert command[:2]==['ssh','-4']
+    assert command[-2]=='owner@worker.local'
+    assert shlex.split(command[-1])==['python3','-c',code]
+    assert pager.host_command({'host':'controller.local','local':True},code)==[pager.sys.executable,'-c',code]
+
+
+def test_ssh_status_does_not_require_the_node_api(monkeypatch):
+    pager.PLAN.write_text(json.dumps({'transport':'ssh'}))
+    monkeypatch.setattr(pager.subprocess,'check_output',lambda *a,**k:json.dumps({'node':'worker.local','machine':'a'*64}))
+    monkeypatch.setattr(pager,'AgentClient',lambda *a:pytest.fail('Unexpected node API call'))
+    assert pager.node_status({'host':'worker.local'})['machine']=='a'*64
+    with pytest.raises(ValueError,match='identity differs'):pager.node_status({'host':'other.local'})
+
+
 def plan():
     image='sha256:'+'a'*64
     files={'index':{'path':'/public/immutable/reference/index','bytes':10,'sha256':'b'*64}}
