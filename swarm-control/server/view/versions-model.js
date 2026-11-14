@@ -6,7 +6,12 @@ export async function fetchVersions(fetcher = fetch, now = () => Date.now()) {
     return response.json();
   };
   const response = await fetcher('/versions.json', {cache: 'no-store', signal: AbortSignal.timeout(8000)});
-  if (response.ok) return response.json();
+  const dated = async report => {
+    let releases = {};
+    try { releases = (await read('/api/tasks/releases')).releases || {}; } catch {}
+    return {...report, nodes: report.nodes.map(node => ({...node, ...(releases[node.source_revision] || {})}))};
+  };
+  if (response.ok) return dated(await response.json());
   if (response.status !== 404) throw new Error(`HTTP ${response.status}`);
   const context = await read('/api/jswarm-web');
   const nodes = await Promise.all(context.nodes.map(async ({name}) => {
@@ -22,6 +27,12 @@ export async function fetchVersions(fetcher = fetch, now = () => Date.now()) {
       return {node: name, status: 'unavailable', source_revision: null, protocol: null, observed_at: null};
     }
   }));
-  return {schema: 'jswarm-node-versions.v1', reporting_node: context.node,
-    checked_at: new Date(now()).toISOString(), source: 'authenticated-machine-inspector', nodes};
+  return dated({schema: 'jswarm-node-versions.v1', reporting_node: context.node,
+    checked_at: new Date(now()).toISOString(), source: 'authenticated-machine-inspector', nodes});
+}
+
+export function formatReleaseTime(node) {
+  const date = new Date(node.released_at);
+  if (!node.released_at || !Number.isFinite(date.getTime())) return 'Not recorded';
+  return date.toLocaleString();
 }

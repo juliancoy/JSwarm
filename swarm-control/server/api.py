@@ -124,7 +124,7 @@ class Handler(BaseHTTPRequestHandler):
             name=ASSETS[path];return self.reply(200,(VIEW/name).read_bytes(),mimetypes.guess_type(name)[0] or 'application/octet-stream')
         pairing=self.command=='POST' and path=='/logout'
         deployment=path in ('/api/v1/test-app/status','/api/v1/test-app/download')
-        valid_read=self.command=='GET' and (path in ('/api/tasks/genome-datasets','/api/tasks/pipeline','/api/tasks/logs','/api/tasks/machine','/api/devices','/api/v1/swarm/wgs','/api/v1/swarm/genome-results','/api/v1/swarm/history','/api/v1/swarm/connections','/api/v1/swarm/task-manager','/api/v1/swarm/status','/api/v1/swarm/session','/api/v1/swarm/research','/api/v1/swarm/research/jobs') or path=='/api/v1/swarm/node-enrollment' or path==API+'queue' or path==API+'threads' or path.startswith(API+'threads/') or path in ('/api/v1/test-app/status','/api/v1/test-app/download'))
+        valid_read=self.command=='GET' and (path in ('/api/tasks/genome-datasets','/api/tasks/pipeline','/api/tasks/logs','/api/tasks/machine','/api/tasks/releases','/api/devices','/api/v1/swarm/wgs','/api/v1/swarm/genome-results','/api/v1/swarm/history','/api/v1/swarm/connections','/api/v1/swarm/task-manager','/api/v1/swarm/status','/api/v1/swarm/session','/api/v1/swarm/research','/api/v1/swarm/research/jobs') or path=='/api/v1/swarm/node-enrollment' or path==API+'queue' or path==API+'threads' or path.startswith(API+'threads/') or path in ('/api/v1/test-app/status','/api/v1/test-app/download'))
         valid_write=self.command=='POST' and path in ('/api/v1/swarm/node-enrollment','/api/tasks/machine/control',API+'commands',API+'queue',API+'queue/cancel',API+'queue/send-now',API+'transcribe','/api/v1/swarm/research/jobs','/api/v1/swarm/tests/request')
         if not (valid_read or valid_write or pairing):return self.reply(404,{'error':{'message':'Not found'}})
         if path!='/logout' and not identity.valid_session(origin,self.device()):return self.reply(401,{'error':{'message':'Sign in with PIdP to reconnect to CompAI'}})
@@ -157,7 +157,7 @@ class Handler(BaseHTTPRequestHandler):
                     if self.device():devices.revoke(self.device())
                     return self.reply(200,{'ok':True},cookie='__Host-compai_device=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0')
 
-            if path in ('/api/tasks/pipeline','/api/tasks/logs','/api/tasks/machine','/api/devices'):
+            if path in ('/api/tasks/pipeline','/api/tasks/logs','/api/tasks/machine','/api/tasks/releases','/api/devices'):
                 from status import read_coordinator
                 from urllib.parse import urlencode
                 target = path

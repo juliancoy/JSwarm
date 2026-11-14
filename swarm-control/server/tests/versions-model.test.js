@@ -1,14 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {fetchVersions} from '../view/versions-model.js';
+import {fetchVersions, formatReleaseTime} from '../view/versions-model.js';
 const response = (status, body) => ({ok: status === 200, status, json: async () => body});
 
 test('uses native version report when deployed', async () => {
   const report = {nodes: [{node: 'one', source_revision: 'a'.repeat(64)}]};
   const calls = [];
-  const value = await fetchVersions(async path => {calls.push(path); return response(200, report);});
-  assert.equal(value, report);
-  assert.deepEqual(calls, ['/versions.json']);
+  const value = await fetchVersions(async path => {calls.push(path); return response(200, path === '/api/tasks/releases' ? {releases: {['a'.repeat(64)]: {released_at: '2026-11-13T20:00:00+00:00'}}} : report);});
+  assert.equal(value.nodes[0].released_at, '2026-11-13T20:00:00+00:00');
+  assert.equal(value.nodes[0].source_revision, report.nodes[0].source_revision);
+  assert.deepEqual(calls, ['/versions.json', '/api/tasks/releases']);
 });
 
 test('404 falls back to existing inspector and rejects stale or mismatched versions', async () => {
@@ -39,4 +40,10 @@ test('server failures are reported instead of masked by fallback', async () => {
   let calls = 0;
   await assert.rejects(fetchVersions(async () => {calls++; return response(503);}), /HTTP 503/);
   assert.equal(calls, 1);
+});
+
+test('missing and invalid release dates remain explicit', () => {
+  assert.equal(formatReleaseTime({}), 'Not recorded');
+  assert.equal(formatReleaseTime({released_at: 'bad'}), 'Not recorded');
+  assert.equal(formatReleaseTime({released_at: '2026-11-13T20:00:00Z'}), new Date('2026-11-13T20:00:00Z').toLocaleString());
 });

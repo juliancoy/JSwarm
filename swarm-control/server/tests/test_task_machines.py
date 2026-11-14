@@ -78,3 +78,20 @@ def test_unenrolled_host_cannot_trigger_diagnostics(monkeypatch,tmp_path):
     config=tmp_path/'peers.json';config.write_text('{"peers":{"node":"10.0.0.2"}}')
     monkeypatch.setattr(task_machines,'CONFIG',config)
     with pytest.raises(ValueError):snapshot('http://untrusted/')
+
+
+def test_release_times_use_pinned_git_commit_not_current_checkout(tmp_path,monkeypatch):
+    import json, subprocess
+    from task_machines import release_times
+    revision='a'*64;commit='b'*40;calls=[]
+    def git(args,**kwargs):
+        calls.append(args)
+        return '2026-11-13T16:00:00-05:00\n'
+    monkeypatch.setattr(subprocess,'check_output',git)
+    (tmp_path/'0001-release.json').write_text(json.dumps({'schema':'jswarm-agent-release.v1','revision':revision,
+        'git_source':{'repositories':{'JSwarm':{'commit':commit}}},'files':{'private':'not returned'}}))
+    (tmp_path/'0002-invalid.json').write_text('{')
+    rows=release_times(tmp_path,tmp_path)['releases']
+    assert rows[revision]=={'released_at':'2026-11-13T16:00:00-05:00','release_commit':commit}
+    assert calls==[['git','-C',str(tmp_path),'show','-s','--format=%cI',commit]]
+    assert 'private' not in json.dumps(rows)

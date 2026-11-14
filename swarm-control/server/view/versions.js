@@ -1,4 +1,4 @@
-import {fetchVersions} from './versions-model.js';
+import {fetchVersions, formatReleaseTime} from './versions-model.js';
 const status = document.getElementById('version-status');
 const rows = document.getElementById('version-nodes');
 const refresh = document.getElementById('refresh-versions');
@@ -21,7 +21,7 @@ async function update() {
     for (const node of report.nodes) {
       const row = document.createElement('tr');
       const labels = {connected: 'Connected', loading: 'Checking…', 'version-unavailable': 'Version unavailable', unavailable: 'Unavailable'};
-      for (const value of [node.node, labels[node.status] || 'Unknown', node.source_revision || 'Not reported', node.protocol || 'Not reported']) {
+      for (const value of [node.node, labels[node.status] || 'Unknown', node.source_revision || 'Not reported', formatReleaseTime(node), node.protocol || 'Not reported']) {
         const cell = document.createElement('td');
         cell.textContent = value;
         row.append(cell);

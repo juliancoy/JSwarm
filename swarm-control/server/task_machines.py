@@ -11,6 +11,7 @@ import math
 import secrets
 import threading
 import time
+from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
 from agent_client import AgentClient, CONFIG
 
@@ -19,6 +20,38 @@ DIAGNOSTICS=ThreadPoolExecutor(max_workers=2,thread_name_prefix='machine-diagnos
 LOCK=threading.Lock()
 CACHE={}
 PROBE_BYTES=4*1024**2
+
+
+def release_times(folder=None, repository=None):
+    """Match running release hashes to pinned Git commits and their commit dates."""
+    from pathlib import Path
+    import re, subprocess
+    folder=Path(folder) if folder is not None else Path.home()/'.local/state/swarm-control/node-releases'
+    repository=Path(repository) if repository is not None else Path(__file__).resolve().parents[2]
+    signatures=tuple((str(path),path.stat().st_mtime_ns,path.stat().st_size) for path in sorted(folder.glob('[0-9]*-*.json')))
+    return _release_times(str(repository),signatures)
+
+
+@lru_cache(maxsize=1)
+def _release_times(repository,signatures):
+    from pathlib import Path
+    import re, subprocess
+    releases={};dates={}
+    for filename,_,_ in signatures:
+        path=Path(filename)
+        try:
+            value=json.loads(path.read_text());revision=value.get('revision','')
+            commit=value.get('git_source',{}).get('repositories',{}).get('JSwarm',{}).get('commit','')
+            if value.get('schema')!='jswarm-agent-release.v1' or not re.fullmatch('[a-f0-9]{64}',revision):continue
+            if not re.fullmatch('[a-f0-9]{40}|[a-f0-9]{64}',commit):continue
+            if commit not in dates:
+                dates[commit]=subprocess.check_output(['git','-C',str(repository),'show','-s','--format=%cI',commit],
+                    text=True,stderr=subprocess.DEVNULL,timeout=3).strip()
+            instant=datetime.datetime.fromisoformat(dates[commit])
+            if instant.tzinfo is not None:
+                releases.setdefault(revision,{'released_at':instant.isoformat(),'release_commit':commit})
+        except (OSError,ValueError,TypeError,subprocess.SubprocessError):continue
+    return {'releases':releases}
 
 
 def command(client,argv,payload=b'',limit=8*1024**2,timeout=30):
