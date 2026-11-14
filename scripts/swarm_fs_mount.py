@@ -211,7 +211,7 @@ def mount(settings, mountpoint, foreground=False):
         @checked
         def rename(self, old, new):client.origin('rename', path=old, destination=new)
         @checked
-        def chmod(self, path, mode):client.origin('chmod', path=path, mode=mode)
+        def chmod(self, path, mode):client.origin('chmod', path=path, mode=mode & 0o7777)
         def flush(self, path, fh):return 0
         def fsync(self, path, datasync, fh):return 0  # Every write already fsyncs at origin.
     FUSE(Files(), str(mountpoint), foreground=foreground, nothreads=True,
