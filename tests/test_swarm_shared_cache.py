@@ -175,6 +175,7 @@ def test_stopped_ram_cache_is_reloaded_instead_of_restarted_empty(tmp_path,admit
 def test_concurrent_derivations_publish_one_cache_and_mount_readonly_targets(tmp_path,admitted,tool_image):
     host={'host':'fixture','local':True,'machine':uuid.uuid4().hex,'container_user':'1000:1000'}
     builds=[];loads=[];binding=None;payload=uuid.uuid4().bytes
+    reader='shared-cache-derived-reader-'+uuid.uuid4().hex[:12]
     def build(root):builds.append(1);(root/'reference.fa').write_bytes(payload)
     def load(owner,root,files):
         loads.append(owner)
@@ -194,7 +195,9 @@ def test_concurrent_derivations_publish_one_cache_and_mount_readonly_targets(tmp
         assert cache.ensure_derived(host,tool_image,{'source':'sha','contig':'1'},build,load)==results[0]
         assert len(builds)==count
         args=cache.mount_args(host,binding,target='/references/one',primary=False)
-        p=docker('run','--rm','--network','none',*args,tool_image,'python3','-c',"import pathlib;assert pathlib.Path('/references/one/reference.fa').read_bytes()=="+repr(payload))
+        # Match the neighboring BWA integration test's bounded startup budget;
+        # a busy local daemon may spend over a minute creating the image mount.
+        p=docker('run','--rm','--name',reader,'--network','none',*args,tool_image,'python3','-c',"import pathlib;assert pathlib.Path('/references/one/reference.fa').read_bytes()=="+repr(payload),timeout=180)
         assert p.returncode==0,p.stderr.decode()
         assert 'dst=/references/one,readonly' in ' '.join(args)
         with pytest.raises(ValueError):cache.mount_args(host,binding,target='/')
@@ -203,6 +206,7 @@ def test_concurrent_derivations_publish_one_cache_and_mount_readonly_targets(tmp
         assert cache.remove_unused(host,binding) is False
         time.sleep(3.2)
     finally:
+        docker('rm','-f',reader)
         if binding:cache._remove_unreferenced(host,binding)
 
 
