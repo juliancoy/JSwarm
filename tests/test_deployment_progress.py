@@ -52,3 +52,31 @@ def test_unsuccessful_rollout_is_not_marked_complete(tmp_path):
     with progress.observe(config,'Fleet rollout'):
         progress.update(status='failed',phase='Needs attention')
     assert reader(config).deployments()['deployments'][0]['status']=='failed'
+
+
+@pytest.mark.parametrize('fail',[False,True])
+def test_standard_sweep_reports_actual_node_results(tmp_path,monkeypatch,fail):
+    from scripts import deploy_swarm_inputs as deploy
+    config=tmp_path/'peers.json'
+    config.write_text(json.dumps({'name':'one.local','peers':{'one.local':'10.0.0.1','two.local':'10.0.0.2'}}))
+    monkeypatch.setattr(deploy,'CONFIG',config)
+    monkeypatch.setattr(deploy.Path,'home',lambda:tmp_path)
+    monkeypatch.setattr(deploy,'resolve_endpoint',lambda name:('http://10.0.0.1:8790',['10.0.0.1']))
+    class Client:
+        def __init__(self,host):self.name=host['host']
+        def call(self,*args,**kwargs):return {'node':self.name}
+        def close(self):pass
+    class Updater:
+        revision='a'*64
+        generation=1
+        components={}
+        def ensure(self,host,client,status,**kwargs):
+            if fail:raise RuntimeError('fixture failure')
+            return {'source_revision':self.revision,'ready':True}
+    monkeypatch.setattr(deploy,'AgentClient',Client)
+    monkeypatch.setattr(deploy.LauncherUpdates,'desired',lambda:Updater())
+    with progress.observe(config,'Fleet rollout'):
+        assert deploy.sweep()==(not fail)
+    row=reader(config).deployments()['deployments'][0]
+    assert row['status']==('failed' if fail else 'complete')
+    assert [node['status'] for node in row['nodes']]==(['failed','queued'] if fail else ['current','current'])
