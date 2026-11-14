@@ -86,6 +86,20 @@ class SubmissionQueue:
             self.begin(db)
             if db.execute('UPDATE submissions SET priority=?,updated=? WHERE namespace=? AND id=?',(priority,time.time(),self.namespace,ident)).rowcount!=1:raise KeyError(ident)
 
+    def interrupt_unclaimed(self, reason):
+        """Close undispatched work when its owning application run has ended.
+
+        Accepted/preparing claims and execution receipts remain worker-owned;
+        coordinator termination is never evidence that those workers stopped.
+        """
+        if not isinstance(reason,str) or not reason:raise ValueError('Missing interruption reason')
+        with self.connect() as db:
+            self.begin(db)
+            return db.execute("UPDATE submissions SET state='interrupted',error=?,updated=? "
+                "WHERE namespace=? AND state='queued' AND host IS NULL AND token IS NULL "
+                "AND task_id IS NULL AND request IS NULL AND result IS NULL",
+                (reason,time.time(),self.namespace)).rowcount
+
     def claim(self,host,capacity=None,eligible=None,requirements=None,preparation_resources=None,affinity=None):
         """Skip nonfitting jobs, without letting a large/GPU job block CPU work."""
         capacity=dict(capacity or {});eligible=None if eligible is None else set(eligible)

@@ -6,6 +6,44 @@ from unittest.mock import patch
 from distributed import DistributedTests, plan, targets, no_remote_shell
 
 class DistributedTestsTests(unittest.TestCase):
+    def test_terminal_parent_closes_only_unclaimed_shards(self):
+        from submission_queue import SubmissionQueue
+        with tempfile.TemporaryDirectory() as folder:
+            service=DistributedTests(state=Path(folder)/'distributed')
+            path=Path(folder)/'submission/queue.sqlite'
+            queue=SubmissionQueue('application-tests:ended',path)
+            queue.submit_many([{'id':name} for name in ('unstarted','live','done')])
+            live=queue.claim('node',eligible=['live'])
+            queue.update('live',live['token'],state='accepted')
+            done=queue.claim('node',eligible=['done'])
+            queue.update('done',done['token'],state='completed',result='{"passed":true}')
+            other=SubmissionQueue('application-tests:other',path);other.submit({'id':'other'})
+            service.run={'id':'ended','status':'interrupted','finished':'2026-11-14T00:00:00+00:00','hosts':[]}
+            service.save()
+            with queue.connect() as db:
+                rows={r['id']:dict(r) for r in db.execute('SELECT * FROM submissions')}
+            self.assertEqual(rows['unstarted']['state'],'interrupted')
+            self.assertIn('not executed',rows['unstarted']['error'])
+            self.assertEqual(rows['live']['state'],'accepted')
+            self.assertEqual(rows['live']['token'],live['token'])
+            self.assertEqual(rows['done']['result'],'{"passed":true}')
+            self.assertEqual(rows['other']['state'],'queued')
+            self.assertEqual(service.reconcile_unclaimed(service.run),0)
+
+    def test_startup_reconciles_retained_terminal_history_but_active_parent_does_not(self):
+        from submission_queue import SubmissionQueue
+        with tempfile.TemporaryDirectory() as folder:
+            state=Path(folder)/'distributed';state.mkdir()
+            queue=SubmissionQueue('application-tests:old',Path(folder)/'submission/queue.sqlite')
+            queue.submit({'id':'never-started'})
+            old={'id':'old','status':'interrupted','finished':'2026-11-09T00:00:00+00:00','hosts':[]}
+            (state/'old.json').write_text(json.dumps(old))
+            service=DistributedTests(state=state)
+            with queue.connect() as db:self.assertEqual(db.execute('SELECT state FROM submissions').fetchone()[0],'interrupted')
+            queue2=SubmissionQueue('application-tests:active',queue.path);queue2.submit({'id':'pending'})
+            self.assertEqual(service.reconcile_unclaimed({'id':'active','status':'running'}),0)
+            with queue2.connect() as db:self.assertEqual(db.execute("SELECT state FROM submissions WHERE id='pending'").fetchone()[0],'queued')
+
     def test_focused_plan_contains_no_placeholder_p2p_job(self):
         hosts=plan([{'host':'node'}],{'paths':['tests/one.py'],'suites':[]})
         self.assertEqual(hosts[0]['jobs'],{})

@@ -89,6 +89,21 @@ class DistributedTests:
                     self.save()
             except (OSError, ValueError):
                 self.run = None
+        # Reconcile retained terminal parents too, including runs interrupted by
+        # an older coordinator that left their unclaimed shards queued forever.
+        for path in files:
+            try:self.reconcile_unclaimed(json.loads(path.read_text()))
+            except (OSError,ValueError):continue
+
+    def reconcile_unclaimed(self, run):
+        if run.get('status') not in FINAL or not run.get('finished'):return 0
+        state=self.folder.parent if self.folder.name=='distributed' else self.folder
+        path=state/'submission/queue.sqlite'
+        if not path.is_file():return 0
+        from submission_queue import SubmissionQueue
+        return SubmissionQueue('application-tests:'+run['id'],path).interrupt_unclaimed(
+            'Parent application-test run '+run['id']+' ended ('+run['status']+
+            ') before dispatch; this test was not executed. Retry explicitly to execute it.')
 
     def prune(self):
         cutoff = time.time() - 30 * 86400
@@ -112,6 +127,7 @@ class DistributedTests:
         temporary.write_text(json.dumps(self.run))
         temporary.chmod(0o600)
         temporary.replace(path)
+        self.reconcile_unclaimed(self.run)
         self.last_save = time.monotonic()
         if self.run.get('finished'):
             from runtime_stats import record
