@@ -466,7 +466,7 @@ def ensure(host,image,files,load,metrics=None,*,on_bound=None,load_path=False):
                       '--memory',str(cache['memory_mb'])+'m','--memory-swap',str(cache['memory_mb'])+'m','--cpus','1','--pids-limit','32',
                       '--label','org.lifetech.worker=true','--label','org.lifetech.job='+key[:32],'--label','org.lifetech.group=shared-cache',
                       '--label',OWNER+'='+key,'--mount','type=volume,src='+cache['volume']+',dst=/dev/shm,volume-nocopy',
-                      image,'python3','-c','import time; time.sleep(10**9)']).strip()
+                      image,'python3','-c','import time; time.sleep(10**9)'],timeout=180).strip()
         load(cache['container'])
         owner=inspect(host,'container',cache['container'])
         proof={k:cache[k] for k in ('key','files')};proof.update(container_id=owner['Id'],started_at=owner['State']['StartedAt'])

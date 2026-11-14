@@ -53,4 +53,4 @@ with os.fdopen(fd,'r+') as f:
                     '--security-opt', 'no-new-privileges', '--read-only',
                     '--mount', 'type=bind,src=/etc/fuse.conf,dst=/policy/fuse.conf',
                     '--entrypoint', 'python3', 'organization-launcher:webrtc-1', '-c', code],
-                   check=True, capture_output=True, timeout=30)
+                   check=True, capture_output=True, timeout=120)
