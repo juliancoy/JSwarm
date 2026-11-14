@@ -150,6 +150,46 @@ class NodePipelineWeb:
         self.agent=agent;self.workspace=pipeline_web_root(agent.config)
         self.assets=None if self.workspace else pipeline_assets()
 
+    def local_version(self, config):
+        # Report the running process, never the checkout or desired release.
+        return {'node':config['name'], 'source_revision':getattr(self.agent,'source_revision',None),
+                'protocol':'lifetech-agent.v1'}
+
+    async def versions(self, config):
+        from aiohttp import ClientSession,ClientTimeout
+        from launcher_discovery import resolve_endpoint
+        from datetime import datetime,timezone
+        semaphore=asyncio.Semaphore(8)
+        async with ClientSession(timeout=ClientTimeout(total=4),trust_env=False) as session:
+            async def check(name):
+                async with semaphore:
+                    try:
+                        if name==config['name']:
+                            value=self.local_version(config)
+                        else:
+                            async with operation_timeout(5):
+                                endpoint=(await asyncio.to_thread(resolve_endpoint,name))[0]
+                                async with session.get(endpoint+'/api/jswarm-web/version',
+                                        headers={'Host':name+':8790'},allow_redirects=False) as response:
+                                    if response.status==404:
+                                        return {'node':name,'status':'version-unavailable','source_revision':None}
+                                    response.raise_for_status()
+                                    body=await response.content.read(8193)
+                                    if len(body)>8192:raise ValueError('Version response too large')
+                                    value=json.loads(body)
+                        import re
+                        revision=value.get('source_revision')
+                        if value.get('node')!=name or not isinstance(revision,str) or not re.fullmatch('[a-f0-9]{64}',revision):
+                            raise ValueError('Invalid node version')
+                        return {'node':name,'status':'connected','source_revision':revision,
+                                'protocol':str(value.get('protocol',''))[:80]}
+                    except Exception as error:
+                        return {'node':name,'status':'unavailable','source_revision':None,
+                                'error':type(error).__name__}
+            nodes=await asyncio.gather(*(check(name) for name in sorted(config['peers'])))
+        return {'schema':'jswarm-node-versions.v1','reporting_node':config['name'],
+                'checked_at':datetime.now(timezone.utc).isoformat(),'nodes':nodes}
+
     async def handle(self,request):
         from aiohttp import web
         try:
@@ -178,6 +218,10 @@ class NodePipelineWeb:
                 raise web.HTTPForbidden(text='Same-origin request required')
         except ValueError:raise web.HTTPMisdirectedRequest()
         if node==config['name']:
+            if request.path=='/api/jswarm-web/version' and request.method in ('GET','HEAD'):
+                return web.json_response(self.local_version(config))
+            if request.path=='/versions.json' and request.method in ('GET','HEAD'):
+                return web.json_response(await self.versions(config))
             if request.path=='/api/jswarm-web/source-revision' and request.method=='GET':
                 if not self.workspace:raise web.HTTPNotFound()
                 revision=await asyncio.to_thread(pipeline_source_revision,self.workspace)

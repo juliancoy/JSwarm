@@ -200,3 +200,62 @@ def test_live_source_revision_tracks_public_edits_and_injects_only_source_html(t
             response=await client.get('/api/jswarm-web/source-revision',headers={'Host':'evil.test'})
             assert response.status==421 and 'no-store' in response.headers['Cache-Control']
     asyncio.run(exercise())
+
+
+def test_versions_report_running_releases_and_isolate_unavailable_nodes(tmp_path,monkeypatch):
+    import aiohttp
+    config=configuration()
+    path=tmp_path/'peers.json';path.write_text('{}')
+    monkeypatch.setattr(peers,'pipeline_assets',lambda:{})
+    node=peers.NodePipelineWeb(SimpleNamespace(config=path,source_revision='a'*64))
+    monkeypatch.setattr('launcher_discovery.resolve_endpoint',lambda name:('http://'+name+':8790',[]))
+    replies={'compai.local':{'node':'compai.local','source_revision':'b'*64,'protocol':'lifetech-agent.v1','private_state':'must not be returned'},
+             'julian-minipc.local':None}
+    class Response:
+        def __init__(self,host):
+            self.value=replies[host];self.status=404 if self.value is None else 200;self.content=self
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+        def raise_for_status(self):pass
+        async def read(self,limit):return json.dumps(self.value).encode()[:limit]
+    class Session:
+        def __init__(self,**kwargs):assert kwargs['trust_env'] is False
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+        def get(self,url,**kwargs):
+            assert kwargs['allow_redirects'] is False
+            return Response(kwargs['headers']['Host'].split(':')[0])
+    monkeypatch.setattr(aiohttp,'ClientSession',Session)
+    report=asyncio.run(node.versions(config))
+    rows={row['node']:row for row in report['nodes']}
+    assert rows['codecollective.local']['source_revision']=='a'*64
+    assert rows['compai.local']['source_revision']=='b'*64
+    assert rows['julian-minipc.local']['status']=='version-unavailable'
+    assert 'private_state' not in json.dumps(report)
+    assert report['checked_at'] and report['schema']=='jswarm-node-versions.v1'
+    # A later invalid response must not retain a previously observed version.
+    replies['compai.local']['node']='wrong-node.local'
+    second=asyncio.run(node.versions(config))
+    row=next(row for row in second['nodes'] if row['node']=='compai.local')
+    assert row['status']=='unavailable' and row['source_revision'] is None
+
+
+def test_version_files_use_native_access_controls_and_no_cache(tmp_path,monkeypatch):
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient,TestServer
+    path=tmp_path/'peers.json'
+    path.write_text(json.dumps({'name':'compai.local','peers':{'compai.local':'10.42.0.1'}}))
+    monkeypatch.setattr(peers,'pipeline_assets',lambda:{})
+    node=peers.NodePipelineWeb(SimpleNamespace(config=path,source_revision='c'*64))
+    async def exercise():
+        app=web.Application();app.router.add_route('*','/{path:.*}',node.handle)
+        async with TestClient(TestServer(app)) as client:
+            for route in ('/versions.json','/api/jswarm-web/version'):
+                response=await client.get(route,headers={'Host':'localhost'})
+                assert response.status==200 and 'no-store' in response.headers['Cache-Control']
+                body=await response.json()
+                value=body['nodes'][0] if route=='/versions.json' else body
+                assert value['source_revision']=='c'*64
+                assert (await client.get(route,headers={'Host':'evil.test'})).status==421
+                assert (await client.get(route,headers={'Host':'localhost','Origin':'http://evil.test'})).status==403
+    asyncio.run(exercise())

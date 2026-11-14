@@ -7,6 +7,7 @@ const pages = [
   ['tests.html', 'Tests', 'Distributed test runs and results'],
   ['monitor.html', 'Resource monitor', 'Detailed live node resources'],
   ['task-manager.html', 'Task Manager', 'Resources alongside task activity'],
+  ['versions.html', 'Node versions', 'Reported releases on connected computers'],
   ['workers.html', 'Worker controls', 'Pause and resume compute'],
   ['genome-explorer.html', 'Genome Explorer', 'Genome datasets and results'],
   ['research.html', 'Research', 'DNA analysis jobs'],

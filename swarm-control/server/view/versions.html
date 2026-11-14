@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Node versions · Swarm</title><link rel="stylesheet" href="/task-manager.css"><script type="module" src="/versions.js"></script>
+<style>main{max-width:1100px;margin:auto;padding:24px}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:12px;border-bottom:1px solid #637381}code{overflow-wrap:anywhere}#version-status{margin:16px 0}.version-table{overflow-x:auto}</style></head>
+<body class="task-manager"><header><div><h1>Node versions</h1></div><nav><a href="/task-manager.html">Task Manager</a> · <a href="/versions.json" download="versions.json">Download versions.json</a></nav></header>
+<main><p>Running Swarm releases reported by enrolled computers. Versions are SHA-256 release hashes; matching hashes mean the nodes run the same release. A responding node is not necessarily ready to accept jobs.</p>
+<p id="version-status" role="status">Checking node versions…</p><button id="refresh-versions" type="button">Refresh</button>
+<div class="version-table"><table><thead><tr><th>Computer</th><th>Connection</th><th>Running release</th><th>Protocol</th></tr></thead><tbody id="version-nodes"></tbody></table></div>
+<p>Checks refresh every 15 seconds while this page is visible. “Version unavailable” means the node responded but needs a release with version reporting.</p></main></body></html>
