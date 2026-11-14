@@ -34,10 +34,10 @@ def snapshot(root):
 
 def validate(value, *, historical=False):
     expected={'jswarm-pager-component.v1':FILES,'jswarm-filesystem-component.v1':FILESYSTEM_FILES}.get(value.get('schema'))
-    accepted=[set(expected)] if expected is not None else []
-    if historical and value.get('schema')=='jswarm-pager-component.v1':
-        accepted.append(set(FILES)-{'scripts/launcher_discovery.py'})
-    if set(value['files']) not in accepted:raise ValueError('Incomplete deployment component')
+    # History is read for generation accounting, never executed. Its file list
+    # belongs to that release, so do not maintain per-version layout exceptions.
+    if expected is None:raise ValueError('Unknown deployment component schema')
+    if not historical and set(value['files'])!=set(expected):raise ValueError('Incomplete deployment component')
     if digest(value['files'])!=value.get('sha256'):raise ValueError('Pager component checksum mismatch')
     for name,source in value['files'].items():compile(source,name,'exec')
     return value

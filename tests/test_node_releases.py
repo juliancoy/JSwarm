@@ -211,4 +211,7 @@ def test_historical_pager_layout_can_be_replaced_but_not_deployed(tmp_path):
     assert LauncherUpdates.published(updated,lambda:False,Mock()).components==source.components
     component['files']['unexpected.py']=''
     component['sha256']=digest(component['files'])
-    with pytest.raises(ValueError,match='Incomplete deployment component'):validate(component,historical=True)
+    assert validate(component,historical=True) is component
+    with pytest.raises(ValueError,match='Incomplete deployment component'):validate(component)
+    component['files']['unexpected.py']='changed without updating checksum'
+    with pytest.raises(ValueError,match='checksum mismatch'):validate(component,historical=True)

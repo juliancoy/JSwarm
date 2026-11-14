@@ -141,7 +141,10 @@ def test_lost_docker_start_ack_reattaches(engine):
 
 
 @pytest.mark.parametrize('code,oom,wanted',[(78,False,'failed_integrity'),(75,False,'retry_wait'),(137,True,'failed'),(1,False,'failed')])
-def test_failure_classification(engine,code,oom,wanted):
+def test_failure_classification(engine,monkeypatch,code,oom,wanted):
+    # Classification must not depend on whether SQLite commits take longer
+    # than the retry backoff on a busy deployment host.
+    now=s.time.time();monkeypatch.setattr(s.time,'time',lambda:now)
     e=engine;e.dispatch('stream.submit',request());e.tick();row=e.store.get('piece-1')
     e.containers[row['container']]={'Running':False,'ExitCode':code,'OOMKilled':oom};e.tick()
     assert e.store.get('piece-1')['state']==wanted
