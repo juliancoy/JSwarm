@@ -507,7 +507,9 @@ def test_lost_stop_ack_never_claims_cancelled_until_confirmed(engine):
     assert e.store.get('piece-1')['state']=='cancelled' and not e.containers
 
 
-def test_retry_budget_is_bounded_and_explicit_retry_resets_it(engine):
+def test_retry_budget_is_bounded_and_explicit_retry_resets_it(engine,monkeypatch):
+    # Retry deadlines are logical time, independent of journal fsync latency.
+    now=s.time.time();monkeypatch.setattr(s.time,'time',lambda:now)
     e=engine;req=request(lifecycle={'max_retries':1})
     e.dispatch('stream.submit',req);assert e.dispatch('stream.submit',req)['attempt']==0
     e.tick()
