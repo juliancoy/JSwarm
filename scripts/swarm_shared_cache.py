@@ -210,10 +210,12 @@ def _remove_unreferenced(host,cache,*,expected_owner=None):
     if owner and owner.get('ExecIDs'):return False  # A bulk reader is a live consumer too.
     if owner:
         try:command(host,['docker','rm','-f',owner['Id']])
+        except subprocess.TimeoutExpired:return False  # Daemon cleanup is pending; retry later.
         except RuntimeError as error:
             if not any(t in str(error).lower() for t in ('no such','not found','removal of container')):raise
     if inspect(host,'volume',cache['volume']):
         try:command(host,['docker','volume','rm',cache['volume']])
+        except subprocess.TimeoutExpired:return False
         except RuntimeError as error:
             # A worker can attach after users() and before Docker removes the
             # volume. Docker's reference check wins; retry after that consumer.
