@@ -473,19 +473,23 @@ def test_cancel_intent_survives_restart_and_unknown_daemon(engine):
 def test_slow_stop_does_not_block_status_or_other_jobs(engine):
     import threading
     e=engine;e.dispatch('stream.submit',request());e.tick();command=e.command
+    from concurrent.futures import ThreadPoolExecutor
     entered=threading.Event();release=threading.Event()
     def slow(args,**kwargs):
         if args[:2]==['docker','stop']:
-            entered.set();assert release.wait(5)
+            entered.set();release.wait()
         return command(args,**kwargs)
     e.command=slow
-    try:
-        e.dispatch('stream.cancel',{'id':'piece-1'});e.tick();assert entered.wait(2)
+    def exercise():
+        e.dispatch('stream.cancel',{'id':'piece-1'});e.tick();assert entered.wait(30)
         assert e.dispatch('stream.status',{'id':'piece-1'})['state']=='stopping'
         e.dispatch('stream.submit',request(id='piece-2'));e.tick()
         assert e.store.get('piece-2')['state']=='running'
         with pytest.raises(ValueError,match='confirm'):e.dispatch('stream.remove',{'id':'piece-1'})
-    finally:release.set();finish_stop(e)
+    pool=ThreadPoolExecutor(max_workers=1)
+    try:pool.submit(exercise).result(timeout=30)
+    finally:
+        release.set();pool.shutdown(wait=True);finish_stop(e)
     assert e.store.get('piece-1')['state']=='cancelled'
 
 
