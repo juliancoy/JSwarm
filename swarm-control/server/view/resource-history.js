@@ -9,6 +9,7 @@ export function recordResourceHistory(histories,data,metrics,now,rowsFor){
    if(!frame.current&&!frame.hosts?.length&&!['network','split'].includes(metric))continue;
    for(const row of rowsFor(frame.current?data:frame.network||historicalNetwork,{hosts:frame.hosts},metric,time)){
     if(frame.partial&&['cpu','ram'].includes(metric)&&!row.telemetryHost)continue;
+    if(['cpu','ram'].includes(metric)&&frame.hosts?.some(h=>h.host===row.telemetryHost&&h.status==='warming'))continue;
     // Older frames never saved gateway counters. Their absence must not
     // overwrite actual live readings with alternating artificial gaps.
     if(!frame.current&&!frame.network&&['network','split'].includes(metric)&&row.value===null)continue;

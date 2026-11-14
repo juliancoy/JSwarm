@@ -2,7 +2,7 @@ import copy
 import json
 import unittest
 from unittest.mock import patch
-from cpu import aggregate, CpuMonitor, ResourceSampler
+from cpu import aggregate, CpuMonitor, ResourceSampler, retain_sample
 
 
 def snapshot(at, busy, idle, iowait=0, steal=0, boot='boot'):
@@ -47,7 +47,7 @@ class CpuTests(unittest.TestCase):
 
     def test_old_samples_do_not_appear_live(self):
         monitor=CpuMonitor();monitor.hosts=[{'host':'a','percent':50,'cpus':8,'status':'live','sampled_at':1}]
-        with patch('cpu.time.time',return_value=20):view=monitor.view()
+        with patch('cpu.time.time',return_value=40):view=monitor.view()
         self.assertIsNone(view['total_percent']);self.assertEqual(view['live_hosts'],0)
         self.assertEqual(view['hosts'][0]['status'],'stale')
 
@@ -83,3 +83,20 @@ class CpuTests(unittest.TestCase):
         self.assertTrue(service.cpu_activity('rerun')['running'])
         service.runner.running=False
         self.assertEqual(service.cpu_activity()['run']['hosts'],[])
+
+
+class RetainedSampleTests(unittest.TestCase):
+    def test_failed_or_warming_read_keeps_timestamp_and_expires(self):
+        previous={'host':'a','percent':50,'cpus':8,'status':'live','sampled_at':10}
+        for status in ('warming','unavailable','authentication_denied'):
+            result=retain_sample(previous,{'host':'a','status':status,'sampled_at':20})
+            self.assertEqual(result['sampled_at'],10)
+            self.assertEqual(result['percent'],50)
+            self.assertEqual(result['collection_status'],status)
+            monitor=CpuMonitor();monitor.hosts=[result]
+            with patch('cpu.time.time',return_value=30):self.assertEqual(monitor.view()['live_hosts'],1)
+            with patch('cpu.time.time',return_value=40):self.assertEqual(monitor.view()['live_hosts'],0)
+
+    def test_old_read_never_replaces_newer_read(self):
+        previous={'status':'live','sampled_at':20}
+        self.assertIs(retain_sample(previous,{'status':'live','sampled_at':10}),previous)

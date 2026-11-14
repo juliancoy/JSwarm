@@ -1,3 +1,4 @@
+import {readResourceSnapshots} from './resource-fetch.js';
 import {recordResourceHistory} from './resource-history.js';
 import {cpuCoverage,testCpuSummary,percent} from './cpu-report.js';
 import {snapshotFetch} from './snapshot-fetch.js';
@@ -9,6 +10,7 @@ const selector=document.getElementById('levels-mode'),histories={network:new Map
 let mode='cpu',latest=[],busy=false,lastData=null,smoothing=false,highlighted=null;
 const transportControl=document.getElementById('levels-transport'),transportStatus=document.getElementById('levels-transport-status');
 let savingTransport=false;
+let previousSnapshots={};
 const transportDescription=policy=>`All launchers prefer ${policy.transport==='tcp'?'TCP':'WebRTC'} and fall back to ${policy.transport==='tcp'?'WebRTC':'TCP'} if disconnected. Changes apply as launchers connect.`;
 transportControl.onchange=async()=>{
  const previous=lastData?.[1]?.telemetry_policy;
@@ -171,17 +173,20 @@ async function refresh(){
    document.dispatchEvent(new CustomEvent('test-context',{detail:{run:snapshot.run}}));
    update(snapshot.network,mergeNetworkMeasurements(snapshot.metrics,snapshot.resources));
   }else{
-   const [network,metrics,resources]=await Promise.all([read('/api/devices?resolve=0'),read('/api/cpu'),read('/api/resources').catch(()=>({hosts:[]}))]);
-   update(network,mergeNetworkMeasurements(metrics,resources));
+   const result=await readResourceSnapshots(read,previousSnapshots);
+   previousSnapshots=result.snapshots;
+   const {network,metrics,resources}=result.snapshots;
+   update(network||{devices:[]},mergeNetworkMeasurements(result.failed.includes('metrics')?(resources||metrics||{hosts:[]}):(metrics||resources||{hosts:[]}),resources||{hosts:[]}));
+   if(result.failed.length)document.getElementById('levels-status').textContent='Retrying '+[...new Set(result.failed.map(key=>key==='network'?'device discovery':'resource readings'))].join(', ')+' · showing last samples with their original timestamps';
   }
  }catch(error){
   if(root.dataset.source)document.dispatchEvent(new CustomEvent('test-context',{detail:{run:null}}));
   if(error.status===401){
    transportControl.disabled=true;transportStatus.textContent='Sign in to manage global telemetry transport.';
-   lastData=null;latest=[];for(const history of Object.values(histories))history.clear();
+   previousSnapshots={};lastData=null;latest=[];for(const history of Object.values(histories))history.clear();
    for(const id of ['levels-legend','levels-cpu-summary','levels-coverage','levels-docker'])document.getElementById(id).replaceChildren();
    draw();
-  }else if(lastData)update({...lastData[0],link_traffic:null,docker_downloads:{status:'unavailable'}}, {hosts:lastData[1].hosts.map(h=>({...h,status:'unavailable'}))});
+  }else if(lastData)update(...lastData);
   document.getElementById('levels-status').textContent=error.status===401?'Sign in to Swarm Control to view your Task Manager.':'Disconnected · measurements unavailable · retrying';
  }finally{busy=false;}
 }

@@ -31,8 +31,8 @@ export function deviceLevels(data,metrics,mode,now=Date.now()) {
   }
  }
  const field={network:'network_mbps',disk:'disk_busy_percent',ram:'ram_percent',cpu:'percent',send:'network_tx_mbps',receive:'network_rx_mbps'}[mode];
- const hostValue=h=>h?.status==='live'&&now/1000-h.sampled_at<15&&valid(h[field])?h[field]:null;
- const cpuInfo=h=>mode==='cpu'?{basis:h?hostCpuDetail(h)+' · '+hostCpuContext(h):'No host telemetry',unavailableLabel:h?cpuStatusLabel(now/1000-h.sampled_at>=15?'stale':h.status):'No telemetry'}:{};
+ const hostValue=h=>h?.status==='live'&&now/1000-h.sampled_at<30&&valid(h[field])?h[field]:null;
+ const cpuInfo=h=>mode==='cpu'?{basis:h?hostCpuDetail(h)+' · '+hostCpuContext(h)+' · Sample '+Math.max(0,now/1000-h.sampled_at).toFixed(1)+'s old'+(h.collection_status?' · Latest collection: '+h.collection_status:''):'No host telemetry',unavailableLabel:h?cpuStatusLabel(now/1000-h.sampled_at>=30?'stale':h.status):'No telemetry'}:{};
  const capture=data.link_traffic, fresh=capture&&!capture.capture_error&&now-Date.parse(capture.updated)<10000;
  for(const d of data.devices||[]){
   const h=hosts.find(h=>Boolean(d.hostname)&&(h.host===d.hostname||h.observed_hostname===d.hostname.replace(/\.local$/,''))||h.addresses?.includes(d.ip)||d.self&&h.host==='compai.local');if(h&&used.has(h.host))continue;if(h)used.add(h.host);

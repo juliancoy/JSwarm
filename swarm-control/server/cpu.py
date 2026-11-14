@@ -19,6 +19,17 @@ from distributed import targets
 from agent_client import AgentClient, CONFIG
 
 
+STALE_AFTER_SECONDS = 30
+
+def retain_sample(previous, sample):
+    """A failed read is collection state, not a new resource measurement."""
+    if previous and previous.get("status") == "live" and sample.get("status") != "live":
+        return {**previous, "collection_status": sample.get("status"),
+                "collection_error": sample.get("error"), "last_attempt_at": time.time()}
+    if sample.get("sampled_at", 0) < previous.get("sampled_at", 0):
+        return previous
+    return sample
+
 def aggregate(hosts):
     fresh=[h for h in hosts if isinstance(h.get('percent'),(int,float)) and math.isfinite(h['percent'])
            and 0<=h['percent']<=100 and isinstance(h.get('cpus'),int) and h['cpus']>0 and h.get('status')=='live']
@@ -72,7 +83,7 @@ class CpuMonitor:
             return {'host':target['host'],**values}
         except (OSError,ValueError,TypeError,RuntimeError,KeyError,subprocess.SubprocessError) as error:
             status='permission_denied' if isinstance(error,PermissionError) else 'authentication_denied' if str(error) in ('Agent HTTP status 401','Agent HTTP status 403') else 'unavailable'
-            return {'host':target['host'],'percent':None,'cpus':None,'status':status,'sampled_at':time.time()}
+            return {'host':target['host'],'percent':None,'cpus':None,'status':status,'error':str(error),'sampled_at':time.time()}
 
     def view(self):
         with self.lock:
@@ -98,7 +109,7 @@ class CpuMonitor:
         for host in hosts:
             host['sample_age_seconds']=round(max(0,now-host['sampled_at']),1)
             host.update(activity.get(host['host'],{'running_test_jobs':0,'scheduled_cpu_slots':0,'workload_phase':'idle' if activity_status=='available' else 'unknown'}))
-            if host['sample_age_seconds']>15:
+            if host['sample_age_seconds']>=STALE_AFTER_SECONDS:
                 host.update(status='stale',percent=None,logical_cpus=[],ram_percent=None,disk_busy_percent=None,network_mbps=None)
             if host.get('performance'):
                 host['performance']={**host['performance'],'stale':now-host['performance'].get('sampled_at',0)>15}
@@ -146,9 +157,11 @@ class CpuMonitor:
                         if policy and policy.get('updated_at',0)>=(self.telemetry_policy or {}).get('updated_at',0):self.telemetry_policy=policy
                         current={h['host']:h for h in self.hosts}
                         for host in fleet['hosts']:
-                            if host['sampled_at']>=current.get(host['host'],{}).get('sampled_at',0):current[host['host']]=host
+                            current[host['host']]=retain_sample(current.get(host['host'],{}),host)
                         self.hosts=list(current.values())
-                        for frame in fleet['events']:self.history.append(frame['hosts'],frame['sampled_at'],partial=True)
+                        for frame in fleet['events']:
+                            measured=[h for h in frame['hosts'] if h.get('status')!='warming']
+                            if measured:self.history.append(measured,frame['sampled_at'],partial=True)
                 except (OSError,ValueError,TypeError,RuntimeError,KeyError):pass
                 for name,future in list(pending.items()):
                     if not future.done():continue
@@ -158,14 +171,12 @@ class CpuMonitor:
                     with self.lock:
                         current={h['host']:h for h in self.hosts}
                         previous=current.get(name,{})
-                        if previous and sample.get('status') in ('unavailable','authentication_denied','permission_denied'):continue
-                        if sample['sampled_at']>previous.get('sampled_at',0):
-                            current[name]=sample;self.hosts=list(current.values())
+                        current[name]=retain_sample(previous,sample);self.hosts=list(current.values())
+                        if sample.get('status')!='warming' and current[name] is sample and sample['sampled_at']>previous.get('sampled_at',0):
                             self.history.append([sample],sample['sampled_at'],partial=True)
                 with self.lock:current={h['host']:h for h in self.hosts}
                 for target in hosts:
                     name=target['host'];previous=current.get(name,{})
-                    if previous.get('telemetry_transport')=='launcher-push' and now-previous.get('sampled_at',0)<15:continue
                     if name not in pending and now-attempted.get(name,0)>=5:
                         attempted[name]=now;pending[name]=pool.submit(self.sample,target)
                 if self.network:

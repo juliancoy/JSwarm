@@ -124,9 +124,27 @@ nodes. From the Organization workspace:
 
 ```bash
 python -m scripts.deploy_swarm_inputs --publish
-python -m scripts.swarm_node update
 python -m scripts.deploy_swarm_inputs --status
 ```
+
+`--publish` checks the committed Organization, JSwarm, and GenomeHarbor sources
+for sensitive filenames, private keys, common provider tokens, literal secret
+assignments, and credentials in URLs. A finding or scan error blocks publication;
+reports contain paths, line numbers, and rule names, never credential values.
+Reviewed test examples have exceptions bound to their repository, file, rule, and
+exact matched-content SHA-256 in `scripts/release-secrets-allowlist.json`; a
+changed value must be reviewed again.
+The scan includes tracked ignored and export-ignored files, then rechecks the
+exported source before validation. These pattern checks cover the selected source
+commits, not Git history, and cannot identify every kind of sensitive information.
+Use `python -m scripts.release_secrets /path/to/repository --revision HEAD` to
+check a commit independently before pushing it.
+
+After validation, `--publish` publishes and rolls out that exact release in one
+command, honoring `--node`, `--wait-timeout`, and `--parallel`. It fails if another
+publication supersedes it or selected nodes cannot become ready. Use
+`--publish-only` to validate and publish without rollout. Running the command
+without either flag still updates nodes to the already published release.
 
 Publication validates committed snapshots and atomically selects the checksummed
 artifact at `~/.local/state/swarm-control/node-releases/desired`. The updater uses

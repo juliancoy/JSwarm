@@ -113,3 +113,10 @@ readers). This scratch must be capacity-admitted: use Latitude-backed output for
 large work and bounded shards on RAM-only workers. No SQLite locks or mmap are
 required. Full-genome reference indexing, shard sizing, capacity and throughput
 still require workload-specific admission; a bounded pilot is not that analysis.
+
+For rootless Docker, UID 0 inside the user namespace maps to the enrolled host
+owner. Such consumers use `container_user="0:0"` with all capabilities dropped,
+no-new-privileges and a read-only root; using UID 1000 inside that namespace maps
+to a different host UID. Inspiron's existing rootless engine passed a real
+read-only bind/read under this mapped owner identity. System-Docker consumers
+use the actual host owner UID (1000 in this fleet).

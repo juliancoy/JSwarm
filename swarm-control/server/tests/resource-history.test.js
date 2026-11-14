@@ -68,3 +68,15 @@ test('five-minute histories retain dense telemetry instead of truncating at 180 
  assert.equal(points[0].time,now-299000);
  assert.ok(points.every(point=>point.value===25));
 });
+
+test('warming records between real host samples do not break history',()=>{
+ const histories={cpu:new Map(),ram:new Map()};
+ const first={...host(now-20000,25),ram_percent:40};
+ const warming={...host(0,null),status:'warming'};
+ const last={...host(now-5000,30),ram_percent:45};
+ recordResourceHistory(histories,{}, {hosts:[last],history:[{sampled_at:(now-20000)/1000,hosts:[first],partial:true},{sampled_at:(now-10000)/1000,hosts:[warming],partial:true}]},now,rowsFor);
+ assert.deepEqual(histories.cpu.get('worker.local').map(p=>p.value),[25,30]);
+ assert.deepEqual(histories.ram.get('worker.local').map(p=>p.value),[40,45]);
+ assert.equal(deviceLevels({}, {hosts:[last]},'cpu',now+15000)[0].value,30);
+ assert.equal(deviceLevels({}, {hosts:[last]},'cpu',now+26000)[0].value,null);
+});
