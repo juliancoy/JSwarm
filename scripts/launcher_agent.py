@@ -822,7 +822,7 @@ def tree_bytes(root):
 
 def prune_workspaces(root,active=(),mounts=(),*,now=None,budget=WORKSPACE_BUDGET,min_free=MIN_FREE_BYTES):
     root=Path(root);now=time.time() if now is None else now
-    active=set(active);records=[];removed=[]
+    active=set(active);records=[];removed=[];original_states={}
     for state_path in root.glob('*/state.json'):
         folder=state_path.parent
         if folder.is_symlink() or not re.fullmatch(r'[0-9TZ-]+-[a-f0-9]{8}',folder.name):continue
@@ -830,6 +830,7 @@ def prune_workspaces(root,active=(),mounts=(),*,now=None,budget=WORKSPACE_BUDGET
             if state_path.is_symlink() or state_path.stat().st_size>1024*1024:continue
             state=json.loads(state_path.read_text())
         except (OSError,ValueError):continue
+        original_states[folder]=dict(state)
         if folder.name in active or state.get('status') not in ('completed','failed','stopped','interrupted','consumed'):continue
         if any(str(mount)==str(folder) or str(mount).startswith(str(folder)+'/') for mount in mounts):continue
         source=folder/'source'
@@ -859,7 +860,7 @@ def prune_workspaces(root,active=(),mounts=(),*,now=None,budget=WORKSPACE_BUDGET
             state.update(workspace_retained=False,workspace_bytes=0)
             removed.append(folder.name)
             if folder.name in keep:retained-=size
-        write_job_state(folder/'state.json',state)
+        if state!=original_states[folder]:write_job_state(folder/'state.json',state)
         if not source.exists() and now-finished>30*86400:shutil.rmtree(folder)
     for _,folder,state,_ in reversed(records):
         results=folder/'results'
@@ -1964,30 +1965,34 @@ class Agent:
     def cleanup_workspaces(self):
         """Fail closed if container ownership cannot be inspected."""
         import docker
+        # One sweep owns reclamation. New admissions must not exhaust the RPC
+        # executor by waiting behind the same disk sweep; disk headroom is still
+        # checked synchronously by start() before any work is admitted.
+        if not self.storage_lock.acquire(blocking=False):return self.storage_status
         try:
-            with self.storage_lock:
-                with contextlib.closing(docker.from_env(timeout=5)) as client:
-                    mounts=[mount['Source'] for container in client.containers.list(all=True)
-                            for mount in container.attrs.get('Mounts',[]) if mount.get('Type')=='bind']
-                for proc in Path('/proc').glob('[0-9]*'):
-                    try:mounts.append(str((proc/'cwd').resolve(strict=True)))
-                    except OSError:pass
-                with self.lock:
-                    active=set(self.active_workers)|{key for key,value in self.jobs.items() if value['status'] in ('running','starting')}
-                summary=prune_workspaces(self.root,active,mounts)
-                with self.lock:
-                    for ident in summary['removed']:
-                        if ident in self.jobs:self.jobs[ident]['workspace_retained']=False
-                    idle=not self.active_workers
-                    finished=[key for key,value in self.jobs.items() if key not in self.active_workers and value['status'] not in ('running','starting')]
-                    for key in finished[:-10]:
-                        if not (self.folder(key)/'source').exists():del self.jobs[key]
-                if idle:summary['package_cache_bytes']=prune_package_cache(self.root/'home/.cache/organization-tests/packages',mounts)
-                self.storage_status=summary
-                return summary
+            with contextlib.closing(docker.from_env(timeout=5)) as client:
+                mounts=[mount['Source'] for container in client.containers.list(all=True)
+                        for mount in container.attrs.get('Mounts',[]) if mount.get('Type')=='bind']
+            for proc in Path('/proc').glob('[0-9]*'):
+                try:mounts.append(str((proc/'cwd').resolve(strict=True)))
+                except OSError:pass
+            with self.lock:
+                active=set(self.active_workers)|{key for key,value in self.jobs.items() if value['status'] in ('running','starting')}
+            summary=prune_workspaces(self.root,active,mounts)
+            with self.lock:
+                for ident in summary['removed']:
+                    if ident in self.jobs:self.jobs[ident]['workspace_retained']=False
+                idle=not self.active_workers
+                finished=[key for key,value in self.jobs.items() if key not in self.active_workers and value['status'] not in ('running','starting')]
+                for key in finished[:-10]:
+                    if not (self.folder(key)/'source').exists():del self.jobs[key]
+            if idle:summary['package_cache_bytes']=prune_package_cache(self.root/'home/.cache/organization-tests/packages',mounts)
+            self.storage_status=summary
+            return summary
         except Exception as error:
             self.storage_status={'error':type(error).__name__+': '+str(error)[:200]}
             return self.storage_status
+        finally:self.storage_lock.release()
 
     def maintain_storage(self):
         while not self.storage_stop.is_set():

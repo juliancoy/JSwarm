@@ -8,6 +8,25 @@ sys.path.insert(0,str((Path(__file__).resolve().parents[2] if Path(__file__).res
 from launcher_agent import prune_workspaces
 
 class RetentionTests(unittest.TestCase):
+    def test_unchanged_terminal_receipts_are_not_rewritten_each_sweep(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);self.job(root,1)
+            prune_workspaces(root,now=100000,min_free=0)
+            with patch('launcher_agent.write_job_state') as write:
+                prune_workspaces(root,now=100001,min_free=0)
+            write.assert_not_called()
+
+    def test_concurrent_admission_does_not_wait_for_an_existing_storage_sweep(self):
+        import threading
+        from launcher_agent import Agent
+        agent=Agent.__new__(Agent);agent.storage_lock=threading.Lock();agent.storage_status={'checked_at':100}
+        agent.storage_lock.acquire()
+        try:
+            with patch('docker.from_env') as docker:
+                self.assertEqual(agent.cleanup_workspaces(),{'checked_at':100})
+            docker.assert_not_called()
+        finally:agent.storage_lock.release()
+
     def job(self,root,number,status='completed',age=0,prepared=False):
         folder=root/f'20261025T010000Z-{number:08x}';(folder/'source/node_modules').mkdir(parents=True)
         (folder/'source/node_modules/file').write_bytes(b'x'*8192)
