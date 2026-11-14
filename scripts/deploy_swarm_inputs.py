@@ -74,11 +74,13 @@ def sweep(nodes=None,wait_timeout=3600,published=None,*,parallel=False):
     components=getattr(updater,'components',None)
     if isinstance(components,dict) and 'public-pager' in components:
         from deployment_components import deploy as deploy_component
+        progress.update(phase='Checking public cache services')
         paged=deploy_component(components['public-pager'],selected)
         for row in rows:
             if row['node'] in paged:row['paged_cache']=paged[row['node']]
     if isinstance(components,dict) and 'private-filesystem' in components:
         from deployment_components import deploy as deploy_component
+        progress.update(phase='Checking private filesystem services')
         filesystems=deploy_component(components['private-filesystem'],selected)
         for row in rows:
             if row['node'] in filesystems:row['filesystem']=filesystems[row['node']]
