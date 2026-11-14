@@ -8,7 +8,7 @@ _RESOLVER = None
 _RESOLVER_LOCK = threading.Lock()
 
 
-def resolve_service(node, timeout=5000):
+def resolve_service(node, timeout=1000):
     """Resolve DNS-SD directly when a container has no host NSS mDNS module."""
     global _RESOLVER
     with _RESOLVER_LOCK:
@@ -41,19 +41,8 @@ def service_hostname(node):
 
 
 def resolve_endpoint(node):
-    """Use mDNS names, including legacy nodes during a rolling update."""
-    last = None
-    for hostname in (service_hostname(node), node):
-        try:
-            rows = socket.getaddrinfo(hostname, 8790, type=socket.SOCK_STREAM)
-            addresses = sorted({row[4][0].split('%', 1)[0] for row in rows})
-            if addresses:
-                return 'http://' + hostname + ':8790', addresses
-        except socket.gaierror as error:
-            last = error
-    # Minimal containers have no NSS mDNS plugin. Resolve the enrolled DNS-SD
-    # service directly and use its address so HTTP does not repeat the failed
-    # hostname lookup. The encrypted agent protocol still authenticates the node.
+    """Resolve the enrolled DNS-SD service directly; never enter host NSS."""
+    service_hostname(node)  # Validate the enrolled name before discovery.
     try:
         _, addresses = resolve_service(node)
         return 'http://' + addresses[0] + ':8790', addresses

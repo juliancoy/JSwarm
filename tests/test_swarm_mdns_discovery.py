@@ -39,7 +39,7 @@ def configure(tmp_path, monkeypatch, *, resolved='10.42.0.222', attested='10.42.
     client.call.side_effect = lambda op, **kwargs: status if op == 'status' else {'cpus': 4}
     factory = MagicMock(return_value=client)
     monkeypatch.setattr(runtime, 'AgentClient', factory)
-    monkeypatch.setattr(discovery.socket, 'getaddrinfo', lambda *args, **kwargs: [(2, 1, 6, '', (resolved, 8790))])
+    monkeypatch.setattr(discovery, 'resolve_service', lambda node: ('worker-swarm.local', [resolved]))
     monkeypatch.setattr(runtime.subprocess, 'check_output', lambda *args, **kwargs: 'true true')
     return factory
 
@@ -48,7 +48,7 @@ def test_mdns_endpoint_survives_changed_enrolled_ip(tmp_path, monkeypatch):
     factory = configure(tmp_path, monkeypatch)
     host, = runtime.discover()
     assert host['eligible']
-    assert factory.call_args.args[0]['agent_endpoint'] == 'http://worker-swarm.local:8790'
+    assert factory.call_args.args[0]['agent_endpoint'] == 'http://10.42.0.222:8790'
     assert host['lan_address'] == '10.42.0.222'
 
 
@@ -66,22 +66,9 @@ def test_mdns_does_not_bypass_node_pause(tmp_path, monkeypatch):
     assert 'declining jobs' in host['reason']
 
 
-def test_legacy_name_is_only_a_dns_rollout_fallback(monkeypatch):
-    calls=[]
-    def resolve(name,*args,**kwargs):
-        calls.append(name)
-        if name.endswith('-swarm.local'):raise discovery.socket.gaierror('not published yet')
-        return [(2,1,6,'',('10.42.0.71',8790))]
-    monkeypatch.setattr(discovery.socket,'getaddrinfo',resolve)
-    endpoint,addresses=discovery.resolve_endpoint('worker.local')
-    assert endpoint=='http://worker.local:8790'
-    assert addresses==['10.42.0.71']
-    assert calls==['worker-swarm.local','worker.local']
-
-
 def test_endpoint_uses_dns_sd_address_without_container_nss(monkeypatch):
     def unavailable(*args, **kwargs):
-        raise discovery.socket.gaierror('no mDNS NSS module')
+        raise AssertionError('Host NSS must never be called')
     monkeypatch.setattr(discovery.socket, 'getaddrinfo', unavailable)
     resolver=MagicMock(return_value=('worker-swarm.local', ['10.42.0.222']))
     monkeypatch.setattr(discovery, 'resolve_service', resolver)
@@ -92,7 +79,7 @@ def test_endpoint_uses_dns_sd_address_without_container_nss(monkeypatch):
 def test_endpoint_rejects_missing_or_invalid_dns_sd_service(monkeypatch):
     import pytest
     def unavailable(*args, **kwargs):
-        raise discovery.socket.gaierror('no mDNS NSS module')
+        raise AssertionError('Host NSS must never be called')
     monkeypatch.setattr(discovery.socket, 'getaddrinfo', unavailable)
     monkeypatch.setattr(discovery, 'resolve_service', MagicMock(side_effect=OSError('invalid advertisement')))
     with pytest.raises(OSError, match='No mDNS endpoint'):
@@ -150,3 +137,15 @@ def test_signed_subprocess_preserves_gateway_route_and_journal():
     assert command[command.index('--route')+1]=='auto'
     assert command[-2:]==['--','true']
     assert caller_record(host,'a'*32,['true'])['agent_route']=='auto'
+
+
+def test_numeric_agent_connection_never_calls_host_resolver(monkeypatch):
+    import sys
+    from pathlib import Path
+    sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'swarm-control/server'))
+    import agent_client
+    def forbidden(*args,**kwargs):raise AssertionError('Host resolver called')
+    monkeypatch.setattr(agent_client.socket,'getaddrinfo',forbidden)
+    sock=MagicMock();monkeypatch.setattr(agent_client.socket,'socket',lambda *args:sock)
+    assert agent_client.multipath_connection(('10.42.0.222',8790)) is sock
+    sock.connect.assert_called_once_with(('10.42.0.222',8790))

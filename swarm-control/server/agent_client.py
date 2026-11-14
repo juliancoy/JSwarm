@@ -2,6 +2,7 @@
 import base64
 import errno
 import socket
+import ipaddress
 import hashlib
 import http.client
 import threading
@@ -21,7 +22,14 @@ CONFIG=Path(os.getenv('LIFETECH_PEER_CONFIG',str(Path.home()/'.config/lifetech-l
 def multipath_connection(address,timeout=30,source_address=None,**kwargs):
     host,port=address
     last=None
-    for family,kind,protocol,_,destination in socket.getaddrinfo(host,port,0,socket.SOCK_STREAM):
+    try:
+        ip=ipaddress.ip_address(host)
+    except ValueError:ip=None
+    if ip is not None:
+        family=socket.AF_INET6 if ip.version==6 else socket.AF_INET
+        addresses=[(family,socket.SOCK_STREAM,socket.IPPROTO_TCP,'',(host,port,0,0) if ip.version==6 else (host,port))]
+    else:addresses=socket.getaddrinfo(host,port,0,socket.SOCK_STREAM)
+    for family,kind,protocol,_,destination in addresses:
         sock=None
         try:
             try:sock=socket.socket(family,kind,getattr(socket,'IPPROTO_MPTCP',262))
@@ -55,6 +63,16 @@ class AgentClient:
         connection=http.client.HTTPSConnection if endpoint.scheme=='https' else http.client.HTTPConnection
         self.connection=connection(endpoint.hostname,endpoint.port,timeout=30)
         self.connection._create_connection=multipath_connection
+        if not self.gateway and endpoint.hostname.endswith('.local'):
+            def connect(address,timeout=30,source_address=None,**kwargs):
+                from scripts.launcher_discovery import resolve_service
+                _,addresses=resolve_service(self.node)
+                last=None
+                for ip in addresses:
+                    try:return multipath_connection((ip,address[1]),timeout,source_address,**kwargs)
+                    except OSError as error:last=error
+                raise last or OSError('No current mDNS route')
+            self.connection._create_connection=connect
         self.connection_lock=threading.Lock()
 
     def call(self, op, args=None, timeout=30):
