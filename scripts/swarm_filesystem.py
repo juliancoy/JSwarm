@@ -151,7 +151,7 @@ class Filesystem:
                     self.remotes[node] = remote
                 remote = self.remotes[node]
             return remote.call('filesystem.rpc', request(settings, args['action'], **args['args']),
-                               timeout=3 if args['action'].startswith('cache.') else 60)
+                               timeout=settings.get('cache_timeout', 25) if args['action'].startswith('cache.') else 60)
         if op in ('cache.get', 'cache.put'):
             key, length = args['key'], args['length']
             if type(length) is not int or not 0 < length <= BLOCK:raise ValueError('Invalid block size')
@@ -160,7 +160,8 @@ class Filesystem:
                 data = base64.b64decode(args['data'], validate=True)
                 if len(data) != length:raise ValueError('Invalid cache payload')
                 self.cache.block(key, length, 0, lambda *_: data)
-            return {'data': base64.b64encode(data).decode() if data is not None else None}
+            return {'data': base64.b64encode(data).decode() if data is not None else None,
+                    'stored': self.cache.lookup(key, length, 0) is not None}
         if op == 'status':return {'namespace': settings['namespace'], 'origin': settings['origin'], 'write_policy': 'write-through'}
         root = settings.get('root')
         if not root:raise OSError(errno.EXDEV, 'This node is a RAM peer, not the origin')
@@ -171,7 +172,7 @@ class Filesystem:
         path = args['path']
         guard = self.config.with_suffix('.fs-lock')
         with guard.open('a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX if op in ('write', 'truncate', 'create', 'mkdir', 'unlink', 'rmdir', 'rename') else fcntl.LOCK_SH)
+            fcntl.flock(lock, fcntl.LOCK_EX if op in ('write', 'truncate', 'create', 'mkdir', 'unlink', 'rmdir', 'rename', 'chmod') else fcntl.LOCK_SH)
             with self.parent(root, path) as (parent, name):
                 if op == 'stat':return attributes(os.stat(name, dir_fd=parent, follow_symlinks=False))
                 if op == 'list':
@@ -188,6 +189,15 @@ class Filesystem:
                             if target == '.':raise OSError(errno.EPERM, 'Cannot replace root')
                             os.rename(name, target, src_dir_fd=parent, dst_dir_fd=dest);os.fsync(dest)
                     os.fsync(parent);return {}
+                if op == 'chmod':
+                    mode = args['mode']
+                    if type(mode) is not int or mode & ~0o700:raise OSError(errno.EPERM, 'Private owner permissions only')
+                    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+                    try:
+                        if not (stat.S_ISREG(os.fstat(fd).st_mode) or stat.S_ISDIR(os.fstat(fd).st_mode)):raise OSError(errno.EINVAL, 'Regular files and directories only')
+                        os.fchmod(fd, mode);os.fsync(fd)
+                    finally:os.close(fd)
+                    return {}
                 if op not in ('read', 'write', 'truncate', 'create'):raise ValueError('Unknown filesystem operation')
                 flags = os.O_RDONLY if op == 'read' else os.O_RDWR
                 if op == 'create':flags |= os.O_CREAT | os.O_EXCL

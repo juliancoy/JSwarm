@@ -25,3 +25,15 @@ def test_disabled_fuse_configures_api_without_installing_mount_dependencies(tmp_
     assert not (tmp_path/'.local/share/swarm-filesystem/dependencies').exists()
     assert not (tmp_path/'SwarmDNA').exists()
     assert json.loads((tmp_path/'.config/lifetech-launcher/filesystem.json').read_text())['fuse'] is False
+
+
+def test_ssh_owner_command_uses_enrolled_mdns_and_literal_code():
+    from scripts.deploy_swarm_filesystem import ssh_command
+    import shlex
+    enrolled={'name':'compai.local','peers':{'compai.local':{},'codecollective.local':{}}}
+    plan={'ssh_users':{'codecollective.local':'codecollective'}}
+    code="print('literal $HOME `uname`')"
+    args=ssh_command('codecollective.local',code,plan,enrolled)
+    assert args[-2]=='codecollective@codecollective.local'
+    assert shlex.split(args[-1])==['python3','-c',code]
+    with pytest.raises(ValueError):ssh_command('unknown.local',code,plan,enrolled)

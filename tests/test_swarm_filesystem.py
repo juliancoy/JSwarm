@@ -173,3 +173,42 @@ def test_host_mount_routes_through_local_node_without_host_crypto(fs, tmp_path, 
         assert client.write('/network', b'NEW', 0) == 3
         assert (root/'network').read_bytes().startswith(b'NEW')
     finally:server.shutdown();server.server_close();thread.join();shutil.rmtree(home)
+
+
+def test_chmod_enforces_private_mode_and_rejects_symlinks(fs, tmp_path):
+    root, settings, service, call = fs
+    call('create', path='/private')
+    call('chmod', path='/private', mode=0o400)
+    assert (root/'private').stat().st_mode & 0o777 == 0o400
+    call('chmod', path='/private', mode=0o600)
+    with pytest.raises(OSError):call('chmod', path='/private', mode=0o644)
+    outside = tmp_path/'outside';outside.write_text('protected');outside.chmod(0o600)
+    (root/'link').symlink_to(outside)
+    with pytest.raises(OSError):call('chmod', path='/link', mode=0o400)
+    assert outside.stat().st_mode & 0o777 == 0o600
+
+
+def test_cache_admission_reports_actual_storage(fs, monkeypatch):
+    root, settings, service, call = fs
+    service.cache.budget = 1
+    row = call('cache.put', key='a'*32, length=3, data='YWJj')
+    assert row['stored'] is False
+    service.cache.budget = BLOCK
+    assert call('cache.put', key='a'*32, length=3, data='YWJj')['stored'] is True
+
+
+def test_mmap_snapshot_verified_private_and_cleaned(fs, tmp_path, monkeypatch):
+    import hashlib,mmap,shutil
+    from scripts.swarm_fs_mount import immutable_ram_snapshot
+    root, settings, service, call = fs
+    payload=b'publicly-pinned-test-fixture';(root/'immutable').write_bytes(payload)
+    client=Client(settings,cache=InputCache(tmp_path/'client',reserve=0));client.origin=call
+    client.read=lambda path,size,offset:payload[offset:offset+size]
+    monkeypatch.setattr(shutil,'disk_usage',lambda path: type('Usage',(),{'free':10**9})())
+    with immutable_ram_snapshot(client,'/immutable',hashlib.sha256(payload).hexdigest()) as path:
+        assert path.stat().st_mode & 0o777 == 0o400
+        with path.open('rb') as f:
+            with mmap.mmap(f.fileno(),0,access=mmap.ACCESS_READ) as view:assert view[:]==payload
+    assert not path.exists()
+    with pytest.raises(OSError):
+        with immutable_ram_snapshot(client,'/immutable','0'*64):pass

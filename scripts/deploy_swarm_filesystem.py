@@ -1,5 +1,6 @@
 """Install private filesystem configuration and mounts through standard node deployment."""
 import json
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -40,7 +41,8 @@ if not settings.get('fuse',True):
  unit=home/'.config/systemd/user/swarm-filesystem.service'
  if unit.exists():
   namespace={};exec(p['files']['scripts/swarm_host_service.py'],namespace)
-  namespace['systemctl']('disable','--now',unit.name,check=True,capture_output=True)
+  namespace['systemctl']('stop',unit.name,check=True,capture_output=True)
+  namespace['systemctl']('disable',unit.name,check=True,capture_output=True)
  print(json.dumps({'active':True,'fuse':False,'mounted':False,'revision':revision}))
  raise SystemExit(0)
 # Only the small mount adapter is installed here. Bulk scientific data stays in RAM.
@@ -50,7 +52,9 @@ if not (deps/'mfusepy-3.1.1.dist-info').is_dir():
  requirements=deps/'requirements.txt'
  requirements.write_text('mfusepy==3.1.1 --hash=sha256:69fb70cfc7f7cce595e6ff586f8451d8298f01f18286a157f24f564b24ec5a37\n')
  subprocess.run([sys.executable,'-m','pip','install','--disable-pip-version-check','--no-cache-dir','--no-deps','--only-binary=:all:','--require-hashes','--target',str(deps),'-r',str(requirements)],check=True,stdout=subprocess.DEVNULL)
-mountpoint=home/'SwarmDNA';mountpoint.mkdir(exist_ok=True)
+mountpoint=home/'SwarmDNA'
+try:os.mkdir(mountpoint)
+except FileExistsError:pass
 unit=home/'.config/systemd/user/swarm-filesystem.service';unit.parent.mkdir(parents=True,exist_ok=True)
 import shlex
 execstart=shlex.join(['/usr/bin/python3',str(release/'scripts/swarm_fs_mount.py'),str(mountpoint),'--foreground'])
@@ -58,12 +62,58 @@ text='[Unit]\nDescription=Private swarm filesystem backed by Latitude\nAfter=net
 changed=not unit.exists() or unit.read_text()!=text
 unit.write_text(text)
 namespace={};exec(p['files']['scripts/swarm_host_service.py'],namespace);systemctl=namespace['systemctl']
+if settings.get('allow_root',True):namespace['configure_fuse_root_access']()
 systemctl('daemon-reload',check=True,capture_output=True)
 if changed:systemctl('try-restart',unit.name,check=True,capture_output=True)
-systemctl('enable','--now',unit.name,check=True,capture_output=True)
+systemctl('enable',unit.name,check=True,capture_output=True)
+systemctl('start',unit.name,check=True,capture_output=True)
 active=systemctl('is-active','--quiet',unit.name).returncode==0
 print(json.dumps({'active':active,'mountpoint':str(mountpoint),'revision':revision}))
 '''
+
+
+def ssh_command(name, code, plan, enrolled):
+    if name not in enrolled['peers']:raise ValueError('Unenrolled SSH target')
+    if name == enrolled['name']:return [sys.executable, '-c', code]
+    from scripts.launcher_discovery import service_hostname
+    service_hostname(name)  # Validate the enrolled mDNS name; SSH uses its host identity.
+    hostname=name
+    user=plan.get('ssh_users', {}).get(name, 'julian')
+    import re
+    if not re.fullmatch(r'[a-z_][a-z0-9_-]*',user):raise ValueError('Invalid SSH owner')
+    return ['ssh','-4','-o','BatchMode=yes','-o','ConnectTimeout=5',user+'@'+hostname,
+            shlex.join(['python3','-c',code])]
+
+
+def deploy_ssh(name, plan, enrolled, files):
+    identity="import hashlib,json,pathlib;print(json.dumps({'machine':hashlib.sha256(pathlib.Path('/etc/machine-id').read_bytes()).hexdigest()}))"
+    row=subprocess.run(ssh_command(name,identity,plan,enrolled),check=True,capture_output=True,text=True,timeout=15)
+    settings={k:v for k,v in plan.items() if k not in ('root','fuse_library','transport','ssh_users')}
+    settings.setdefault('fuse',True)
+    settings['peers']=[n for n in enrolled['peers'] if n not in (name,plan['origin'])]
+    if name==plan['origin']:settings['root']=plan['root']
+    payload={'machine':json.loads(row.stdout)['machine'],'settings':settings,'files':files}
+    done=subprocess.run(ssh_command(name,INSTALL,plan,enrolled),input=json.dumps(payload),capture_output=True,text=True,timeout=180)
+    if done.returncode:raise RuntimeError(done.stderr[-1000:])
+    result=json.loads(done.stdout)
+    if not result['active']:raise RuntimeError('Filesystem user service inactive')
+    probe="""import json,os,pathlib,subprocess,time
+root=pathlib.Path.home()/'SwarmDNA'
+for attempt in range(40):
+ try:
+  source=subprocess.check_output(['findmnt','-n','-o','SOURCE','--target',str(root)],text=True).strip()
+  assert source=='swarm-'+json.load(open(pathlib.Path.home()/'.config/lifetech-launcher/filesystem.json'))['namespace']
+  os.stat(root);os.listdir(root)
+  print(json.dumps({'mounted':True}));break
+ except (OSError,AssertionError):
+  if attempt==39:raise
+  time.sleep(.5)
+"""
+    if settings['fuse']:
+        check=subprocess.run(ssh_command(name,probe,plan,enrolled),capture_output=True,text=True,timeout=90)
+        if check.returncode:raise RuntimeError(check.stderr[-1000:])
+        result.update(json.loads(check.stdout))
+    return result
 
 
 def deploy_fleet(names=None):
@@ -77,6 +127,8 @@ def deploy_fleet(names=None):
     for name in names or enrolled['peers']:
         client = None
         try:
+            if plan.get('transport') == 'ssh':
+                result[name]=deploy_ssh(name,plan,enrolled,files);continue
             endpoint, addresses = resolve_endpoint(name)
             host = {'host': name, 'local': name == enrolled['name'], 'agent_endpoint': endpoint, 'resolved_addresses': addresses}
             client = AgentClient(host);status = client.call('status', timeout=5)

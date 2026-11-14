@@ -24,7 +24,7 @@ class Client:
         self.factory = factory
         self.cache = cache or ram_cache(16*1024**2)
         self.cooldown = {}
-        self.counters = {'local_hits': 0, 'peer_hits': 0, 'origin_reads': 0, 'durable_writes': 0}
+        self.counters = {'local_hits': 0, 'peer_hits': 0, 'origin_reads': 0, 'durable_writes': 0, 'peer_errors': 0, 'peer_misses': 0, 'peer_admission_failures': 0}
 
     def call(self, node, operation, **args):
         if self.settings.get('local_gateway'):
@@ -47,7 +47,7 @@ class Client:
             from agent_client import AgentClient
             endpoint, _ = resolve_endpoint(node)
             self.clients[node] = (self.factory or AgentClient)({'host': node, 'agent_endpoint': endpoint})
-        value = self.clients[node].call('filesystem.rpc', request(self.settings, operation, **args), timeout=3 if operation.startswith('cache.') else 60)
+        value = self.clients[node].call('filesystem.rpc', request(self.settings, operation, **args), timeout=self.settings.get('cache_timeout', 25) if operation.startswith('cache.') else 60)
         if 'errno' in value:raise OSError(value['errno'], os.strerror(value['errno']))
         return value['result']
 
@@ -71,7 +71,10 @@ class Client:
                             if len(data) != length:raise ValueError('Peer block length differs')
                             self.counters['peer_hits'] += 1
                             return data
-                    except (OSError, RuntimeError, ValueError):self.cooldown[peer] = time.monotonic()+60
+                        self.counters['peer_misses'] += 1
+                    except (OSError, RuntimeError, ValueError):
+                        self.counters['peer_errors'] += 1
+                        self.cooldown[peer] = time.monotonic()+2
                 row = self.origin('read', path=path, version=st['version'], offset=start, length=length)
                 data = base64.b64decode(row['data'], validate=True)
                 if len(data) != length or hashlib.sha256(data).hexdigest() != row['sha256']:raise OSError(errno.EIO, 'Origin block verification failed')
@@ -81,9 +84,10 @@ class Client:
                 for peer in self.settings.get('peers', []):
                     if self.cooldown.get(peer, 0) > time.monotonic():continue
                     try:
-                        self.call(peer, 'cache.put', key=key, length=length, data=row['data'])
-                        break
-                    except (OSError, RuntimeError, ValueError):self.cooldown[peer] = time.monotonic()+60
+                        admission = self.call(peer, 'cache.put', key=key, length=length, data=row['data'])
+                        if admission.get('stored', False):break
+                        self.counters['peer_admission_failures'] += 1
+                    except (OSError, RuntimeError, ValueError):self.cooldown[peer] = time.monotonic()+2
                 return data
             data = self.cache.lookup(key, length, 0)
             if data is None:data = self.cache.block(key, length, 0, fetch)
@@ -112,6 +116,37 @@ class Client:
                 self.cache.block(key, length, 0, lambda *_: chunk[:count])
             written += count;self.counters['durable_writes'] += 1
         return written
+
+
+def immutable_ram_snapshot(client, path, sha256, *, maximum_bytes=512*1024**2):
+    """Context manager for mmap tools: verified immutable tmpfs, never disk.
+
+    Deliberately separate from the mutable FUSE view, which uses direct IO to
+    observe writes from other nodes. Callers supply the published content hash.
+    """
+    import contextlib
+    import shutil
+    import tempfile
+    @contextlib.contextmanager
+    def snapshot():
+        if len(sha256) != 64 or any(c not in '0123456789abcdef' for c in sha256):raise ValueError('Expected SHA-256 required')
+        before = client.origin('stat', path=path)
+        size = before['st_size']
+        if size > maximum_bytes or shutil.disk_usage('/dev/shm').free < size+128*1024**2:
+            raise OSError(errno.ENOSPC, 'Immutable snapshot exceeds RAM admission')
+        with tempfile.TemporaryDirectory(prefix='swarm-snapshot-', dir='/dev/shm') as folder:
+            target = Path(folder)/'data'
+            digest = hashlib.sha256()
+            with target.open('xb') as stream:
+                for offset in range(0, size, BLOCK):
+                    chunk = client.read(path, min(BLOCK, size-offset), offset)
+                    if len(chunk) != min(BLOCK, size-offset):raise OSError(errno.ESTALE, 'Snapshot input changed')
+                    digest.update(chunk);stream.write(chunk)
+            if digest.hexdigest() != sha256 or client.origin('stat', path=path)['version'] != before['version']:
+                raise OSError(errno.ESTALE, 'Snapshot content or version changed')
+            target.chmod(0o400)
+            yield target
+    return snapshot()
 
 
 def select_system_fuse(settings):
@@ -175,11 +210,14 @@ def mount(settings, mountpoint, foreground=False):
         def rmdir(self, path):client.origin('rmdir', path=path)
         @checked
         def rename(self, old, new):client.origin('rename', path=old, destination=new)
+        @checked
+        def chmod(self, path, mode):client.origin('chmod', path=path, mode=mode)
         def flush(self, path, fh):return 0
         def fsync(self, path, datasync, fh):return 0  # Every write already fsyncs at origin.
     FUSE(Files(), str(mountpoint), foreground=foreground, nothreads=True,
          attr_timeout=0, entry_timeout=0, negative_timeout=0, direct_io=True,
-         fsname='swarm-'+settings['namespace'], default_permissions=True)
+         fsname='swarm-'+settings['namespace'], default_permissions=True,
+         allow_root=settings.get('allow_root', True))
 
 
 if __name__ == '__main__':
