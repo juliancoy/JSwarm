@@ -79,6 +79,26 @@ def test_legacy_name_is_only_a_dns_rollout_fallback(monkeypatch):
     assert calls==['worker-swarm.local','worker.local']
 
 
+def test_endpoint_uses_dns_sd_address_without_container_nss(monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise discovery.socket.gaierror('no mDNS NSS module')
+    monkeypatch.setattr(discovery.socket, 'getaddrinfo', unavailable)
+    resolver=MagicMock(return_value=('worker-swarm.local', ['10.42.0.222']))
+    monkeypatch.setattr(discovery, 'resolve_service', resolver)
+    assert discovery.resolve_endpoint('worker.local') == ('http://10.42.0.222:8790', ['10.42.0.222'])
+    resolver.assert_called_once_with('worker.local')
+
+
+def test_endpoint_rejects_missing_or_invalid_dns_sd_service(monkeypatch):
+    import pytest
+    def unavailable(*args, **kwargs):
+        raise discovery.socket.gaierror('no mDNS NSS module')
+    monkeypatch.setattr(discovery.socket, 'getaddrinfo', unavailable)
+    monkeypatch.setattr(discovery, 'resolve_service', MagicMock(side_effect=OSError('invalid advertisement')))
+    with pytest.raises(OSError, match='No mDNS endpoint'):
+        discovery.resolve_endpoint('worker.local')
+
+
 def test_dns_sd_accepts_changed_ip_but_rejects_unrelated_target():
     from types import SimpleNamespace
     from unittest.mock import Mock

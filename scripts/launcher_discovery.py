@@ -51,7 +51,14 @@ def resolve_endpoint(node):
                 return 'http://' + hostname + ':8790', addresses
         except socket.gaierror as error:
             last = error
-    raise OSError('No mDNS endpoint for ' + node) from last
+    # Minimal containers have no NSS mDNS plugin. Resolve the enrolled DNS-SD
+    # service directly and use its address so HTTP does not repeat the failed
+    # hostname lookup. The encrypted agent protocol still authenticates the node.
+    try:
+        _, addresses = resolve_service(node)
+        return 'http://' + addresses[0] + ':8790', addresses
+    except OSError as error:
+        raise OSError('No mDNS endpoint for ' + node) from error
 
 
 def attest_addresses(host, status):
