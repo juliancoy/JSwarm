@@ -15,6 +15,7 @@ from agent_client import AgentClient,CONFIG
 from agent_updates import LauncherUpdates,deployment_lock,publication_token,check_publication
 from input_runtime_release import InputRuntimeRelease
 from scripts.launcher_discovery import resolve_endpoint
+from scripts import deployment_progress as progress
 
 
 RELEASES=Path.home()/'.local/state/swarm-control/node-releases'
@@ -26,8 +27,11 @@ def sweep(nodes=None,wait_timeout=3600,published=None,*,parallel=False):
     rows=[]
     selected=nodes or list(config['peers'])
     if any(name not in config['peers'] for name in selected):raise ValueError('Use an enrolled node name')
+    progress.update(status='running',phase='Updating nodes',revision=updater.revision,
+                    nodes=[{'node':name,'status':'queued'} for name in selected])
     def update(name,address,worker):
         started=time.monotonic()
+        progress.node(name,'updating')
         host={'host':name,'local':name==config['name']}
         client=None;row={'node':name}
         try:
@@ -49,6 +53,7 @@ def sweep(nodes=None,wait_timeout=3600,published=None,*,parallel=False):
         finally:
             if client:client.close()
         row['seconds']=round(time.monotonic()-started,3)
+        progress.node(name,'current' if row['status']=='current' else 'failed',seconds=row['seconds'])
         print(json.dumps(row),flush=True)
         return row
     peers=[(name,address) for name,address in config['peers'].items() if name in selected]
@@ -80,7 +85,9 @@ def sweep(nodes=None,wait_timeout=3600,published=None,*,parallel=False):
     report={'updated':time.time(),'launcher_revision':updater.revision,'generation':updater.generation,'input_revision':None,'nodes':rows}
     folder=Path.home()/'.local/state/swarm-control';folder.mkdir(mode=0o700,parents=True,exist_ok=True)
     temp=folder/'input-deployment.tmp';temp.write_text(json.dumps(report,indent=2));temp.chmod(0o600);temp.replace(folder/'input-deployment.json')
-    return all(row['status']=='current' for row in rows)
+    complete=all(row['status']=='current' for row in rows)
+    progress.update(status='running' if complete else 'failed',phase='Verified' if complete else 'Needs attention')
+    return complete
 
 
 def freeze_source(root,target):
@@ -161,18 +168,21 @@ def main():
             subprocess.run([sys.executable,'-m','scripts.deploy_swarm_inputs','--publish','--frozen-source','--expected-publication',expected],cwd=project,env=env,check=True)
         return
     if args.publish:
-        with deployment_lock(operation='validate and publish',folder=RELEASES.resolve().parent):
+        with progress.observe(CONFIG,'Validate and publish'), deployment_lock(wait=True,operation='validate and publish',folder=RELEASES.resolve().parent):
+            progress.update(status='running',phase='Validating release',started_at=time.time())
             expected=args.expected_publication if args.expected_publication is not None else publication_token(RELEASES)
             check_publication(RELEASES,expected)
             import subprocess
             updater=LauncherUpdates(ROOT,lambda:False,lambda *args:None)
-            suites=['tests/test_filesystem_deployment.py','tests/test_swarm_filesystem.py','tests/test_swarm_host_service.py','tests/test_swarm_mdns_discovery.py','scripts/tests/test_launcher_routing.py','tests/test_launcher_routing_cleanup.py','tests/test_node_web.py','tests/test_worker_storage.py','tests/test_cache_lifetime.py','tests/test_cache_pressure_reclamation.py','tests/test_execution_accounting.py','tests/test_launcher_streams.py','tests/test_swarm_stream_work.py','scripts/tests/test_launcher_telemetry.py','tests/test_swarm_paged_cache.py','tests/test_swarm_shared_cache.py','tests/test_agent_cpu_overhead.py','tests/test_deployment_lock.py','tests/test_node_releases.py','tests/test_node_git_source.py','tests/test_swarm_node.py','tests/test_worker_journal.py','tests/test_ram_cache_inventory.py','tests/test_node_cache_manager.py','tests/test_ram_cache_cleanup_api.py','tests/test_swarm_cache_cleanup.py','tests/test_swarm_cache_migrate.py','tests/test_swarm_pressure_guard.py','tests/test_launcher_commands.py','tests/test_launcher_peer_supervisor.py','tests/test_resource_renewal.py','tests/test_swarm_runtime.py','tests/test_gpu_inventory.py','tests/test_node_execution.py','tests/test_swarm_gpu_runtime.py','tests/test_rolling_deployment.py','tests/test_docker_worker_restart.py','swarm-control/server/tests/test_agent_updates.py','swarm-control/server/tests/test_agent_sessions.py','swarm-control/server/tests/test_fleet_backups.py','tests/test_worker_maintenance.py']
+            progress.update(revision=updater.revision)
+            suites=['tests/test_deployment_progress.py','tests/test_filesystem_deployment.py','tests/test_swarm_filesystem.py','tests/test_swarm_host_service.py','tests/test_swarm_mdns_discovery.py','scripts/tests/test_launcher_routing.py','tests/test_launcher_routing_cleanup.py','tests/test_node_web.py','tests/test_worker_storage.py','tests/test_cache_lifetime.py','tests/test_cache_pressure_reclamation.py','tests/test_execution_accounting.py','tests/test_launcher_streams.py','tests/test_swarm_stream_work.py','scripts/tests/test_launcher_telemetry.py','tests/test_swarm_paged_cache.py','tests/test_swarm_shared_cache.py','tests/test_agent_cpu_overhead.py','tests/test_deployment_lock.py','tests/test_node_releases.py','tests/test_node_git_source.py','tests/test_swarm_node.py','tests/test_worker_journal.py','tests/test_ram_cache_inventory.py','tests/test_node_cache_manager.py','tests/test_ram_cache_cleanup_api.py','tests/test_swarm_cache_cleanup.py','tests/test_swarm_cache_migrate.py','tests/test_swarm_pressure_guard.py','tests/test_launcher_commands.py','tests/test_launcher_peer_supervisor.py','tests/test_resource_renewal.py','tests/test_swarm_runtime.py','tests/test_gpu_inventory.py','tests/test_node_execution.py','tests/test_swarm_gpu_runtime.py','tests/test_rolling_deployment.py','tests/test_docker_worker_restart.py','swarm-control/server/tests/test_agent_updates.py','swarm-control/server/tests/test_agent_sessions.py','swarm-control/server/tests/test_fleet_backups.py','tests/test_worker_maintenance.py']
             project=Path(__file__).resolve().parents[1]
             env={**os.environ,'PYTHONPATH':os.pathsep.join(map(str,(project/'swarm-control/server',ROOT,project.parent/'GenomeHarbor/tests')))}
             subprocess.run([sys.executable,'-m','pytest','-q',*suites],cwd=project,env=env,check=True)
             checked=LauncherUpdates(ROOT,lambda:False,lambda *args:None)
             if updater.files!=checked.files or updater.supervisor_source!=checked.supervisor_source or updater.components!=checked.components or updater.git_source!=checked.git_source:
                 raise RuntimeError('Sources changed during validation; publish again after edits finish')
+            progress.update(phase='Publishing release')
             published=updater.publish(RELEASES,expected=expected)
             print(json.dumps({'published':str(published),'revision':updater.revision,'generation':updater.generation}),flush=True)
             return
@@ -182,7 +192,7 @@ def main():
             if not args.continuous:raise SystemExit('No validated agent release has been published')
             time.sleep(30);continue
         try:
-            with deployment_lock(operation='fleet rollout',folder=RELEASES.resolve().parent):done=sweep(args.node,args.wait_timeout,RELEASES/'desired',**({'parallel':True} if args.parallel else {}))
+            with progress.observe(CONFIG,'Fleet rollout'), deployment_lock(wait=True,operation='fleet rollout',folder=RELEASES.resolve().parent):done=sweep(args.node,args.wait_timeout,RELEASES/'desired',**({'parallel':True} if args.parallel else {}))
         except RuntimeError:
             if not args.continuous:raise
             time.sleep(30);continue

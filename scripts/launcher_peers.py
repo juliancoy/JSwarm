@@ -155,6 +155,22 @@ class NodePipelineWeb:
         return {'node':config['name'], 'source_revision':getattr(self.agent,'source_revision',None),
                 'protocol':'lifetech-agent.v1'}
 
+    def deployments(self):
+        # The publisher and node share the enrolled configuration directory.
+        # Whitelist observations; never expose commands, config or raw test logs.
+        records=[]
+        for path in (Path(self.agent.config).parent/'deployment-progress').glob('*.json'):
+            try:
+                value=json.loads(path.read_text())
+                row={key:value.get(key) for key in ('id','operation','status','phase','revision','queued_at','started_at','finished_at','updated_at','error')}
+                if row['status'] in ('queued','running') and time.time()-float(row['updated_at'])>15:
+                    row['status']='interrupted'
+                row['nodes']=[{key:node.get(key) for key in ('node','status','seconds')} for node in value.get('nodes',[])]
+                records.append(row)
+            except (OSError,ValueError,TypeError,KeyError):continue
+        records.sort(key=lambda row:row.get('queued_at') or 0,reverse=True)
+        return {'checked_at':time.time(),'deployments':records[:30]}
+
     async def versions(self, config):
         from aiohttp import ClientSession,ClientTimeout
         from launcher_discovery import resolve_endpoint
@@ -218,6 +234,8 @@ class NodePipelineWeb:
                 raise web.HTTPForbidden(text='Same-origin request required')
         except ValueError:raise web.HTTPMisdirectedRequest()
         if node==config['name']:
+            if request.path=='/api/jswarm-web/deployments' and request.method in ('GET','HEAD'):
+                return web.json_response(await asyncio.to_thread(self.deployments))
             if request.path=='/api/jswarm-web/version' and request.method in ('GET','HEAD'):
                 return web.json_response(self.local_version(config))
             if request.path=='/versions.json' and request.method in ('GET','HEAD'):
