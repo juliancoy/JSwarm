@@ -26,14 +26,14 @@ class Client:
         self.cooldown = {}
         self.counters = {'local_hits': 0, 'peer_hits': 0, 'origin_reads': 0, 'durable_writes': 0, 'peer_errors': 0, 'peer_misses': 0, 'peer_admission_failures': 0}
 
-    def call(self, node, operation, **args):
+    def call(self, node, operation, *, timeout=None, **args):
         if self.settings.get('local_gateway'):
             import socket
             from scripts.swarm_filesystem import canonical
             value = request(self.settings, 'route', node=node, action=operation, args=args)
             path = Path.home()/'.config/lifetech-launcher/filesystem.sock'
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-                connection.settimeout(65);connection.connect(str(path));connection.sendall(canonical(value)+b'\n')
+                connection.settimeout(timeout or (3 if operation.startswith('cache.') else 65));connection.connect(str(path));connection.sendall(canonical(value)+b'\n')
                 with connection.makefile('rb') as stream:raw = stream.readline(1024**2)
             reply = json.loads(raw)
             if not reply['ok']:raise OSError(errno.EIO, reply.get('error', 'Filesystem gateway failed'))
@@ -47,7 +47,7 @@ class Client:
             from agent_client import AgentClient
             endpoint, _ = resolve_endpoint(node)
             self.clients[node] = (self.factory or AgentClient)({'host': node, 'agent_endpoint': endpoint})
-        value = self.clients[node].call('filesystem.rpc', request(self.settings, operation, **args), timeout=self.settings.get('cache_timeout', 25) if operation.startswith('cache.') else 60)
+        value = self.clients[node].call('filesystem.rpc', request(self.settings, operation, **args), timeout=timeout or (self.settings.get('cache_timeout', 3) if operation.startswith('cache.') else 60))
         if 'errno' in value:raise OSError(value['errno'], os.strerror(value['errno']))
         return value['result']
 
@@ -62,10 +62,12 @@ class Client:
             length = min(BLOCK, st['st_size']-start)
             key = block_key(self.settings['namespace'], path, st['version'], start)
             def fetch(*_):
+                deadline = time.monotonic()+self.settings.get('cache_probe_budget', 3)
                 for peer in self.settings.get('peers', []):
+                    if time.monotonic() >= deadline:break
                     if self.cooldown.get(peer, 0) > time.monotonic():continue
                     try:
-                        row = self.call(peer, 'cache.get', key=key, length=length)
+                        row = self.call(peer, 'cache.get', timeout=max(.05,deadline-time.monotonic()), key=key, length=length)
                         if row['data'] is not None:
                             data = base64.b64decode(row['data'], validate=True)
                             if len(data) != length:raise ValueError('Peer block length differs')
@@ -82,9 +84,10 @@ class Client:
                 # One remote copy is enough; avoid multiplying every read across
                 # the fleet. Peer failures never prevent an origin-backed read.
                 for peer in self.settings.get('peers', []):
+                    if time.monotonic() >= deadline:break
                     if self.cooldown.get(peer, 0) > time.monotonic():continue
                     try:
-                        admission = self.call(peer, 'cache.put', key=key, length=length, data=row['data'])
+                        admission = self.call(peer, 'cache.put', timeout=max(.05,deadline-time.monotonic()), key=key, length=length, data=row['data'])
                         if admission.get('stored', False):break
                         self.counters['peer_admission_failures'] += 1
                     except (OSError, RuntimeError, ValueError):self.cooldown[peer] = time.monotonic()+2

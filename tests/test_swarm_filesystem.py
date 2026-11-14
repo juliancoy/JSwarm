@@ -212,3 +212,20 @@ def test_mmap_snapshot_verified_private_and_cleaned(fs, tmp_path, monkeypatch):
     assert not path.exists()
     with pytest.raises(OSError):
         with immutable_ram_snapshot(client,'/immutable','0'*64):pass
+
+
+def test_optional_peer_timeout_budget_preserves_origin_reads(fs, tmp_path, monkeypatch):
+    from scripts import swarm_fs_mount as mount
+    root, settings, service, call = fs
+    data=b'origin remains authoritative';(root/'available').write_bytes(data)
+    settings['peers']=['blocked.local','another.local']
+    clock=[100.0];monkeypatch.setattr(mount.time,'monotonic',lambda:clock[0])
+    client=Client(settings,cache=InputCache(tmp_path/'budget',reserve=0))
+    attempts=[]
+    def invoke(node,operation,timeout=None,**args):
+        if node==settings['origin']:return call(operation,**args)
+        attempts.append((node,timeout));clock[0]+=timeout;raise TimeoutError('Unresponsive peer')
+    client.call=invoke
+    assert client.read('/available',len(data),0)==data
+    assert attempts==[('blocked.local',3)]
+    assert client.counters['origin_reads']==1 and client.counters['peer_errors']==1

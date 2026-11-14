@@ -102,8 +102,9 @@ and do not require mmap of the shared mount.
 
 Cache puts report actual admission. A full peer is skipped in favor of another
 peer; origin read availability does not count as a successful cache fill. Client
-counters distinguish misses, errors, and rejected admissions. Cache RPCs allow
-25 seconds for cold owner-capsule startup; failed peers are retried after two
+counters distinguish misses, errors, and rejected admissions. The backend allows cold owner-capsule startup, while FUSE clients bound optional
+peer probes and admissions to a shared three-second budget per block fetch before
+falling back to the origin. Failed peers are retried after two
 seconds rather than bypassed for a minute.
 
 GenomeHarbor projection externally sorts read fingerprints and modification-call
