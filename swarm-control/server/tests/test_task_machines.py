@@ -95,3 +95,20 @@ def test_release_times_use_pinned_git_commit_not_current_checkout(tmp_path,monke
     assert rows[revision]=={'released_at':'2026-11-13T16:00:00-05:00','release_commit':commit}
     assert calls==[['git','-C',str(tmp_path),'show','-s','--format=%cI',commit]]
     assert 'private' not in json.dumps(rows)
+
+
+def test_release_time_recovers_after_git_object_arrives_without_publication_change(tmp_path,monkeypatch):
+    import json,subprocess
+    from task_machines import release_times
+    revision='c'*64;commit='d'*40;calls=[]
+    def git(args,**kwargs):
+        calls.append(args)
+        if len(calls)==1:raise subprocess.CalledProcessError(128,args)
+        return '2026-11-13T19:55:32-05:00\n'
+    monkeypatch.setattr(subprocess,'check_output',git)
+    (tmp_path/'0001-release.json').write_text(json.dumps({'schema':'jswarm-agent-release.v1','revision':revision,
+        'git_source':{'repositories':{'JSwarm':{'commit':commit}}}}))
+    assert release_times(tmp_path,tmp_path)['releases']=={}
+    assert release_times(tmp_path,tmp_path)['releases'][revision]['released_at']=='2026-11-13T19:55:32-05:00'
+    assert release_times(tmp_path,tmp_path)['releases'][revision]['release_commit']==commit
+    assert len(calls)==2

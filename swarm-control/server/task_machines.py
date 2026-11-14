@@ -32,7 +32,16 @@ def release_times(folder=None, repository=None):
     return _release_times(str(repository),signatures)
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize=256)
+def _commit_time(repository,commit):
+    import subprocess
+    value=subprocess.check_output(['git','-C',repository,'show','-s','--format=%cI',commit],
+        text=True,stderr=subprocess.DEVNULL,timeout=3).strip()
+    instant=datetime.datetime.fromisoformat(value)
+    if instant.tzinfo is None:raise ValueError('Git commit date has no timezone')
+    return instant.isoformat()
+
+
 def _release_times(repository,signatures):
     from pathlib import Path
     import re, subprocess
@@ -45,8 +54,9 @@ def _release_times(repository,signatures):
             if value.get('schema')!='jswarm-agent-release.v1' or not re.fullmatch('[a-f0-9]{64}',revision):continue
             if not re.fullmatch('[a-f0-9]{40}|[a-f0-9]{64}',commit):continue
             if commit not in dates:
-                dates[commit]=subprocess.check_output(['git','-C',str(repository),'show','-s','--format=%cI',commit],
-                    text=True,stderr=subprocess.DEVNULL,timeout=3).strip()
+                # Exceptions are not cached: a publication may arrive before its
+                # pinned Git object is fetched into the reporting repository.
+                dates[commit]=_commit_time(str(repository),commit)
             instant=datetime.datetime.fromisoformat(dates[commit])
             if instant.tzinfo is not None:
                 releases.setdefault(revision,{'released_at':instant.isoformat(),'release_commit':commit})
