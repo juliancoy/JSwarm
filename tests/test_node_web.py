@@ -132,7 +132,7 @@ def test_workspace_web_reads_each_request_and_constrains_symlinks(tmp_path,monke
     from aiohttp.test_utils import TestClient,TestServer
     workspace=tmp_path/'workspace'
     view=workspace/'JSwarm/swarm-control/server/view';view.mkdir(parents=True)
-    genome=workspace/'GenomeHarbor/web';genome.mkdir(parents=True)
+    genome=workspace/'HarborGenetics/web';genome.mkdir(parents=True)
     asset=genome/'genome-explorer.html';asset.write_text('first edit')
     (view/'genome-explorer.html').symlink_to(asset)
     private=workspace/'private.json';private.write_text('private result')
@@ -171,7 +171,7 @@ def test_live_source_revision_tracks_public_edits_and_injects_only_source_html(t
     from aiohttp.test_utils import TestClient,TestServer
     workspace=tmp_path/'workspace'
     view=workspace/'JSwarm/swarm-control/server/view';view.mkdir(parents=True)
-    genome=workspace/'GenomeHarbor/web';genome.mkdir(parents=True)
+    genome=workspace/'HarborGenetics/web';genome.mkdir(parents=True)
     (view/'index.html').write_text('<html><head></head><body>live</body></html>')
     config=tmp_path/'peers.json';config.write_text(json.dumps({'name':'codecollective.local','peers':configuration()['peers'],'web_workspace':str(workspace)}))
     outside=workspace/'private.json';outside.write_text('private')

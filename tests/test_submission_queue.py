@@ -3,7 +3,7 @@ import json
 import sys
 from pathlib import Path
 import pytest
-sys.path.insert(0,str((Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('GenomeHarbor', 'JSwarm') else Path(__file__).resolve().parents[1])/'swarm-control/server'))
+sys.path.insert(0,str((Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('HarborGenetics', 'JSwarm') else Path(__file__).resolve().parents[1])/'swarm-control/server'))
 from submission_queue import SubmissionQueue
 
 

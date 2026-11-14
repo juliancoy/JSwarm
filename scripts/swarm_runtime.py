@@ -19,7 +19,7 @@ import threading
 import time
 import uuid
 
-ROOT=Path(os.environ['JSWARM_WORKSPACE']) if os.environ.get('JSWARM_WORKSPACE') else (Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('GenomeHarbor', 'JSwarm') else Path(__file__).resolve().parents[1])
+ROOT=Path(os.environ['JSWARM_WORKSPACE']) if os.environ.get('JSWARM_WORKSPACE') else (Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('HarborGenetics', 'JSwarm') else Path(__file__).resolve().parents[1])
 SERVER=ROOT/'swarm-control/server'
 if str(SERVER) not in sys.path:sys.path.insert(0,str(SERVER))
 from agent_client import AgentClient,CONFIG

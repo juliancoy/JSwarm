@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/genomics.py
+../../HarborGenetics/scripts/genomics.py

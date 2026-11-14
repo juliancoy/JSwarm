@@ -208,7 +208,7 @@ class LauncherUpdates:
         import base64,gzip
         view=Path(root)/'swarm-control/server/view'
         assets={str(path.relative_to(view)):base64.b64encode(path.read_bytes()).decode() for path in view.rglob('*') if path.is_file()}
-        genome=(Path(root).parent if Path(root).name=='JSwarm' else Path(root))/'GenomeHarbor/web'
+        genome=(Path(root).parent if Path(root).name=='JSwarm' else Path(root))/'HarborGenetics/web'
         assets.update({'genome/'+str(path.relative_to(genome)):base64.b64encode(path.read_bytes()).decode() for path in genome.rglob('*') if path.is_file()})
         compressed=bytearray(gzip.compress(json.dumps(assets,sort_keys=True).encode(),compresslevel=9,mtime=0))
         compressed[9]=255  # Python 3.12/3.13 differ in the default gzip OS header.

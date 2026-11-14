@@ -107,7 +107,7 @@ peer probes and admissions to a shared three-second budget per block fetch befor
 falling back to the origin. Failed peers are retried after two
 seconds rather than bypassed for a minute.
 
-GenomeHarbor projection externally sorts read fingerprints and modification-call
+HarborGenetics projection externally sorts read fingerprints and modification-call
 rows instead of retaining every read and genomic site in RAM. It uses sequential
 scratch alongside its output (at most 8 MiB of encoded rows per run and 32 merge
 readers). This scratch must be capacity-admitted: use Latitude-backed output for

@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/genomics_dat1_assay_worker.py
+../../HarborGenetics/scripts/genomics_dat1_assay_worker.py

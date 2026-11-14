@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/vulkan_resident_mapper.py
+../../HarborGenetics/scripts/vulkan_resident_mapper.py

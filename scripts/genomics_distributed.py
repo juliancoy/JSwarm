@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/genomics_distributed.py
+../../HarborGenetics/scripts/genomics_distributed.py

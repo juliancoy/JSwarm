@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/venter_task_progress.py
+../../HarborGenetics/scripts/venter_task_progress.py

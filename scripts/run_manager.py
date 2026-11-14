@@ -17,7 +17,7 @@ import time
 
 from scripts.run_inputs import plan_inputs
 
-ROOT=(Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('GenomeHarbor', 'JSwarm') else Path(__file__).resolve().parents[1])
+ROOT=(Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('HarborGenetics', 'JSwarm') else Path(__file__).resolve().parents[1])
 
 
 def worker(root):

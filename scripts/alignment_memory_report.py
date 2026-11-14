@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/alignment_memory_report.py
+../../HarborGenetics/scripts/alignment_memory_report.py

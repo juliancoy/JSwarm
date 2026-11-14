@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/wgs_bam_offload.py
+../../HarborGenetics/scripts/wgs_bam_offload.py

@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/vulkan_mapper_benchmark.py
+../../HarborGenetics/scripts/vulkan_mapper_benchmark.py

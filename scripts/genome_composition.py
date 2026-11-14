@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/genome_composition.py
+../../HarborGenetics/scripts/genome_composition.py

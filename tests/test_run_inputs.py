@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 import pytest
 from scripts.run_inputs import plan_inputs
-sys.path.insert(0,str((Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('GenomeHarbor', 'JSwarm') else Path(__file__).resolve().parents[1])/'swarm-control/server'))
+sys.path.insert(0,str((Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('HarborGenetics', 'JSwarm') else Path(__file__).resolve().parents[1])/'swarm-control/server'))
 from run_manager_projection import attach_delegated_runs
 from task_progress import aggregate
 

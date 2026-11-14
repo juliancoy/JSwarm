@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/dat1_vntr_vcf_audit.py
+../../HarborGenetics/scripts/dat1_vntr_vcf_audit.py

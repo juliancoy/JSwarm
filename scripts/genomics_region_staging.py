@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/genomics_region_staging.py
+../../HarborGenetics/scripts/genomics_region_staging.py

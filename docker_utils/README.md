@@ -63,11 +63,11 @@ from per-mount NFS READ operations. Missing counters remain unknown. Linux's
 [FS-Cache documentation](https://www.kernel.org/doc/html/latest/filesystems/caching/fscache.html)
 explains the underlying transparent network-filesystem cache.
 
-GenomeHarbor's GPU mapper uses this adapter with immutable, content-identified
+HarborGenetics's GPU mapper uses this adapter with immutable, content-identified
 packed indexes. `scripts.network_reference_cache.resolve_gpu_index` reuses the
 qualified reference helper, preserves RAM-only exclusions, and returns a
 read-only artifact bind plus pinned-key mapper options. See the FS-Cache section
-of the adjacent GenomeHarbor `genomics/VULKAN_MAPPER.md` for publication and worker
+of the adjacent HarborGenetics `genomics/VULKAN_MAPPER.md` for publication and worker
 commands. This does not promote the experimental mapper into production or add
 GPU-driven paging for a whole human reference.
 
@@ -84,7 +84,7 @@ only the socket-directory bind, not matching input paths or GPU devices.
 socket bind and shared-worker options for that placement. Artifact identity and
 alignment options must match the running service. Status distinguishes shared
 resident bytes from job transfer counts; initial FS-Cache counters belong to the
-service's index load. See GenomeHarbor's `genomics/VULKAN_MAPPER.md` for startup,
+service's index load. See HarborGenetics's `genomics/VULKAN_MAPPER.md` for startup,
 submission, memory budgeting and shutdown behavior.
 
 

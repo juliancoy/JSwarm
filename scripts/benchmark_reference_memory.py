@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/benchmark_reference_memory.py
+../../HarborGenetics/scripts/benchmark_reference_memory.py

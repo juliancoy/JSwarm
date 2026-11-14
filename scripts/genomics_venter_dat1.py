@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/genomics_venter_dat1.py
+../../HarborGenetics/scripts/genomics_venter_dat1.py

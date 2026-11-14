@@ -44,7 +44,7 @@ release checksums and the new process's readiness marker; failed startup restore
 the previous release. Cancelling the staged update removes only the update gate,
 preserving owner maintenance, battery policy, and pressure protection.
 
-Commit and push Organization, JSwarm and GenomeHarbor to origins reachable by
+Commit and push Organization, JSwarm and HarborGenetics to origins reachable by
 every node. From the Organization workspace, publish a validated Git-backed release
 and follow it one enrolled node at a time:
 
@@ -236,7 +236,7 @@ successful validation. Browser checks use synthetic status fixtures.
 Genome Explorer uses the authenticated `/api/v1/swarm/genome-results` publication.
 Sample composition requires a measured additive tree, assembly, source run,
 generation time, and source provenance. Missing results stay unpublished; archived
-demo exports are not a fallback. See `GenomeHarbor/server/GENOME-EXPLORER.md` for
+demo exports are not a fallback. See `HarborGenetics/server/GENOME-EXPLORER.md` for
 the publication workflow. Historical analysis outputs remain available to their
 owner outside the public web assets.
 

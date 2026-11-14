@@ -1,1 +1,1 @@
-../../../GenomeHarbor/server/wgs_progress.py
+../../../HarborGenetics/server/wgs_progress.py

@@ -8,14 +8,14 @@ from scripts.node_git_source import git,snapshot,workspace
 
 def repositories(tmp_path):
     root=tmp_path/'Organization'
-    for folder in (root,root/'JSwarm',root/'GenomeHarbor'):
+    for folder in (root,root/'JSwarm',root/'HarborGenetics'):
         folder.mkdir(parents=True,exist_ok=True)
         subprocess.run(['git','init','-q',str(folder)],check=True)
         git(folder,'config','user.name','Test')
         git(folder,'config','user.email','test@localhost')
         (folder/'source.py').write_text('version = 1\n')
         if folder==root:
-            (folder/'.gitignore').write_text('/JSwarm/\n/GenomeHarbor/\n')
+            (folder/'.gitignore').write_text('/JSwarm/\n/HarborGenetics/\n')
             git(folder,'add','.gitignore')
         git(folder,'add','source.py');git(folder,'commit','-qm','first')
         git(folder,'remote','add','origin',str(folder))
@@ -53,13 +53,13 @@ def test_workspace_preserves_cross_repository_relative_assets(tmp_path):
     root=repositories(tmp_path)
     view=root/'JSwarm/swarm-control/server/view'
     view.mkdir(parents=True)
-    web=root/'GenomeHarbor/web';web.mkdir()
+    web=root/'HarborGenetics/web';web.mkdir()
     (web/'genome.js').write_text('pinned genome asset\n')
-    (view/'genome.js').symlink_to('../../../../GenomeHarbor/web/genome.js')
+    (view/'genome.js').symlink_to('../../../../HarborGenetics/web/genome.js')
     git(root/'JSwarm','add','swarm-control')
     git(root/'JSwarm','commit','-qm','link genome asset')
-    git(root/'GenomeHarbor','add','web')
-    git(root/'GenomeHarbor','commit','-qm','genome asset')
+    git(root/'HarborGenetics','add','web')
+    git(root/'HarborGenetics','commit','-qm','genome asset')
     manifest=snapshot(root)
     deployed=workspace(manifest,tmp_path/'node-source')
     assert not (deployed/'JSwarm').is_symlink()
@@ -83,3 +83,16 @@ def test_frozen_publication_records_git_commits(tmp_path):
     freeze_source(root,tmp_path/'snapshot')
     assert json.loads((tmp_path/'snapshot/JSwarm/.node-git-source.json').read_text())==snapshot(root)
     assert (tmp_path/'snapshot/JSwarm/source.py').read_text()=='version = 1\n'
+
+
+def test_legacy_genomeharbor_publication_remains_usable_for_rollback(tmp_path):
+    root=repositories(tmp_path)
+    manifest=snapshot(root)
+    assert 'HarborGenetics' in manifest
+    manifest['GenomeHarbor']=manifest.pop('HarborGenetics')
+    (root/'.gitignore').write_text('/JSwarm/\n/HarborGenetics/\n/GenomeHarbor/\n')
+    git(root,'add','.gitignore');git(root,'commit','-qm','retain legacy directory ignore')
+    manifest['Organization']['commit']=git(root,'rev-parse','HEAD')
+    deployed=workspace(manifest,tmp_path/'legacy-node-source')
+    assert (deployed/'GenomeHarbor/source.py').read_text()=='version = 1\n'
+    assert workspace(manifest,tmp_path/'legacy-node-source')==deployed

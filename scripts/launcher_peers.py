@@ -93,7 +93,7 @@ def pipeline_assets():
         return {name:base64.b64decode(body) for name,body in json.loads(gzip.decompress(base64.b64decode(bundled))).items()}
     view=Path(__file__).resolve().parents[1]/'swarm-control/server/view'
     assets={str(path.relative_to(view)):path.read_bytes() for path in view.rglob('*') if path.is_file()}
-    genome=view.parents[3]/'GenomeHarbor/web'
+    genome=view.parents[3]/'HarborGenetics/web'
     assets.update({'genome/'+str(path.relative_to(genome)):path.read_bytes() for path in genome.rglob('*') if path.is_file()})
     return assets
 
@@ -114,7 +114,7 @@ def pipeline_source_asset(workspace,name):
     from pathlib import PurePosixPath
     path=PurePosixPath(name)
     if not name or path.is_absolute() or '\\' in name or any(part.startswith('.') for part in path.parts):return None
-    roots=(workspace/'JSwarm/swarm-control/server/view',workspace/'GenomeHarbor/web')
+    roots=(workspace/'JSwarm/swarm-control/server/view',workspace/'HarborGenetics/web')
     target=(roots[0]/path).resolve()
     if not any(target.is_relative_to(root.resolve()) for root in roots):return None
     try:return target.read_bytes() if target.is_file() else None
@@ -128,7 +128,7 @@ PIPELINE_NO_CACHE_HEADERS = {'Cache-Control':'no-store, no-cache, max-age=0, mus
 def pipeline_source_revision(workspace):
     """Fingerprint public source metadata, never private state or file contents."""
     import hashlib
-    roots=(workspace/'JSwarm/swarm-control/server/view',workspace/'GenomeHarbor/web')
+    roots=(workspace/'JSwarm/swarm-control/server/view',workspace/'HarborGenetics/web')
     allowed=tuple(root.resolve() for root in roots)
     digest=hashlib.sha256()
     for index,root in enumerate(roots):

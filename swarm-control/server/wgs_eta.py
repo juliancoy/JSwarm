@@ -1,1 +1,1 @@
-../../../GenomeHarbor/server/wgs_eta.py
+../../../HarborGenetics/server/wgs_eta.py

@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/build_source_replay.py
+../../HarborGenetics/scripts/build_source_replay.py

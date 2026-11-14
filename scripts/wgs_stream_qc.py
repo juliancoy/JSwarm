@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/wgs_stream_qc.py
+../../HarborGenetics/scripts/wgs_stream_qc.py

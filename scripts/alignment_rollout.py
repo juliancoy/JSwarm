@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/alignment_rollout.py
+../../HarborGenetics/scripts/alignment_rollout.py

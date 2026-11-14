@@ -37,7 +37,7 @@ shared BWA RAM versus file mappings, and FS-CACHE reference transport. A
 transport label does not establish cache hits or shared VRAM.
 
 Queue priorities are integers from -1000 to 1000; higher values run first and
-ordinary work defaults to 0. GenomeHarbor node qualification jobs request 100.
+ordinary work defaults to 0. HarborGenetics node qualification jobs request 100.
 Both coordinator claims and node admission use priority order, with FIFO ties.
 Jobs that do not fit remain queued while other eligible work can proceed.
 Priority does not interrupt running jobs or override resource limits, GPU locks,
@@ -218,7 +218,7 @@ to host RAM. Legacy BWA host-runtime bindings keep their existing behavior.
 
 ### Verify a rebuild from committed sources
 
-Keep Organization, JSwarm and GenomeHarbor as adjacent checkouts in the documented
+Keep Organization, JSwarm and HarborGenetics as adjacent checkouts in the documented
 workspace layout. After committing a change, run from Organization:
 
 ```

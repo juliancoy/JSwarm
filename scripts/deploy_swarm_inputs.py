@@ -108,14 +108,14 @@ def freeze_source(root,target):
     import subprocess,tarfile,tempfile
     root=Path(root).resolve();target=Path(target);target.mkdir(parents=True,exist_ok=True)
     if root.name=='JSwarm':root=root.parent
-    if not all((root/name).is_dir() for name in ('JSwarm','GenomeHarbor')):
+    if not all((root/name).is_dir() for name in ('JSwarm','HarborGenetics')):
         raise RuntimeError('Expected the enrolled workspace source layout')
     from scripts.node_git_source import snapshot
     manifest=snapshot(root)
     from scripts.release_secrets import check_repositories
     check_repositories([(name,root if name=='Organization' else root/name,spec['commit']) for name,spec in manifest.items()])
     with tempfile.TemporaryDirectory(prefix='swarm-git-archives-') as temporary:
-        for name in ('Organization','JSwarm','GenomeHarbor'):
+        for name in ('Organization','JSwarm','HarborGenetics'):
             project=root if name=='Organization' else root/name
             destination=target if name=='Organization' else target/name
             destination.mkdir(exist_ok=True)
@@ -187,7 +187,7 @@ def main():
                 print(f"[publish] {name}: {source['commit'][:12]}",flush=True)
             print('[publish] Starting validation in the frozen source snapshot…',flush=True)
             project=snapshot/'JSwarm'
-            env={**os.environ,'PYTHONPATH':os.pathsep.join(map(str,(project/'swarm-control/server',project,snapshot,snapshot/'GenomeHarbor/tests')))}
+            env={**os.environ,'PYTHONPATH':os.pathsep.join(map(str,(project/'swarm-control/server',project,snapshot,snapshot/'HarborGenetics/tests')))}
             receipt_path=Path(temporary)/'publication.json'
             subprocess.run([sys.executable,'-m','scripts.deploy_swarm_inputs','--publish-only','--frozen-source','--expected-publication',expected,'--publication-receipt',str(receipt_path)],cwd=project,env=env,check=True)
             receipt=json.loads(receipt_path.read_text())
@@ -208,7 +208,7 @@ def main():
             progress.update(revision=updater.revision)
             suites=['tests/test_deployment_progress.py','tests/test_release_secrets.py','tests/test_deploy_publish.py','tests/test_filesystem_deployment.py','tests/test_swarm_filesystem.py','tests/test_swarm_host_service.py','tests/test_swarm_mdns_discovery.py','scripts/tests/test_launcher_routing.py','tests/test_launcher_routing_cleanup.py','tests/test_node_web.py','tests/test_worker_storage.py','tests/test_cache_lifetime.py','tests/test_cache_pressure_reclamation.py','tests/test_execution_accounting.py','tests/test_launcher_streams.py','tests/test_swarm_stream_work.py','scripts/tests/test_launcher_telemetry.py','tests/test_swarm_paged_cache.py','tests/test_swarm_shared_cache.py','tests/test_agent_cpu_overhead.py','tests/test_deployment_lock.py','tests/test_node_releases.py','tests/test_node_git_source.py','tests/test_swarm_node.py','tests/test_worker_journal.py','tests/test_ram_cache_inventory.py','tests/test_node_cache_manager.py','tests/test_ram_cache_cleanup_api.py','tests/test_swarm_cache_cleanup.py','tests/test_swarm_cache_migrate.py','tests/test_swarm_pressure_guard.py','tests/test_launcher_commands.py','tests/test_launcher_peer_supervisor.py','tests/test_resource_renewal.py','tests/test_swarm_runtime.py','tests/test_gpu_inventory.py','tests/test_node_execution.py','tests/test_swarm_gpu_runtime.py','tests/test_rolling_deployment.py','tests/test_docker_worker_restart.py','swarm-control/server/tests/test_agent_updates.py','swarm-control/server/tests/test_agent_sessions.py','swarm-control/server/tests/test_fleet_backups.py','tests/test_worker_maintenance.py']
             project=Path(__file__).resolve().parents[1]
-            env={**os.environ,'PYTHONPATH':os.pathsep.join(map(str,(project/'swarm-control/server',ROOT,project.parent/'GenomeHarbor/tests')))}
+            env={**os.environ,'PYTHONPATH':os.pathsep.join(map(str,(project/'swarm-control/server',ROOT,project.parent/'HarborGenetics/tests')))}
             print(f'[publish] Validating {len(suites)} test files; each test reports its name and result. Skip reasons and the 10 slowest tests follow.',flush=True)
             started=time.monotonic()
             try:

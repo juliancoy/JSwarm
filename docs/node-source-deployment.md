@@ -16,7 +16,7 @@ build because they contain application code and lack the dependency fingerprint.
 
 ## Standard fleet update
 
-1. Commit and push the Organization, JSwarm and GenomeHarbor changes to origins
+1. Commit and push the Organization, JSwarm and HarborGenetics changes to origins
    reachable by every node. No deployment branches are needed.
 2. Run `python -m scripts.deploy_swarm_inputs --publish`. Validation exports the
    exact recorded commits, excluding local edits and untracked data. The release
@@ -27,7 +27,7 @@ build because they contain application code and lack the dependency fingerprint.
    detached worktrees under the persistent config directory's `node-source/`.
    Containers already mount this directory, so no image rebuild is required.
 4. Each node regenerates the existing checksummed agent runtime from its fetched
-   JSwarm and GenomeHarbor source. It must exactly match the validated publication
+   JSwarm and HarborGenetics source. It must exactly match the validated publication
    before bootstrap files or active release pointers are changed. The supervisor
    activates that runtime and the controller verifies readiness and revision.
 
@@ -59,7 +59,7 @@ independently; other enrolled nodes can finish. Each node must still pass its
 identity, source revision and readiness checks. Per-node timings are recorded in
 the deployment receipt.
 
-Node activation updates the node process. GenomeHarbor orchestration is a
+Node activation updates the node process. HarborGenetics orchestration is a
 separate running process: deploy its orchestration from the same managed Git
 workspace with `genomics_followup_controller.deploy_orchestration`. That procedure
 preserves the scientific executor binding and hands off existing queue claims;

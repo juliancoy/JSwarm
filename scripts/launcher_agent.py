@@ -183,7 +183,7 @@ def required_test_repositories(suites, jobs=None, repositories=None):
     known=set(application)|{'monitor','map','workspace','p2p','swarm-web'}
     needed={'.'}
     if repositories is not None and 'JSwarm' in repositories:
-        needed.update(('JSwarm','GenomeHarbor'))
+        needed.update(('JSwarm','HarborGenetics'))
     for suite in suites:
         suite=suite.split('--',1)[0]
         if suite not in known:raise ValueError('Unknown suite source requirements: '+suite)
@@ -1424,7 +1424,7 @@ def load_performance_runtime():
                 archive.write_bytes(base64.b64decode(PERFORMANCE_RUNTIME_B64,validate=True))
                 sys.path.insert(0,str(archive))
         else:
-            package=(Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('GenomeHarbor', 'JSwarm') else Path(__file__).resolve().parents[1])/'ramtop'
+            package=(Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('HarborGenetics', 'JSwarm') else Path(__file__).resolve().parents[1])/'ramtop'
             if (package/'ramtop/telemetry.py').is_file() and str(package) not in sys.path:
                 sys.path.insert(0,str(package))
         from ramtop.telemetry import PerformanceSampler, brief, valid_snapshot
@@ -2801,7 +2801,7 @@ class Agent:
             repositories=manifest.get('repositories',{})
             if not {'.','OrgPortal','PIdP','CodeCollective'}.issubset(repositories) or len(repositories)>24:raise ValueError('Expected the application GitHub repositories and bounded submodules')
             for name in repositories:
-                if name not in ('.','JSwarm','GenomeHarbor','OrgPortal','PIdP','CodeCollective','BmoreMedTech') and (Path(name).is_absolute() or '..' in Path(name).parts or not name.startswith(('JSwarm/','GenomeHarbor/','OrgPortal/','PIdP/','CodeCollective/','BmoreMedTech/'))):raise ValueError('Invalid nested repository path')
+                if name not in ('.','JSwarm','HarborGenetics','OrgPortal','PIdP','CodeCollective','BmoreMedTech') and (Path(name).is_absolute() or '..' in Path(name).parts or not name.startswith(('JSwarm/','HarborGenetics/','OrgPortal/','PIdP/','CodeCollective/','BmoreMedTech/'))):raise ValueError('Invalid nested repository path')
             for repo in repositories.values():
                 if not re.fullmatch(r'https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\.git',repo.get('url','')) or not re.fullmatch('[a-f0-9]{40}',repo.get('commit','')):raise ValueError('Invalid GitHub repository or commit')
             refs={name:{key:repo[key] for key in ('url','commit')} for name,repo in repositories.items()}

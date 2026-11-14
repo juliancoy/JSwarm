@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/alignment_scheduling.py
+../../HarborGenetics/scripts/alignment_scheduling.py

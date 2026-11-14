@@ -1,1 +1,1 @@
-../../../GenomeHarbor/server/GENOME-EXPLORER.md
+../../../HarborGenetics/server/GENOME-EXPLORER.md

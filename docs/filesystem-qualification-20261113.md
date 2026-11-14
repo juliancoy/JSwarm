@@ -67,7 +67,7 @@ chromosome 22; it is not a whole-genome epigenetic analysis.
 ## Evidence and reproduction
 
 Adjacent log: `tests/filesystem-test-runs.jsonl`. Application tests are in
-`../GenomeHarbor/tests/epigenetic-test-runs.jsonl`. Each run records UTC date,
+`../HarborGenetics/tests/epigenetic-test-runs.jsonl`. Each run records UTC date,
 command, result, and relevant source SHA-256 fingerprints. The application log
 also records exact executable code. The original failed checks are retained.
 
@@ -87,7 +87,7 @@ or bulk sequencing transfer was started by this qualification.
 
 ## Follow-up: blockers repaired and deployed (02:19–02:24 UTC)
 
-Validated source: JSwarm `87f6c06`, GenomeHarbor `ba616ea`. Release generation 37,
+Validated source: JSwarm `87f6c06`, HarborGenetics `ba616ea`. Release generation 37,
 runtime `19fa7940b8d32ff94ae587a6875d6518330b249db431b5fd7453346ae99f1d29`.
 The standard frozen-source gate passed **542 tests, 13 skipped, two subtests**
 in 159.79 seconds. A previous attempt lacked pytest in the updater environment;

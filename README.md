@@ -54,14 +54,14 @@ Build the node image with `PYTHON=/path/to/python ./build.sh` from this director
 - `Dockerfile.swarm-node`: dependency-only node image, built with `./build.sh`.
 - `run.py`, `swarm-node`: launcher and node entry points.
 
-Keep this repository beside `GenomeHarbor` in the Organization workspace. Compatibility links preserve deployed paths and shared `scripts.*` imports. Genome-specific scripts and UI assets are owned by GenomeHarbor. Existing image tags and enrollment identities are preserved.
+Keep this repository beside `HarborGenetics` in the Organization workspace. Compatibility links preserve deployed paths and shared `scripts.*` imports. Genome-specific scripts and UI assets are owned by HarborGenetics. Existing image tags and enrollment identities are preserved.
 
 Install from the workspace: `python -m pip install -e ./JSwarm`. Run host tests from here: `python -m pytest tests`. Build the node image from the workspace: `./swarm-node build`.
 
 This is an independent Git repository: https://github.com/juliancoy/JSwarm.
 
 Committed-snapshot deployment pins this repository alongside Organization and
-GenomeHarbor. Legacy links rely on the adjacent workspace layout.
+HarborGenetics. Legacy links rely on the adjacent workspace layout.
 
 ## Shared node memory
 
@@ -119,7 +119,7 @@ contains runtime dependencies and is reused for code-only updates. See
 [Git source deployment](docs/node-source-deployment.md) for mount layout, Git
 access requirements, initial provisioning and dependency changes.
 
-Commit and push Organization, JSwarm and GenomeHarbor to origins reachable by all
+Commit and push Organization, JSwarm and HarborGenetics to origins reachable by all
 nodes. From the Organization workspace:
 
 ```bash
@@ -127,7 +127,7 @@ python -m scripts.deploy_swarm_inputs --publish
 python -m scripts.deploy_swarm_inputs --status
 ```
 
-`--publish` checks the committed Organization, JSwarm, and GenomeHarbor sources
+`--publish` checks the committed Organization, JSwarm, and HarborGenetics sources
 for sensitive filenames, private keys, common provider tokens, literal secret
 assignments, and credentials in URLs. A finding or scan error blocks publication;
 reports contain paths, line numbers, and rule names, never credential values.
@@ -253,7 +253,7 @@ without treating their whole virtual mapping as a fresh private allocation.
 The owner-only dataset plan is under
 `~/.local/state/swarm-control/submission/paged-cache/deployment.json`.
 Per-node verification records live alongside it. Unavailable nodes retain the
-verified complete-cache fallback. GenomeHarbor owns BWA reference selection,
+verified complete-cache fallback. HarborGenetics owns BWA reference selection,
 alignment parity qualification, and private job memory budgets; it keeps an
 existing verified warm RAM cache in preference to a cold network mapping.
 
@@ -280,7 +280,7 @@ runner). It reads files on every request and sends `Cache-Control: no-store`, so
 HTML, CSS and JavaScript edits appear on refresh without a build or node restart.
 `SWARM_WEB_WORKSPACE` or the owner setting `web_workspace` can select another
 absolute, mounted checkout. Only `JSwarm/swarm-control/server/view` and its public
-GenomeHarbor web aliases are served; API authentication and proxying are unchanged.
+HarborGenetics web aliases are served; API authentication and proxying are unchanged.
 A missing source file returns 404 rather than silently serving old bundled code.
 Nodes without a source mount retain the checksum-covered publication assets.
 There is no separate node web container or web deployment registry.

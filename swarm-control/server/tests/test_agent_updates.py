@@ -10,7 +10,7 @@ class LauncherUpdateTests(unittest.TestCase):
         self.progress=Mock()
         self.updates=LauncherUpdates(Path(__file__).resolve().parents[3],lambda:False,self.progress)
         self.updates.git_source={'repositories':{name:{'origin':'https://example.com/'+name+'.git','commit':'a'*40}
-                       for name in ('Organization','JSwarm','GenomeHarbor')},'installer':'# test Git installer\n'}
+                       for name in ('Organization','JSwarm','HarborGenetics')},'installer':'# test Git installer\n'}
         self.host={'host':'worker','lan_address':'10.42.0.2','agent_endpoint':'http://worker-swarm.local:8790'}
         self.status={'node':'worker','machine':'a'*64,'ready':True,'source_revision':'old','active_jobs':[],'capabilities':['node-command-v1']}
 

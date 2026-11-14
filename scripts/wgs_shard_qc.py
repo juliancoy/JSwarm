@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/wgs_shard_qc.py
+../../HarborGenetics/scripts/wgs_shard_qc.py

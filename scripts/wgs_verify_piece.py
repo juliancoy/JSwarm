@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/wgs_verify_piece.py
+../../HarborGenetics/scripts/wgs_verify_piece.py

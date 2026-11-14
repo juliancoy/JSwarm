@@ -53,7 +53,7 @@ Install host/controller dependencies from JSwarm using the shared Python
 environment: `~/global/bin/python -m pip install -r requirements.txt`. The host
 and node requirements both pin Crypt4GH 1.8.6.
 
-From `GenomeHarbor`, run:
+From `HarborGenetics`, run:
 
 ```sh
 ./build.sh --protected

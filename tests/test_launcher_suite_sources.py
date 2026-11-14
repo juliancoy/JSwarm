@@ -2,7 +2,7 @@ from scripts.launcher_agent import required_test_repositories
 
 
 def test_split_runtime_sources_are_materialized_for_compatibility_links():
-    assert required_test_repositories(['web'],repositories={'.':{},'JSwarm':{},'GenomeHarbor':{},'OrgPortal':{}})=={'.','JSwarm','GenomeHarbor','OrgPortal'}
+    assert required_test_repositories(['web'],repositories={'.':{},'JSwarm':{},'HarborGenetics':{},'OrgPortal':{}})=={'.','JSwarm','HarborGenetics','OrgPortal'}
 import pytest
 
 def test_homepage_suite_includes_brand_and_portal_dependencies():

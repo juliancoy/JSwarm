@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/genomics_dat1_readscan_worker.py
+../../HarborGenetics/scripts/genomics_dat1_readscan_worker.py

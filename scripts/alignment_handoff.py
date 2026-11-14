@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/alignment_handoff.py
+../../HarborGenetics/scripts/alignment_handoff.py

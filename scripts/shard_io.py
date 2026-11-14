@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/shard_io.py
+../../HarborGenetics/scripts/shard_io.py

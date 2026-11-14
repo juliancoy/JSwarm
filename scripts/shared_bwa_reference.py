@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/shared_bwa_reference.py
+../../HarborGenetics/scripts/shared_bwa_reference.py

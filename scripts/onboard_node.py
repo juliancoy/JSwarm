@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 
-ROOT = (Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('GenomeHarbor', 'JSwarm') else Path(__file__).resolve().parents[1])
+ROOT = (Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('HarborGenetics', 'JSwarm') else Path(__file__).resolve().parents[1])
 FILES = ('launcher_peers.py', 'launcher_discovery.py', 'launcher_registration.py',
          'launcher_agent.py', 'launcher_registry.py', 'launcher_peer_supervisor.py',
          'launcher_update.py','swarm_node.py')

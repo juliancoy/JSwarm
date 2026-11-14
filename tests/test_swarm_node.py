@@ -19,14 +19,14 @@ def test_control_snapshot_pins_split_owners_and_ignores_uncommitted_edits(tmp_pa
         repo.mkdir(exist_ok=True);git(repo,'init','-q')
         git(repo,'config','user.email','test@example.invalid');git(repo,'config','user.name','Test')
     initialize(root)
-    (root/'.gitignore').write_text('JSwarm/\nGenomeHarbor/\n')
-    for name in ('JSwarm','GenomeHarbor'):initialize(root/name)
+    (root/'.gitignore').write_text('JSwarm/\nHarborGenetics/\n')
+    for name in ('JSwarm','HarborGenetics'):initialize(root/name)
     server=root/'JSwarm/swarm-control/server';(server/'view').mkdir(parents=True)
     (server/'server.py').write_text('reviewed server')
-    (server/'view/genome.js').symlink_to('../../../../GenomeHarbor/web/genome.js')
-    web=root/'GenomeHarbor/web';web.mkdir();asset=web/'genome.js';asset.write_text('reviewed genome')
+    (server/'view/genome.js').symlink_to('../../../../HarborGenetics/web/genome.js')
+    web=root/'HarborGenetics/web';web.mkdir();asset=web/'genome.js';asset.write_text('reviewed genome')
     (root/'swarm-control').symlink_to('JSwarm/swarm-control')
-    for repo in (root/'JSwarm',root/'GenomeHarbor',root):git(repo,'add','.');git(repo,'commit','-qm','reviewed')
+    for repo in (root/'JSwarm',root/'HarborGenetics',root):git(repo,'add','.');git(repo,'commit','-qm','reviewed')
     revision=git(root,'rev-parse','HEAD')
     source=release.release_snapshot(root,revision,tmp_path/'releases')
     assert (source/'server/server.py').read_text()=='reviewed server'
@@ -34,7 +34,7 @@ def test_control_snapshot_pins_split_owners_and_ignores_uncommitted_edits(tmp_pa
     asset.write_text('unreviewed change')
     assert release.release_snapshot(root,revision,tmp_path/'releases')==source
     assert (source/'server/view/genome.js').read_text()=='reviewed genome'
-    git(root/'GenomeHarbor','commit','-qam','next reviewed genome')
+    git(root/'HarborGenetics','commit','-qam','next reviewed genome')
     next_source=release.release_snapshot(root,revision,tmp_path/'releases')
     assert next_source!=source
     assert (next_source/'server/view/genome.js').read_text()=='unreviewed change'

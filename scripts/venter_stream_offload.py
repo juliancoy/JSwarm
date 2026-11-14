@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/venter_stream_offload.py
+../../HarborGenetics/scripts/venter_stream_offload.py

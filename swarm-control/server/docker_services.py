@@ -40,9 +40,9 @@ def run_command(service):
                     'python:3.12-slim', 'python', '-u', '/app/packet_monitor.py']
     else:
         workspace = Path(os.environ.get('SWARM_WORKSPACE', str(SERVER.parents[2])))
-        genome = workspace / 'GenomeHarbor/web'
+        genome = workspace / 'HarborGenetics/web'
         if not genome.is_dir():
-            raise ValueError('Set SWARM_WORKSPACE to the workspace containing GenomeHarbor/web')
+            raise ValueError('Set SWARM_WORKSPACE to the workspace containing HarborGenetics/web')
         command += ['--user', '0:0', '--cap-add', 'NET_BIND_SERVICE', '--tmpfs', '/tmp',
                     '--health-cmd', 'wget -q -O /dev/null http://10.42.0.1/api/health',
                     '--health-interval', '15s', '--health-timeout', '3s', '--health-retries', '3']

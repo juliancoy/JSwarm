@@ -5,7 +5,7 @@ import sys
 import tempfile
 import time
 import unittest
-sys.path.insert(0,str((Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('GenomeHarbor', 'JSwarm') else Path(__file__).resolve().parents[1])/'scripts'))
+sys.path.insert(0,str((Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('HarborGenetics', 'JSwarm') else Path(__file__).resolve().parents[1])/'scripts'))
 from launcher_registration import queue_invitation
 
 class WANEnrollmentTests(unittest.TestCase):

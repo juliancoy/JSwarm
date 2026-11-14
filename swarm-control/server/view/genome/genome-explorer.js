@@ -1,1 +1,1 @@
-../../../../../GenomeHarbor/web/genome-explorer.js
+../../../../../HarborGenetics/web/genome-explorer.js

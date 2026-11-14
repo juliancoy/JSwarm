@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import Mock,AsyncMock
-sys.path.insert(0,str((Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('GenomeHarbor', 'JSwarm') else Path(__file__).resolve().parents[1])/'scripts'))
+sys.path.insert(0,str((Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('HarborGenetics', 'JSwarm') else Path(__file__).resolve().parents[1])/'scripts'))
 from launcher_agent import worker_policy,Agent
 from launcher_peers import JobGateway
 

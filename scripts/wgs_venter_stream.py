@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/wgs_venter_stream.py
+../../HarborGenetics/scripts/wgs_venter_stream.py

@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/genome_reference_giab.py
+../../HarborGenetics/scripts/genome_reference_giab.py

@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/venter_peer_deploy.py
+../../HarborGenetics/scripts/venter_peer_deploy.py

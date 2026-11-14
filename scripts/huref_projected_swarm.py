@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/huref_projected_swarm.py
+../../HarborGenetics/scripts/huref_projected_swarm.py

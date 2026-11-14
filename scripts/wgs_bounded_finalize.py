@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/wgs_bounded_finalize.py
+../../HarborGenetics/scripts/wgs_bounded_finalize.py

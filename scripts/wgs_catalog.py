@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/wgs_catalog.py
+../../HarborGenetics/scripts/wgs_catalog.py

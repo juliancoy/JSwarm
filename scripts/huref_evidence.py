@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/huref_evidence.py
+../../HarborGenetics/scripts/huref_evidence.py

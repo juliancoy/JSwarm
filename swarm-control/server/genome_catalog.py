@@ -1,1 +1,1 @@
-../../../GenomeHarbor/server/genome_catalog.py
+../../../HarborGenetics/server/genome_catalog.py

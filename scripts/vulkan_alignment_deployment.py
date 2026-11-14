@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/vulkan_alignment_deployment.py
+../../HarborGenetics/scripts/vulkan_alignment_deployment.py

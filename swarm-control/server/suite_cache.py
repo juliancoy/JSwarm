@@ -47,7 +47,7 @@ class SuiteCache:
         selectors['.']=selectors.get('.',())+COMMON
         # Compatibility links in Organization do not change when their owning
         # repositories change. Include both owners in split-workspace receipts.
-        for name in ('JSwarm','GenomeHarbor'):
+        for name in ('JSwarm','HarborGenetics'):
             if name in run['repositories']:selectors[name]=('*',)
         content=[]
         for name,patterns in sorted(selectors.items()):

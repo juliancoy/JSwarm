@@ -1,1 +1,1 @@
-../../../../../GenomeHarbor/web/genome-sunburst.js
+../../../../../HarborGenetics/web/genome-sunburst.js

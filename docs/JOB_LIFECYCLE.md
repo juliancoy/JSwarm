@@ -49,6 +49,6 @@ worker cleanup are never eligible. Archives live beside the journal under
 are retained for replay safety and investigation; retention does not erase verified
 scientific results.
 
-GenomeHarbor qualification fixtures declare their own node-side queue/execution
+HarborGenetics qualification fixtures declare their own node-side queue/execution
 and stall budgets. Their client also waits for confirmed cancellation after its
 qualification deadline; production jobs are excluded by fixture ID validation.

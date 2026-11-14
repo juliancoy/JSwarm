@@ -37,7 +37,7 @@ def release_snapshot(root, revision, releases):
     layout=subprocess.check_output(['git','-C',str(root),'ls-tree',refs['.'],'swarm-control'],text=True)
     split=layout.startswith('120000 ')
     if split:
-        for name in ('JSwarm','GenomeHarbor'):refs[name]=commit(root/name,'HEAD')
+        for name in ('JSwarm','HarborGenetics'):refs[name]=commit(root/name,'HEAD')
     identity=hashlib.sha256(json.dumps(refs,sort_keys=True).encode()).hexdigest() if split else refs['.']
     release=releases/identity
     if release.exists():

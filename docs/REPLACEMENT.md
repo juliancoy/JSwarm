@@ -31,7 +31,7 @@ controller. Those live OS pipes are not transferable through a node journal.
 Do not claim such an execution can survive controller removal unchanged, or
 retain generations of controllers waiting for it to finish.
 
-The GenomeHarbor replacement adapter handles this legacy case explicitly:
+The HarborGenetics replacement adapter handles this legacy case explicitly:
 
 - Stop the fenced predecessor once the successor is healthy.
 - Preserve verified receipts and durable published results.

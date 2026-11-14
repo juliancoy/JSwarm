@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/wgs_distributed_verify.py
+../../HarborGenetics/scripts/wgs_distributed_verify.py

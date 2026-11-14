@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/huref_compare_swarm.py
+../../HarborGenetics/scripts/huref_compare_swarm.py

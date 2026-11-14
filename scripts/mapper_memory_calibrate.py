@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/mapper_memory_calibrate.py
+../../HarborGenetics/scripts/mapper_memory_calibrate.py

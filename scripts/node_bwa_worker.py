@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/node_bwa_worker.py
+../../HarborGenetics/scripts/node_bwa_worker.py

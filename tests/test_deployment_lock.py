@@ -13,7 +13,7 @@ import agent_updates as updates
 def source():
     value=updates.LauncherUpdates(Path(__file__).parents[1],lambda:False,Mock())
     value.git_source={'repositories':{name:{'origin':'https://example.com/'+name+'.git','commit':'a'*40}
-                       for name in ('Organization','JSwarm','GenomeHarbor')},'installer':'# test Git installer\n'}
+                       for name in ('Organization','JSwarm','HarborGenetics')},'installer':'# test Git installer\n'}
     return value
 
 

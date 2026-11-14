@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/julian_alignment_progress.py
+../../HarborGenetics/scripts/julian_alignment_progress.py

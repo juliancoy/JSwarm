@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/validate_vulkan_pileup.py
+../../HarborGenetics/scripts/validate_vulkan_pileup.py

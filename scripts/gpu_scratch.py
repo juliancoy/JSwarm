@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/gpu_scratch.py
+../../HarborGenetics/scripts/gpu_scratch.py

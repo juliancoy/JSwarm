@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/gpu_qc_service.py
+../../HarborGenetics/scripts/gpu_qc_service.py

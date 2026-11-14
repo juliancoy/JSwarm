@@ -94,7 +94,7 @@ class Sampler:
     def __init__(self,state,wgs):
         self.state=Path(state);self.wgs=Path(wgs);self.previous={}
         import sys
-        sys.path.insert(0,str((Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('GenomeHarbor', 'JSwarm') else Path(__file__).resolve().parents[1])/'swarm-control/server'))
+        sys.path.insert(0,str((Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('HarborGenetics', 'JSwarm') else Path(__file__).resolve().parents[1])/'swarm-control/server'))
         from docker_utils.policy import inventory,ssh
         from agent_client import CONFIG
         config=load(CONFIG);name='julian-latitude.local';account=next(h for h in inventory() if h['host']==name)

@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/genome_runtime.py
+../../HarborGenetics/scripts/genome_runtime.py

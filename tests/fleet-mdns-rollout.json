@@ -11,8 +11,8 @@
       "origin": "https://github.com/juliancoy/JSwarm.git",
       "commit": "19e3b9b4c5425381c65d8567ab38dffa02d0b755"
     },
-    "GenomeHarbor": {
-      "origin": "https://github.com/juliancoy/GenomeHarbor.git",
+    "HarborGenetics": {
+      "origin": "https://github.com/juliancoy/HarborGenetics.git",
       "commit": "aa975bd09310bef01270e3c1cfa8d28d81f5deae"
     }
   },

@@ -17,7 +17,7 @@ async def main():
     with tempfile.TemporaryDirectory(prefix='jswarm-live-review-') as temporary:
         root=Path(temporary)
         view=root/'JSwarm/swarm-control/server/view';view.mkdir(parents=True)
-        (root/'GenomeHarbor/web').mkdir(parents=True)
+        (root/'HarborGenetics/web').mkdir(parents=True)
         (view/'jswarm-live.js').write_bytes((Path(__file__).parents[2]/'swarm-control/server/view/jswarm-live.js').read_bytes())
         html='<html><head><link rel="stylesheet" href="/style.css"><script type="module" src="/entry.js"></script></head><body><h1>original</h1><select id="composition-dataset"><option value="reference">Reference</option><option value="hg001">HG001</option></select><p id="version"></p><p id="data"></p></body></html>'
         (view/'index.html').write_text(html)

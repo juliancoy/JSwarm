@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/dat1_vntr_swarm.py
+../../HarborGenetics/scripts/dat1_vntr_swarm.py

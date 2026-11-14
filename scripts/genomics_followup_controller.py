@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/genomics_followup_controller.py
+../../HarborGenetics/scripts/genomics_followup_controller.py

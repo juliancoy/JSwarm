@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/gpu_mapper_worker.py
+../../HarborGenetics/scripts/gpu_mapper_worker.py

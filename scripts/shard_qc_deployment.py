@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/shard_qc_deployment.py
+../../HarborGenetics/scripts/shard_qc_deployment.py

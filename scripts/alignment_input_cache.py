@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/alignment_input_cache.py
+../../HarborGenetics/scripts/alignment_input_cache.py

@@ -1,1 +1,1 @@
-../../../GenomeHarbor/server/GPU_QC.md
+../../../HarborGenetics/server/GPU_QC.md

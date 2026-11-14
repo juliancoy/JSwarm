@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/qualify_vulkan_pileup_shard.py
+../../HarborGenetics/scripts/qualify_vulkan_pileup_shard.py

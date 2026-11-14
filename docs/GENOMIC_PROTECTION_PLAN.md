@@ -20,7 +20,7 @@ external dataset approvals keep domain permissions. No branches or PRs.
 3. Add tooling for preparing immutable protected contracts, reviewing/approving
    them, token acquisition via existing PIdP PKCE, revocation and preflight.
    Do not put bearer tokens or private keys in job journals or worker arguments.
-4. Add a protected GenomeHarbor workflow and recipe wrapper. Generate a fresh
+4. Add a protected HarborGenetics workflow and recipe wrapper. Generate a fresh
    worker key in RAM, obtain authorized headers, decrypt only to private tmpfs,
    run an installed/pinned analysis command, and encrypt all declared derivatives
    to the configured result custodian before they leave RAM. Bind the analysis
@@ -68,7 +68,7 @@ Validation: 81 focused tests passed, including a real local Docker worker,
 real mTLS source/result transfers, Crypt4GH recovery, denial paths, CLI lifecycle,
 and PKCE/refresh behavior. Identity introspection/token exchange use synthetic
 fixtures; a production PIdP connection was not exercised. Both JSwarm and the
-protected GenomeHarbor image built through their ./build.sh entry points. The
+protected HarborGenetics image built through their ./build.sh entry points. The
 protected build context is a curated projection of about 127 kB.
 
 Production rollout is not active. The shared host has swap enabled, so it fails

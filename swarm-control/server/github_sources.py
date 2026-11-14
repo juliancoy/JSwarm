@@ -7,7 +7,7 @@ import re
 import subprocess
 import tempfile
 
-REPOSITORIES=('.', 'JSwarm', 'GenomeHarbor', 'OrgPortal', 'PIdP', 'CodeCollective', 'BmoreMedTech')
+REPOSITORIES=('.', 'JSwarm', 'HarborGenetics', 'OrgPortal', 'PIdP', 'CodeCollective', 'BmoreMedTech')
 
 
 def github_url(value):

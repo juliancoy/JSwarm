@@ -17,7 +17,7 @@ import sys
 import time
 import uuid
 
-ROOT=(Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('GenomeHarbor', 'JSwarm') else Path(__file__).resolve().parents[1])
+ROOT=(Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('HarborGenetics', 'JSwarm') else Path(__file__).resolve().parents[1])
 sys.path.insert(0,str(ROOT/'swarm-control/server'))
 from agent_client import AgentClient
 

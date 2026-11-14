@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/genome_reference_compute.py
+../../HarborGenetics/scripts/genome_reference_compute.py

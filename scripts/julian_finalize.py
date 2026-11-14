@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/julian_finalize.py
+../../HarborGenetics/scripts/julian_finalize.py

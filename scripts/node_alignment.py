@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/node_alignment.py
+../../HarborGenetics/scripts/node_alignment.py

@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/huref_followup_worker.py
+../../HarborGenetics/scripts/huref_followup_worker.py

@@ -124,7 +124,7 @@ client.offers(worker_name, approved_inputs)
 
 `current_access_token` is a callable returning the current access token in memory.
 Refresh through PIdP on the controller; never store this token in job specs or
-worker environments. Existing GenomeHarbor callers without this context will be
+worker environments. Existing HarborGenetics callers without this context will be
 denied by a protected source. Workflow-specific login/approval UI and automatic
 permission provisioning are not included; provision reviewed contracts and pass
 an authorized client before switching a workflow to protected mode.

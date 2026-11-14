@@ -10,7 +10,7 @@ import unittest
 import tempfile
 import threading
 from unittest.mock import Mock,MagicMock,patch
-sys.path.insert(0,str((Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('GenomeHarbor', 'JSwarm') else Path(__file__).resolve().parents[1])/'scripts'))
+sys.path.insert(0,str((Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('HarborGenetics', 'JSwarm') else Path(__file__).resolve().parents[1])/'scripts'))
 from launcher_agent import browser_request,Agent
 
 class BrowserTransportTests(unittest.TestCase):
@@ -35,7 +35,7 @@ class BrowserTransportTests(unittest.TestCase):
     def test_worker_module_imports_as_a_standalone_bundle(self):
         with tempfile.TemporaryDirectory() as temporary:
             worker=Path(temporary)/'worker.py'
-            worker.write_bytes(((Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('GenomeHarbor', 'JSwarm') else Path(__file__).resolve().parents[1])/'scripts/launcher_agent.py').read_bytes())
+            worker.write_bytes(((Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('HarborGenetics', 'JSwarm') else Path(__file__).resolve().parents[1])/'scripts/launcher_agent.py').read_bytes())
             subprocess.run([sys.executable,'-I','-c','import runpy,sys; runpy.run_path(sys.argv[1])',str(worker)],check=True,capture_output=True)
 
     def test_upload_verifies_bytes_without_python_311_file_digest(self):

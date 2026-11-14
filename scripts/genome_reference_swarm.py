@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/genome_reference_swarm.py
+../../HarborGenetics/scripts/genome_reference_swarm.py

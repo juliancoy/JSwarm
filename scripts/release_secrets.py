@@ -115,7 +115,7 @@ def check_tree(root):
         rows=[]
         for finding in sorted(set(findings),key=lambda f:(f.path,f.line,f.rule)):
             parts=Path(finding.path).parts
-            repository=parts[0] if parts[0] in ('JSwarm','GenomeHarbor') else 'Organization'
+            repository=parts[0] if parts[0] in ('JSwarm','HarborGenetics') else 'Organization'
             relative=str(Path(*parts[1:])) if repository!='Organization' else finding.path
             if not allowed(repository,Finding(relative,finding.line,finding.rule,finding.fingerprint)):rows.append(finding)
         if not rows:return

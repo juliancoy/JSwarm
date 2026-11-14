@@ -16,7 +16,7 @@ def snapshot(workspace):
     """Record the exact committed repositories exported by the release gate."""
     workspace=Path(workspace)
     result={}
-    for name in ('Organization', 'JSwarm', 'GenomeHarbor'):
+    for name in ('Organization', 'JSwarm', 'HarborGenetics'):
         folder=workspace if name=='Organization' else workspace/name
         result[name]={'origin':git(folder,'remote','get-url','origin'),
                       'commit':git(folder,'rev-parse','HEAD')}
@@ -25,7 +25,7 @@ def snapshot(workspace):
 
 
 def validate(repositories):
-    if set(repositories)!={'Organization','JSwarm','GenomeHarbor'}:
+    if set(repositories) not in ({'Organization','JSwarm','HarborGenetics'}, {'Organization','JSwarm','GenomeHarbor'}):
         raise ValueError('Incomplete Git source manifest')
     for spec in repositories.values():
         if set(spec)!={'origin','commit'} or not re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}',spec['commit']):
@@ -44,7 +44,9 @@ def sync(repositories, base, *, checkout_root=None):
     validate(repositories)
     base=Path(base);base.mkdir(parents=True,exist_ok=True,mode=0o700)
     commits={}
-    for name in ('Organization', 'JSwarm', 'GenomeHarbor'):
+    # Historical publications keep their original key and directory for rollback.
+    genome_name = 'HarborGenetics' if 'HarborGenetics' in repositories else 'GenomeHarbor'
+    for name in ('Organization', 'JSwarm', genome_name):
         spec=repositories[name]
         cache=base/(name+'.git')
         if not cache.exists():

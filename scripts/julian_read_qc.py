@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/julian_read_qc.py
+../../HarborGenetics/scripts/julian_read_qc.py

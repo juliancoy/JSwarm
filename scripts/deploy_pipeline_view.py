@@ -5,7 +5,7 @@ import shutil
 import subprocess
 import tempfile
 
-ROOT=(Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('GenomeHarbor', 'JSwarm') else Path(__file__).resolve().parents[1])
+ROOT=(Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('HarborGenetics', 'JSwarm') else Path(__file__).resolve().parents[1])
 ASSETS=('node-web.js','pipeline.html','pipeline.css','pipeline.js','machine-controls.js','pipeline-model.js','pipeline-colors.js','levels-model.js','tasks.html')
 
 

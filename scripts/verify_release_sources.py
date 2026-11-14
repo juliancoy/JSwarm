@@ -23,7 +23,7 @@ def check(workspace,tests=False):
     commits={}
     with tempfile.TemporaryDirectory(prefix='swarm-committed-sources-') as temporary:
         target=Path(temporary)/'Organization';target.mkdir()
-        for name in ('Organization','JSwarm','GenomeHarbor'):
+        for name in ('Organization','JSwarm','HarborGenetics'):
             source=workspace if name=='Organization' else workspace/name
             destination=target if name=='Organization' else target/name
             destination.mkdir(exist_ok=True)
@@ -44,18 +44,18 @@ print(json.dumps({'agent_revision':u.revision,'component_hashes':{k:v['sha256'] 
 """
         release=json.loads(subprocess.check_output([sys.executable,'-c',program],cwd=target,env=env,text=True))
         for kind,names in (('followup',FOLLOWUP),('finalizer',FINALIZER)):
-            source=target/'GenomeHarbor/scripts'
+            source=target/'HarborGenetics/scripts'
             hashes={name:hashlib.sha256(next(p for p in (source/name,target/'JSwarm/scripts'/name) if p.exists()).read_bytes()).hexdigest() for name in names}
             for name in names:compile(next(p for p in (source/name,target/'JSwarm/scripts'/name) if p.exists()).read_bytes(),name,'exec')
             release[kind+'_sources']=hashes
         if tests:
             suites=['JSwarm/tests/test_execution_accounting.py','JSwarm/tests/test_shard_runtime_sampler.py',
                     'JSwarm/swarm-control/server/tests/test_task_pipeline.py',
-                    'GenomeHarbor/tests/test_genomics_followup_controller.py',
-                    'GenomeHarbor/tests/test_genomics_retirement_recovery.py',
-                    'GenomeHarbor/tests/test_genomics_followup_gpu_routing.py',
-                    'GenomeHarbor/tests/test_genomics_region_staging.py',
-                    'GenomeHarbor/tests/test_wgs_preparation_queue.py']
+                    'HarborGenetics/tests/test_genomics_followup_controller.py',
+                    'HarborGenetics/tests/test_genomics_retirement_recovery.py',
+                    'HarborGenetics/tests/test_genomics_followup_gpu_routing.py',
+                    'HarborGenetics/tests/test_genomics_region_staging.py',
+                    'HarborGenetics/tests/test_wgs_preparation_queue.py']
             subprocess.run([sys.executable,'-m','pytest','-q',*suites],cwd=target,env=env,check=True)
         return {'schema':'swarm-committed-source-verification.v1','commits':commits,'release':release,'tests':tests}
 

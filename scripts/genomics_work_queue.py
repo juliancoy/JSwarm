@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/genomics_work_queue.py
+../../HarborGenetics/scripts/genomics_work_queue.py

@@ -22,13 +22,13 @@ class SuiteCacheTests(unittest.TestCase):
     def test_split_repository_changes_invalidate_unchanged_compatibility_links(self):
         cache=SuiteCache('.','.',{'monitor':{'image':'python'}})
         image=Mock();image.fingerprint.return_value='image-v1'
-        run={'repositories':{name:{'commit':'v1','url':name} for name in ('.','JSwarm','GenomeHarbor')}}
+        run={'repositories':{name:{'commit':'v1','url':name} for name in ('.','JSwarm','HarborGenetics')}}
         cache.tree=lambda name,commit:[('scripts/launcher_agent.py' if name=='.' else 'owned.py',(name+commit).encode())]
         before=cache.fingerprint('monitor',worker(),run,image)
         run['repositories']['JSwarm']['commit']='v2'
         after=cache.fingerprint('monitor',worker(),run,image)
         self.assertNotEqual(before,after)
-        run['repositories']['GenomeHarbor']['commit']='v2'
+        run['repositories']['HarborGenetics']['commit']='v2'
         self.assertNotEqual(after,cache.fingerprint('monitor',worker(),run,image))
 
     def test_reuses_recorded_pass_with_explicit_provenance(self):

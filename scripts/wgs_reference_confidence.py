@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/wgs_reference_confidence.py
+../../HarborGenetics/scripts/wgs_reference_confidence.py

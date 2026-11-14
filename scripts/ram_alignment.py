@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/ram_alignment.py
+../../HarborGenetics/scripts/ram_alignment.py

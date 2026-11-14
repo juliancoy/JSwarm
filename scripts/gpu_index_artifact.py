@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/gpu_index_artifact.py
+../../HarborGenetics/scripts/gpu_index_artifact.py

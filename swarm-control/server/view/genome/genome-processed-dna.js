@@ -1,1 +1,1 @@
-../../../../../GenomeHarbor/web/genome-processed-dna.js
+../../../../../HarborGenetics/web/genome-processed-dna.js

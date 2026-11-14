@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/public_genomes.py
+../../HarborGenetics/scripts/public_genomes.py

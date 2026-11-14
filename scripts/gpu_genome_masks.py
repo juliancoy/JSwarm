@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/gpu_genome_masks.py
+../../HarborGenetics/scripts/gpu_genome_masks.py

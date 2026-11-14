@@ -1,1 +1,1 @@
-../../GenomeHarbor/scripts/wgs_recall_swarm.py
+../../HarborGenetics/scripts/wgs_recall_swarm.py

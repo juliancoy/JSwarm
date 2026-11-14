@@ -10,7 +10,7 @@ from scripts import launcher_update
 def release_source():
     source=LauncherUpdates(Path(__file__).parents[1],lambda:False,Mock())
     source.git_source={'repositories':{name:{'origin':'https://example.com/'+name+'.git','commit':'a'*40}
-                       for name in ('Organization','JSwarm','GenomeHarbor')},'installer':'# test Git installer\n'}
+                       for name in ('Organization','JSwarm','HarborGenetics')},'installer':'# test Git installer\n'}
     return source
 
 
@@ -108,7 +108,7 @@ def test_source_snapshot_uses_commits_without_dirty_or_untracked_runtime_data(tm
     import subprocess
     from scripts.deploy_swarm_inputs import freeze_source
     root=tmp_path/'Organization';project=root/'JSwarm'
-    for repo in (root,project,root/'GenomeHarbor'):
+    for repo in (root,project,root/'HarborGenetics'):
         repo.mkdir(parents=True,exist_ok=True)
         subprocess.run(['git','init','-q',str(repo)],check=True)
         subprocess.run(['git','-C',str(repo),'config','user.name','Test'],check=True)
@@ -147,7 +147,7 @@ def test_local_update_bundles_stream_runtime_in_installed_agent(tmp_path,monkeyp
 def test_git_provenance_is_covered_by_publication_integrity(tmp_path):
     source=release_source()
     source.git_source={'repositories':{name:{'origin':'https://example.com/'+name+'.git','commit':'a'*40}
-                       for name in ('Organization','JSwarm','GenomeHarbor')},'installer':'# verified installer\n'}
+                       for name in ('Organization','JSwarm','HarborGenetics')},'installer':'# verified installer\n'}
     path=source.publish(tmp_path)
     assert LauncherUpdates.published(path,lambda:False,Mock()).git_source==source.git_source
     value=json.loads(path.read_text());value['git_source']['repositories']['JSwarm']['commit']='b'*40

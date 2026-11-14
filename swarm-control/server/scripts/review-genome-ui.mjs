@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 const script = fileURLToPath(
   new URL(
-    "../../../../GenomeHarbor/tests/browser/review_genome_explorer.py",
+    "../../../../HarborGenetics/tests/browser/review_genome_explorer.py",
     import.meta.url,
   ),
 );
