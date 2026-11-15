@@ -188,3 +188,21 @@ def test_dns_sd_rebinds_after_boot_network_addresses_change(monkeypatch):
     before.close.assert_called_once()
     discovery.resolve_service('worker.local')
     assert factory.call_count==2
+
+
+def test_numeric_discovered_endpoint_fails_over_with_mptcp_without_pinning_first_address(tmp_path,monkeypatch):
+    import sys
+    from pathlib import Path
+    sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'swarm-control/server'))
+    import agent_client
+    config=tmp_path/'peers.json'
+    config.write_text(json.dumps({'name':'controller.local','peers':{'worker.local':'old-address'},'key':'ab'*32}))
+    monkeypatch.setattr(agent_client,'CONFIG',config)
+    addresses=['10.104.105.132','10.42.0.166']
+    monkeypatch.setattr(discovery,'resolve_service',lambda name:('worker-swarm.local',addresses))
+    connected=object();connect=MagicMock(side_effect=[TimeoutError('unroutable Wi-Fi'),connected])
+    monkeypatch.setattr(agent_client,'multipath_connection',connect)
+    client=agent_client.AgentClient({'host':'worker.local','agent_endpoint':'http://10.104.105.132:8790'})
+    assert client.connection._create_connection(('10.104.105.132',8790),timeout=15) is connected
+    assert [call.args[0] for call in connect.call_args_list]==[(ip,8790) for ip in addresses]
+    assert [call.args[1] for call in connect.call_args_list]==[2,2]

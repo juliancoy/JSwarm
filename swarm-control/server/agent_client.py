@@ -63,13 +63,17 @@ class AgentClient:
         connection=http.client.HTTPSConnection if endpoint.scheme=='https' else http.client.HTTPConnection
         self.connection=connection(endpoint.hostname,endpoint.port,timeout=30)
         self.connection._create_connection=multipath_connection
-        if not self.gateway and endpoint.hostname.endswith('.local'):
+        try:
+            address=ipaddress.ip_address(endpoint.hostname)
+            enrolled_lan=address.is_private and not address.is_loopback and self.node.endswith('.local')
+        except ValueError:enrolled_lan=False
+        if not self.gateway and (endpoint.hostname.endswith('.local') or host.get('resolved_addresses') or enrolled_lan):
             def connect(address,timeout=30,source_address=None,**kwargs):
                 from scripts.launcher_discovery import resolve_service
                 _,addresses=resolve_service(self.node)
                 last=None
                 for ip in addresses:
-                    try:return multipath_connection((ip,address[1]),timeout,source_address,**kwargs)
+                    try:return multipath_connection((ip,address[1]),min(timeout,2) if len(addresses)>1 else timeout,source_address,**kwargs)
                     except OSError as error:last=error
                 raise last or OSError('No current mDNS route')
             self.connection._create_connection=connect
