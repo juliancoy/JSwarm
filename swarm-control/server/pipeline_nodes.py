@@ -38,8 +38,9 @@ def collect(name,address,previous,task_ids,wan_only=False):
             cursor=page.get('next')
             if not cursor:break
         # Active attempts are refreshed independently of the history scan.
-        for worker in status.get('workers',[])[:100]:
-            if worker.get('group') in ('stream-work','shared-cache') or not re.fullmatch('[a-f0-9]{32}',str(worker.get('job',''))) or not worker.get('container'):continue
+        active_workers=[w for w in status.get('workers',[]) if w.get('active') is True and w.get('group') not in ('stream-work','shared-cache')]
+        for worker in active_workers[:100]:
+            if not re.fullmatch('[a-f0-9]{32}',str(worker.get('job',''))) or not worker.get('container'):continue
             try:
                 row=client.call('worker.status',{'job':worker['job'],'container':worker['container']},timeout=8)
                 if row.get('found'):records[row['job']]=row
@@ -61,6 +62,7 @@ def collect(name,address,previous,task_ids,wan_only=False):
             streams.update(client.call('stream.timings',{'ids':chosen[start:start+100]},timeout=8)['items'])
         value={'host':name,'status':'live','observed_at':time.time(),'records':records,'cursor':cursor or '',
                'streams':streams,'stream_offset':offset+300 if offset+300<len(historical) else 0,
+               'active_workers':active_workers,
                'infrastructure':cache_workers(name,status,time.time())}
     except Exception as error:
         logging.warning('Pipeline node %s: %s unavailable (%s)',name,stage,type(error).__name__)
@@ -127,6 +129,36 @@ def merge_item(item,node):
     return item
 
 
+def node_workloads(items,nodes):
+    """Include owner-observed work outside this queue, without counting it twice."""
+    reports={};tasks={}
+    for item in items:
+        host=(item.get('worker') or '').split('#')[0]
+        reports.setdefault(host,set()).update(item.get('report_keys',[]))
+        if item.get('task_id'):tasks.setdefault(host,set()).add(item['task_id'])
+    result=[]
+    for host,node in nodes.items():
+        if node.get('status')!='live':continue
+        for worker in node.get('active_workers',[]):
+            job=worker.get('job')
+            if worker.get('active') is not True or worker.get('group') in ('shared-cache','stream-work') or not job:continue
+            record=node.get('records',{}).get(job,{})
+            if job in tasks.get(host,set()) or record.get('controller_report') and report_key(record['controller_report']) in reports.get(host,set()):continue
+            observed={**worker,**record,'running':True,'observed_at':node['observed_at']}
+            execution=execution_from_worker(observed);budget=resources(worker)
+            group=worker.get('group') or 'Other work'
+            result.append({'id':'node-worker/'+host+'/'+job,'job_id':job,
+                'name':worker.get('run') or group+' · '+job[:8],
+                'parent':'Node workloads · '+group,'kind':'node-workload','run_type':'other',
+                'queue_state':'node-observed','status':'running','worker':host,
+                'container':worker.get('container'),'resources':budget,'worker_resources':budget,
+                'execution':execution,'runtime':runtime_observation(execution,{},host),
+                'created':worker.get('created') or node['observed_at'],'updated':node['observed_at'],
+                'data_sources':{'queue':None,'execution':host},
+                'detail':'Running workload reported by its owning node; not submitted through this coordinator queue.'})
+    return result
+
+
 def snapshot():
     config=json.loads(CONFIG.read_text());name=config['name']
     if name!=config.get('master','compai.local'):raise ValueError('Queue API must run on its owner')
@@ -149,9 +181,10 @@ def snapshot():
                 key=report_key(record['controller_report'])
                 if key not in index or record.get('observed_at',0)>index[key].get('observed_at',0):index[key]=record
         value['report_index']=index
+    extra=node_workloads(items,nodes)
     items=[merge_item(i,nodes.get((i.get('worker') or '').split('#')[0],{'status':'unavailable'})) for i in items]
     infrastructure=[i for n in nodes.values() for i in n.get('infrastructure',[]) if n.get('status')=='live']
-    return {'sampled_at':now,'items':items,'infrastructure':infrastructure,'machines':sorted(config['peers']),
+    return {'sampled_at':now,'items':items+extra,'infrastructure':infrastructure,'machines':sorted(config['peers']),
             'nodes':{h:{k:n.get(k) for k in ('status','observed_at')} for h,n in nodes.items()},
             'runtime_summary':runtime_summary(items),'errors':errors,
             'source':'Coordinator queue API joined with each owning node’s authenticated API'}

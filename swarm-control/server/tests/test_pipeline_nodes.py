@@ -77,3 +77,42 @@ def test_queue_projects_verified_gpu_receipt_and_batch_identity_without_paths(tm
     assert row['shared_execution']['members']==2 and '/private' not in json.dumps(row)
     with q.connect() as db:db.execute('UPDATE submissions SET result=?',(json.dumps({**receipt,'receipt_sha256':None}),))
     assert not queue_snapshot(q.path,'master')['items'][0]['runtime']
+
+
+def test_unqueued_node_work_is_visible_without_duplicate_queue_jobs_or_cache_holders():
+    queued=item()
+    workers=[{'job':'queued','group':'epigenetic-full','active':True,'container':'worker-one','cpus':6,'memory_mb':16384},
+             {'job':'standalone','group':'gpu-qc-service','active':True,'container':'worker-two','cpus':1,'memory_mb':512,'sink':'gpu'},
+             {'job':'cache','group':'shared-cache','active':True},
+             {'job':'stopped','group':'old-work','active':False}]
+    node={'status':'live','observed_at':101,'active_workers':workers,'records':{
+        'queued':{'controller_report':'/owned/execution.json'},
+        'standalone':{'running':True,'cpus':1,'memory_mb':512,'started_at':'2026-11-15T20:00:00Z'}}}
+    rows=pipeline.node_workloads([queued],{'node.local':node})
+    assert len(rows)==1
+    assert rows[0]['id']=='node-worker/node.local/standalone'
+    assert rows[0]['status']=='running' and rows[0]['worker_resources']['memory_mb']==512
+    assert rows[0]['data_sources']=={'queue':None,'execution':'node.local'}
+    assert '/owned' not in str(rows)
+    assert not pipeline.node_workloads([queued],{'node.local':{**node,'status':'stale'}})
+    assert not pipeline.node_workloads([queued],{'node.local':{**node,'status':'unavailable'}})
+
+
+def test_node_work_deduplication_uses_owner_and_attempt_identity():
+    source={**item(),'task_id':'standalone'}
+    worker={'job':'standalone','group':'other','active':True,'cpus':1}
+    node={'status':'live','observed_at':101,'active_workers':[worker],'records':{}}
+    assert not pipeline.node_workloads([source],{'node.local':node})
+    assert len(pipeline.node_workloads([source],{'different.local':node}))==1
+
+
+def test_cache_holders_do_not_exhaust_active_compute_refresh_budget():
+    client=Mock()
+    compute={'group':'epigenetic-full','job':'a'*32,'container':'swarm-job-'+'a'*32,'active':True}
+    client.call.side_effect=[{'node':'node.local','workers':[{'group':'shared-cache','active':True}]*110+[compute]},
+                             {'items':[],'next':None},{'found':True,'job':'a'*32,'running':True}]
+    with patch.object(pipeline,'AgentClient',return_value=client):
+        pipeline.CACHE['node.local']={}
+        pipeline.collect('node.local','192.0.2.1',{},[])
+    assert [call.args[0] for call in client.call.call_args_list]==['status','worker.records','worker.status']
+    assert pipeline.CACHE['node.local']['value']['active_workers']==[compute]
