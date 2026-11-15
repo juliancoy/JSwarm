@@ -116,3 +116,23 @@ def test_cache_holders_do_not_exhaust_active_compute_refresh_budget():
         pipeline.collect('node.local','192.0.2.1',{},[])
     assert [call.args[0] for call in client.call.call_args_list]==['status','worker.records','worker.status']
     assert pipeline.CACHE['node.local']['value']['active_workers']==[compute]
+
+
+def test_archived_history_hides_only_unchanged_terminal_rows(tmp_path):
+    from submission_queue import SubmissionQueue
+    from node_pipeline_api import archive_history, queue_snapshot
+    path=tmp_path/'queue'
+    old=SubmissionQueue('old',path);old.submit_many([{'id':'done'},{'id':'failed'},{'id':'waiting'},{'id':'running'}])
+    current=SubmissionQueue('current',path);current.submit({'id':'done'})
+    with old.connect() as db:
+        db.execute("UPDATE submissions SET state='completed' WHERE id='done'")
+        db.execute("UPDATE submissions SET state='failed' WHERE id='failed'")
+        db.execute("UPDATE submissions SET state='accepted' WHERE id='running'")
+    assert archive_history(path,'current')==2
+    ids={r['id'] for r in queue_snapshot(path,'master')['items']}
+    assert ids=={'old/waiting','old/running','current/done'}
+    with old.connect() as db:
+        assert db.execute('SELECT count(*) FROM submissions').fetchone()[0]==5
+        db.execute("UPDATE submissions SET updated=updated+1 WHERE namespace='old' AND id='done'")
+        db.execute("UPDATE submissions SET state='queued' WHERE namespace='old' AND id='failed'")
+    assert {r['id'] for r in queue_snapshot(path,'master')['items']}==ids|{'old/done','old/failed'}

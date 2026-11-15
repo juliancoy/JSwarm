@@ -14,6 +14,17 @@ def report_key(path):
     return hashlib.sha256(str(path).encode()).hexdigest() if path else None
 
 
+def archive_history(path, keep_namespace):
+    """Hide terminal history while retaining queue receipts and cache ownership."""
+    if not keep_namespace:raise ValueError('Current workflow namespace required')
+    with sqlite3.connect(path,timeout=30) as db:
+        db.execute('BEGIN IMMEDIATE')
+        db.execute('CREATE TABLE IF NOT EXISTS pipeline_history_archive(namespace TEXT,id TEXT,updated REAL,archived_at REAL,PRIMARY KEY(namespace,id))')
+        before=db.total_changes
+        db.execute("INSERT OR REPLACE INTO pipeline_history_archive SELECT namespace,id,updated,? FROM submissions WHERE namespace<>? AND state IN ('completed','failed','cancelled','blocked')",(time.time(),keep_namespace))
+        return db.total_changes-before
+
+
 def queue_snapshot(path, node):
     """Only queue-owned definitions, placement, dependencies and verified receipts.
 
@@ -25,9 +36,13 @@ def queue_snapshot(path, node):
     items=[]
     with sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=2) as db:
         db.row_factory=sqlite3.Row
+        archived={}
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pipeline_history_archive'").fetchone():
+            archived={(r['namespace'],r['id']):r['updated'] for r in db.execute('SELECT namespace,id,updated FROM pipeline_history_archive')}
         task_column='task_id' if any(r[1]=='task_id' for r in db.execute('PRAGMA table_info(submissions)')) else 'NULL AS task_id'
         rows=db.execute('SELECT namespace,id,spec,state,host,created,updated,request,error,result,'+task_column+' FROM submissions ORDER BY created,id LIMIT 100001')
         for row in rows:
+            if row['state'] in ('completed','failed','cancelled','blocked') and archived.get((row['namespace'],row['id']))==row['updated']:continue
             if len(items)>=100000:raise ValueError('Pipeline queue envelope exceeded')
             spec=json.loads(row['spec']);request=json.loads(row['request'] or '{}');result=json.loads(row['result'] or '{}')
             request=request if isinstance(request,dict) else {};result=result if isinstance(result,dict) else {}
