@@ -168,3 +168,23 @@ def test_named_agent_connection_resolves_dns_sd_without_nss(tmp_path,monkeypatch
     assert client.connection._create_connection(('worker-swarm.local',8790)) is sock
     resolver.assert_called_once_with('worker.local')
     sock.connect.assert_called_once_with(('10.42.0.222',8790))
+
+
+def test_dns_sd_rebinds_after_boot_network_addresses_change(monkeypatch):
+    from types import SimpleNamespace
+    info=SimpleNamespace(port=8790,server='worker-swarm.local.',
+        properties={b'node':b'worker.local',b'protocol':b'lifetech-launcher.v1'},
+        parsed_addresses=lambda _:['10.42.0.222'])
+    before=MagicMock();before.get_service_info.return_value=None
+    after=MagicMock();after.get_service_info.return_value=info
+    monkeypatch.setattr(discovery,'_RESOLVER',None)
+    network=[()]
+    monkeypatch.setattr(discovery,'network_signature',lambda:network[0])
+    factory=MagicMock(side_effect=[before,after]);monkeypatch.setattr(discovery,'Zeroconf',factory)
+    import pytest
+    with pytest.raises(OSError):discovery.resolve_service('worker.local')
+    network[0]=(('eth0','10.42.0.71'),)
+    assert discovery.resolve_service('worker.local')[1]==['10.42.0.222']
+    before.close.assert_called_once()
+    discovery.resolve_service('worker.local')
+    assert factory.call_count==2

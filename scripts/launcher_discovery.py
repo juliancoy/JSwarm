@@ -6,15 +6,35 @@ from zeroconf import IPVersion, ServiceBrowser, ServiceInfo, Zeroconf
 SERVICE = '_lifetech._tcp.local.'
 _RESOLVER = None
 _RESOLVER_LOCK = threading.Lock()
+_RESOLVER_NETWORK = None
+
+
+def network_signature():
+    """Notice physical link/address changes after boot or network reconnect."""
+    import fcntl
+    import struct
+    result=[]
+    with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as probe:
+        for _,name in socket.if_nameindex():
+            if name=='lo':continue
+            try:
+                address=fcntl.ioctl(probe.fileno(),0x8915,struct.pack('256s',name.encode()[:15]))[20:24]
+            except OSError:continue
+            result.append((name,socket.inet_ntoa(address)))
+    return tuple(sorted(result))
 
 
 def resolve_service(node, timeout=1000):
     """Resolve DNS-SD directly when a container has no host NSS mDNS module."""
-    global _RESOLVER
+    global _RESOLVER, _RESOLVER_NETWORK
+    network=network_signature()
     with _RESOLVER_LOCK:
+        if _RESOLVER is not None and _RESOLVER_NETWORK!=network:
+            _RESOLVER.close();_RESOLVER=None
         if _RESOLVER is None:
             import atexit
             _RESOLVER = Zeroconf(unicast=True, ip_version=IPVersion.V4Only)
+            _RESOLVER_NETWORK=network
             atexit.register(_RESOLVER.close)
         zc = _RESOLVER
     info = zc.get_service_info(SERVICE, node+'.'+SERVICE, timeout=timeout)
