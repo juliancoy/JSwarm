@@ -46,19 +46,37 @@ def receive(connection):
  return exact(connection,n)
 
 def connect(name,port,addresses=()):
- errors=[];seen=set()
+ # Race resolved interfaces/families. A reachable but congested Wi-Fi/link-local
+ # address must not hide a lower-latency wired route. TLS still pins the name.
+ import concurrent.futures,threading
+ errors=[];seen=set();candidates=[]
  for target in [name,*addresses]:
   try:resolved=socket.getaddrinfo(target,port,socket.AF_UNSPEC,socket.SOCK_STREAM)
   except OSError as error:errors.append(str(error));continue
   for family,kind,protocol,canonical,address in resolved:
-   if (family,address) in seen:continue
-   seen.add((family,address));raw=None
-   try:
-    raw=transport_socket(family);raw.settimeout(3);raw.connect(address);return raw
-   except OSError as error:
-    errors.append(str(error))
-    if raw is not None:raw.close()
- raise ConnectionError('No reachable enrolled payload address: '+'; '.join(errors)[-500:])
+   if (family,address) not in seen:
+    seen.add((family,address));candidates.append((family,address))
+ winner=concurrent.futures.Future();lock=threading.Lock();stopped=False
+ def attempt(candidate):
+  family,address=candidate;raw=None
+  try:
+   raw=transport_socket(family);raw.settimeout(3);raw.connect(address)
+   with lock:
+    if not stopped and not winner.done():winner.set_result(raw);raw=None
+  except OSError as error:
+   with lock:errors.append(str(error))
+  finally:
+   if raw is not None:raw.close()
+ pool=concurrent.futures.ThreadPoolExecutor(max_workers=8)
+ try:
+  for candidate in candidates[:32]:pool.submit(attempt,candidate)
+  try:return winner.result(timeout=4)
+  except concurrent.futures.TimeoutError:
+   raise ConnectionError('No reachable enrolled payload address: '+'; '.join(errors)[-500:])
+ finally:
+  with lock:stopped=True
+  pool.shutdown(wait=False,cancel_futures=True)
+
 
 def listen():
  for family,address in ((socket.AF_INET6,('::',0)),(socket.AF_INET,('0.0.0.0',0))):

@@ -52,3 +52,17 @@ class RemoteIdentityTests(unittest.TestCase):
         self.assertNotEqual(result.returncode,0)
         self.assertIn('Payload machine identity changed',result.stderr)
         self.assertEqual(result.stdout,'')
+
+
+class RouteSelectionTests(unittest.TestCase):
+    def test_slow_reachable_address_does_not_hide_fast_route(self):
+        import threading,time
+        slow=Mock();fast=Mock();finished=threading.Event()
+        slow.connect.side_effect=lambda address:time.sleep(.1)
+        slow.close.side_effect=lambda:finished.set()
+        def socket_for(family):return slow if family==socket.AF_INET6 else fast
+        candidates=[(socket.AF_INET6,1,6,'',('fe80::1',4444,0,7)),(socket.AF_INET,1,6,'',('192.0.2.1',4444))]
+        with patch.object(payload.socket,'getaddrinfo',return_value=candidates),patch.object(payload,'transport_socket',side_effect=socket_for):
+            self.assertIs(payload.connect('node.local',4444),fast)
+            self.assertTrue(finished.wait(1))
+        fast.close.assert_not_called();slow.close.assert_called_once()
