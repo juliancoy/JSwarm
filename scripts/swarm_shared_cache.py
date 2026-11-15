@@ -89,7 +89,8 @@ class pin:
         finally:self.client.close()
 
 
-def _ensure_managed(host, image, files, load, metrics=None, on_bound=None):
+def ensure_node(host, image, files, load, metrics=None, on_bound=None):
+    """Use the node RAM object store; never allocate a per-object keeper."""
     import secrets
     key, value = contract(image, files)
     size = math.ceil(sum(r['bytes'] for r in value['files'].values()) / 1024**2) + 16
@@ -428,7 +429,7 @@ def ensure(host,image,files,load,metrics=None,*,on_bound=None,load_path=False):
             host['capabilities']=client.call('status').get('capabilities',[])
             managed='node-cache-v1' in host['capabilities']
         finally:client.close()
-        if managed:return _ensure_managed(host,image,files,load,metrics,on_bound)
+        if managed:return ensure_node(host,image,files,load,metrics,on_bound)
     key,value=contract(image,files);shm_mb=math.ceil(sum(r['bytes'] for r in files.values())/1024**2)+16
     cache={**value,'host':host['host'],'key':key,'container':'swarm-job-'+key[:32],'volume':'swarm-cache-'+key[:32],
            'memory_mb':shm_mb+128,'shm_mb':shm_mb}

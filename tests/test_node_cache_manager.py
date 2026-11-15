@@ -1,6 +1,7 @@
 """Exercise the RAM cache lifecycle against an isolated local Docker volume."""
 import hashlib
 import json
+import os
 import subprocess
 import uuid
 
@@ -20,7 +21,7 @@ def binding(image, data, *, filename='payload'):
 
 @pytest.fixture
 def keeper(monkeypatch):
-    probe=subprocess.run(['docker','image','inspect','python:3.12-bookworm'],capture_output=True,text=True)
+    probe=subprocess.run(['docker','image','inspect',os.environ.get('SWARM_CACHE_TEST_IMAGE','python:3.12-bookworm')],capture_output=True,text=True)
     if probe.returncode:pytest.skip('Local Python Docker image unavailable')
     image=json.loads(probe.stdout)[0]['Id']
     name='jswarm-cache-test-'+uuid.uuid4().hex
