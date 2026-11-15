@@ -188,8 +188,8 @@ def test_managed_client_reuses_objects_and_pins_runtime_until_failure_cleanup(mo
     monkeypatch.setattr(shared,'command',lambda *a,**kw:pytest.fail('Managed cache used legacy Docker ownership'))
     host={'host':'test','machine':'m'}
     def loader(owner,path):loads.append((owner,path))
-    first=shared.ensure(host,image,record['files'],loader,load_path=True)
-    assert shared.ensure(host,image,record['files'],loader,load_path=True)==first
+    first=shared.ensure(host,image,record['files'],loader)
+    assert shared.ensure(host,image,record['files'],loader)==first
     assert loads==[('swarm-node-cache','/cache/objects/'+record['key'])]
     def execute(*args,**kwargs):
         assert events[-1][0]=='resource.cache.pin'
@@ -219,7 +219,7 @@ def test_derived_legacy_lookup_preserves_a_valid_copy_without_rebuilding(tmp_pat
     monkeypatch.setattr(shared,'ready',lambda *a:True)
     def unavailable(*a,**kw):pytest.fail('Valid legacy data cannot require retired staging')
     monkeypatch.setattr(shared,'ensure',unavailable)
-    result=shared.ensure_derived({'host':'source','local':True,'capabilities':['node-cache-v1']},image,identity,unavailable,unavailable,load_path=True)
+    result=shared.ensure_derived({'host':'source','local':True,'capabilities':['node-cache-v1']},image,identity,unavailable,unavailable)
     assert result['cache']==old
 
 
@@ -260,3 +260,70 @@ def test_cache_begin_holds_shared_admission_lock_until_commitment_is_visible(tmp
     assert manager.capacity is original_capacity
     with (tmp_path/'.resources/pool.lock').open('a') as other:
         fcntl.flock(other,fcntl.LOCK_EX|fcntl.LOCK_NB)
+
+
+def test_concurrent_bwa_reads_share_node_cache_and_match_uncached_alignment(keeper,tmp_path):
+    import random
+    from concurrent.futures import ThreadPoolExecutor
+    manager,_=keeper
+    tool_image='sha256:2817b8f8ff61d06d2e260007d79a51c676e22eb4e7b619a9c336422db039412e'
+    def docker(*args,**kwargs):
+        kwargs.setdefault('timeout',60)
+        return subprocess.run(['docker',*args],capture_output=True,**kwargs)
+    if docker('image','inspect',tool_image).returncode:pytest.skip('Approved BWA image unavailable locally')
+    rng=random.Random(uuid.uuid4().int);sequence=''.join(rng.choices('ACGT',k=20000))
+    (tmp_path/'reference.fa').write_text('>fixture\n'+sequence+'\n')
+    complement=str.maketrans('ACGT','TGCA')
+    for mate in (1,2):
+        reads=[]
+        for i in range(60):
+            start=100+i*100;read=sequence[start:start+100] if mate==1 else sequence[start+200:start+300].translate(complement)[::-1]
+            reads.append('@pair'+str(i)+'/'+str(mate)+'\n'+read+'\n+\n'+'I'*100+'\n')
+        (tmp_path/('r'+str(mate)+'.fq')).write_text(''.join(reads))
+    (tmp_path/'objects').mkdir()
+    setup='bwa index /work/reference.fa && bwa shm -f /work/pack /work/reference.fa && cp /dev/shm/bwactl /work/objects/bwactl && cp /dev/shm/bwaidx-reference.fa /work/objects/bwaidx-reference.fa && bwa shm -d && bwa mem -K 1000000 -t 1 /work/reference.fa /work/r1.fq /work/r2.fq > /work/plain.sam'
+    setup_name='shared-cache-setup-'+uuid.uuid4().hex[:12]
+    try:
+        p=docker('run','--rm','--name',setup_name,'--network','none','--cpus','1','--memory','256m','--memory-swap','256m','--shm-size','32m','--mount','type=bind,src='+str(tmp_path)+',dst=/work',tool_image,'bash','-o','pipefail','-c',setup,timeout=180)
+    finally:docker('rm','-f',setup_name)
+    assert p.returncode==0,p.stderr.decode()
+    files={p.name:{'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in (tmp_path/'objects').iterdir()}
+
+    key,_=shared.contract(tool_image,files)
+    size=(sum(r['bytes'] for r in files.values())+1024**2-1)//1024**2+16
+    cache=dict(image=tool_image,files=files,key=key,layout=module.LAYOUT,container=module.NAME,volume=module.NAME,
+               path='/cache/objects/'+key,subpath='objects/'+key,shm_mb=size,memory_mb=size)
+    token='d'*64
+    assert manager.dispatch('begin',{'cache':cache,'token':token})['state']=='loading'
+    for name in files:
+        p=docker('exec','-i',manager.name,'python3','-c','import pathlib,sys;pathlib.Path(sys.argv[1]).write_bytes(sys.stdin.buffer.read())',cache['path']+'/'+name,input=(tmp_path/'objects'/name).read_bytes())
+        assert p.returncode==0,p.stderr.decode()
+    manager.dispatch('seal',{'key':key,'token':token})
+    program=r'''
+    import errno,hashlib,json,os,pathlib,subprocess,time
+    p=pathlib.Path('/dev/shm/bwaidx-reference.fa');s=p.stat()
+    try:p.open('wb');raise RuntimeError('Shared reference was writable')
+    except OSError as e:
+     if e.errno!=errno.EROFS:raise
+    r=subprocess.run(['bwa','mem','-K','1000000','-t','1','/ref/reference.fa','/input/r1.fq','/input/r2.fq'],capture_output=True,check=True)
+    data=b'\n'.join(l for l in r.stdout.splitlines() if not l.startswith(b'@'))
+    print(json.dumps({'inode':[s.st_dev,s.st_ino],'sam_sha256':hashlib.sha256(data).hexdigest(),'shared_memory_observed':b'shared memory' in r.stderr}))
+    '''
+
+    import textwrap
+    program=textwrap.dedent(program)
+    def shard(_):
+        name='node-cache-bwa-reader-'+uuid.uuid4().hex
+        try:
+            return docker('run','--rm','--name',name,'--network','none','--read-only','--cap-drop','ALL','--cpus','1','--memory','256m','--memory-swap','256m','--user','1000:1000',
+                '--mount','type=bind,src='+str(tmp_path)+',dst=/input,readonly',
+                '--mount','type=volume,src='+manager.name+',dst=/dev/shm,readonly,volume-nocopy,volume-subpath='+cache['subpath'],tool_image,'python3','-c',program,timeout=180)
+        finally:docker('rm','-f',name)
+    with ThreadPoolExecutor(max_workers=2) as pool:results=list(pool.map(shard,range(2)))
+    for result in results:assert result.returncode==0,result.stderr.decode()
+    records=[json.loads(r.stdout) for r in results]
+    baseline=b'\n'.join(line for line in (tmp_path/'plain.sam').read_bytes().splitlines() if not line.startswith(b'@'))
+    assert records[0]['inode']==records[1]['inode']
+    assert all(r['shared_memory_observed'] and r['sam_sha256']==hashlib.sha256(baseline).hexdigest() for r in records)
+    owner=manager.owner()
+    assert manager.docker(['ps','-aq','--no-trunc','--filter','volume='+manager.name]).split()==[owner['Id']]

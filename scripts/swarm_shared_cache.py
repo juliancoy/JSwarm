@@ -1,7 +1,7 @@
-"""One Docker-owned, verified RAM volume per immutable object set and node.
+"""Verified objects in each node's shared RAM cache.
 
-The existing resource pool charges its owner once. Consumers mount the volume
-read-only and reserve only private memory. No host IPC or payload disk fallback.
+Consumers mount object subpaths read-only and reserve private working memory.
+Historical per-object bindings remain readable for recovery and migration only.
 """
 import contextlib
 from collections import Counter, OrderedDict, defaultdict
@@ -89,7 +89,7 @@ class pin:
         finally:self.client.close()
 
 
-def ensure_node(host, image, files, load, metrics=None, on_bound=None):
+def ensure(host, image, files, load, metrics=None, *, on_bound=None):
     """Use the node RAM object store; never allocate a per-object keeper."""
     import secrets
     key, value = contract(image, files)
@@ -154,17 +154,6 @@ def validate_volume(row,cache):
         raise ValueError('Cache volume is not the owned RAM-only volume')
 
 
-SEAL=r'''
-import hashlib,json,pathlib,sys,os
-v=json.loads(sys.argv[1]);root=pathlib.Path('/dev/shm');identities={}
-for name,expected in v['files'].items():
- p=root/name;h=hashlib.sha256()
- with p.open('rb') as f:
-  while b:=f.read(1024*1024):h.update(b)
- if p.stat().st_size!=expected['bytes'] or h.hexdigest()!=expected['sha256']:raise ValueError('Shared cache checksum mismatch')
- p.chmod(0o444);s=p.stat();identities[name]=[s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns]
-p=root/'.ready.tmp';p.write_text(json.dumps({**v,'identities':identities}));p.chmod(0o444);os.replace(p,root/'.ready.json')
-'''
 CHECK=r'''
 import json,pathlib,sys
 root=pathlib.Path(sys.argv[2] if len(sys.argv)>2 else '/dev/shm');expected=json.loads(sys.argv[1]);p=root/'.ready.json'
@@ -411,86 +400,6 @@ def reclaim_completed(host,keep=None,*,required_mb=None):
     finally:client.close()
 
 
-def park_verified_owner(host,cache,row):
-    """A sealed immutable RAM holder needs scheduling headroom, not a full core.
-
-    Loading/sealing retains its full CPU allowance. Readers execute in their own
-    cgroups and are unaffected by the sleeping owner's CPU limit.
-    """
-    if row.get('HostConfig',{}).get('NanoCpus')!=100000000:
-        command(host,['docker','update','--cpus','0.1',cache['container']])
-
-
-def ensure(host,image,files,load,metrics=None,*,on_bound=None,load_path=False):
-    """Load once; callback streams files into the admitted owner container."""
-    if load_path:
-        client=AgentClient(host)
-        try:
-            host['capabilities']=client.call('status').get('capabilities',[])
-            managed='node-cache-v1' in host['capabilities']
-        finally:client.close()
-        if managed:return ensure_node(host,image,files,load,metrics,on_bound)
-    key,value=contract(image,files);shm_mb=math.ceil(sum(r['bytes'] for r in files.values())/1024**2)+16
-    cache={**value,'host':host['host'],'key':key,'container':'swarm-job-'+key[:32],'volume':'swarm-cache-'+key[:32],
-           'memory_mb':shm_mb+128,'shm_mb':shm_mb}
-    # Publish queue ownership before inspecting/reusing an existing cache.
-    if on_bound:on_bound(cache)
-    owner=inspect(host,'container',cache['container']);volume=inspect(host,'volume',cache['volume'])
-    if volume:validate_volume(volume,cache)
-    if owner and ((owner['Config'].get('Labels') or {}).get(OWNER)!=key or owner.get('Image')!=image):raise ValueError('Shared cache owner differs')
-    if owner and volume and ready(host,cache,owner):
-        park_verified_owner(host,cache,owner)
-        if metrics is not None:metrics.update(cache_hit=True,loaded_bytes=0)
-        return cache
-    if owner and owner.get('State',{}).get('Status') not in ('exited','dead'):
-        raise CapacityWait('Shared cache is being prepared')
-    if owner and not _remove_unreferenced(host,cache,expected_owner=owner['Id']):raise CapacityWait('Previous shared cache is still attached to workers')
-    if not owner and volume and users(host,cache):raise CapacityWait('Previous shared cache is still attached to workers')
-    client=AgentClient(host);created=None;published=False
-    try:
-        status=client.call('status')
-        if status['machine']!=host['machine']:raise ValueError('Cache node identity changed')
-        if not status.get('worker_policy',{}).get('accepting_jobs'):raise CapacityWait('Worker paused before shared cache preparation')
-        request={'id':key[:32],'container':cache['container'],'group':'shared-cache','cpus':1,'memory_mb':cache['memory_mb']}
-        acquired=client.call('resource.acquire',request)['acquired']
-        if not acquired:
-            _reclaim_completed(host,keep=key,required_mb=cache['memory_mb'])
-            acquired=client.call('resource.acquire',request)['acquired']
-        if not acquired:raise CapacityWait('Waiting for the shared cache RAM reservation')
-        command(host,['docker','volume','create','--driver','local','--label',OWNER+'='+key,'--opt','type=tmpfs','--opt','device=tmpfs',
-                      '--opt','o=size='+str(shm_mb)+'m,mode=1777,nosuid,nodev,noexec',cache['volume']])
-        # tmpfs payloads disappear on a host reboot. An automatically
-        # restarted sleeping owner would reserve RAM for an empty cache.
-        # Leave it stopped; the next ensure() verifies/reloads it on demand.
-        created=command(host,['docker','run','-d','--pull=never','--name',cache['container'],'--restart','no','--network','none','--log-driver','none',
-                      '--read-only','--user',host.get('container_user','1000:1000'),'--cap-drop','ALL','--security-opt','no-new-privileges',
-                      '--memory',str(cache['memory_mb'])+'m','--memory-swap',str(cache['memory_mb'])+'m','--cpus','1','--pids-limit','32',
-                      '--label','org.lifetech.worker=true','--label','org.lifetech.job='+key[:32],'--label','org.lifetech.group=shared-cache',
-                      '--label',OWNER+'='+key,'--mount','type=volume,src='+cache['volume']+',dst=/dev/shm,volume-nocopy',
-                      image,'python3','-c','import time; time.sleep(10**9)'],timeout=180).strip()
-        load(cache['container'])
-        owner=inspect(host,'container',cache['container'])
-        proof={k:cache[k] for k in ('key','files')};proof.update(container_id=owner['Id'],started_at=owner['State']['StartedAt'])
-        command(host,['docker','exec',cache['container'],'python3','-c',SEAL,json.dumps(proof)],timeout=180)
-        if not ready(host,cache,owner):raise RuntimeError('Cache did not become verified')
-        published=True
-        park_verified_owner(host,cache,owner)
-        if metrics is not None:metrics.update(cache_hit=False,loaded_bytes=sum(r['bytes'] for r in files.values()))
-        return cache
-    except BaseException as error:
-        owner=inspect(host,'container',cache['container'])
-        if created and not published and owner and owner['Id']==created:
-            # A losing creator never removes the winning loader or releases
-            # its admission. Only our own unpublished attempt is disposable.
-            _remove_unreferenced(host,cache,expected_owner=created)
-        elif isinstance(error,RuntimeError) and (owner or 'already in use' in str(error).lower()):
-            raise CapacityWait('Shared cache preparation changed; retry') from error
-        raise
-    finally:
-        if created:client.call('resource.release',{'id':key[:32]})
-        client.close()
-
-
 def mount_args(host,cache,target='/dev/shm',primary=True):
     if is_managed(cache):
         validate_binding(cache)
@@ -511,7 +420,7 @@ def mount_args(host,cache,target='/dev/shm',primary=True):
     return ['--mount','type=volume,src='+cache['volume']+',dst='+target+',readonly,volume-nocopy','--label',label+'='+cache['container']]
 
 
-def ensure_derived(host,image,identity,build,load,*,on_bound=None,load_path=False):
+def ensure_derived(host,image,identity,build,load,*,on_bound=None):
     """Materialize an immutable object once on its local owner, then reuse RAM.
 
     The lookup is metadata only; Docker names, seals and the existing pool remain
@@ -537,10 +446,7 @@ def ensure_derived(host,image,identity,build,load,*,on_bound=None,load_path=Fals
             if not p.is_file() or p.is_symlink():raise ValueError('Derived objects must be flat regular files')
             with p.open('rb') as stream:digest=hashlib.file_digest(stream,'sha256').hexdigest()
             files[p.name]={'bytes':p.stat().st_size,'sha256':digest}
-        if load_path:
-            cache=ensure(host,image,files,lambda owner,path='/dev/shm':load(owner,root,files,path),on_bound=on_bound,load_path=True)
-        else:
-            cache=ensure(host,image,files,lambda owner:load(owner,root,files),on_bound=on_bound)
+        cache=ensure(host,image,files,lambda owner,path:load(owner,root,files,path),on_bound=on_bound)
     record={'identity':identity,'cache':cache}
     from scripts.swarm_runtime import atomic_json
     atomic_json(metadata,record)

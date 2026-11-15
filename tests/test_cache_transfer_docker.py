@@ -9,7 +9,21 @@ from contextlib import nullcontext
 
 import pytest
 from scripts import swarm_cache_transfer as transfer
-from scripts.swarm_shared_cache import contract,SEAL,OWNER
+from scripts.swarm_shared_cache import contract,OWNER
+
+# Historical binding fixture for migration/transfer compatibility.
+SEAL=r'''
+import hashlib,json,pathlib,sys,os
+v=json.loads(sys.argv[1]);root=pathlib.Path('/dev/shm');identities={}
+for name,expected in v['files'].items():
+ p=root/name;h=hashlib.sha256()
+ with p.open('rb') as f:
+  while b:=f.read(1024*1024):h.update(b)
+ if p.stat().st_size!=expected['bytes'] or h.hexdigest()!=expected['sha256']:raise ValueError('Shared cache checksum mismatch')
+ p.chmod(0o444);s=p.stat();identities[name]=[s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns]
+p=root/'.ready.tmp';p.write_text(json.dumps({**v,'identities':identities}));p.chmod(0o444);os.replace(p,root/'.ready.json')
+'''
+
 
 # A deliberately small consumer fixture; application-specific receivers are
 # tested by their owning applications. The production TLS runtime is unchanged.

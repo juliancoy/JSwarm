@@ -242,7 +242,7 @@ def migrate(state, *, apply=False, output):
                     if not row or not caches.ready(host,cache,row):raise ValueError('Migration source changed')
                     target = managed_binding(host,cache)
                     caches.command(host,['python3','-c',COPY,json.dumps({'source':cache,'target':target,'receive':RECEIVE})],timeout=360)
-                new = caches.ensure(host,cache['image'],cache['files'],load,load_path=True)
+                new = caches.ensure(host,cache['image'],cache['files'],load)
                 stack.enter_context(caches.pin(host,new))
                 replacements[name,key] = new
                 report['nodes'][name]['migrated'].append(key)
