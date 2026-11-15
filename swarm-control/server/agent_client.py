@@ -69,8 +69,14 @@ class AgentClient:
         except ValueError:enrolled_lan=False
         if not self.gateway and (endpoint.hostname.endswith('.local') or host.get('resolved_addresses') or enrolled_lan):
             def connect(address,timeout=30,source_address=None,**kwargs):
-                from scripts.launcher_discovery import resolve_service
+                from scripts.launcher_discovery import resolve_service, network_signature
                 _,addresses=resolve_service(self.node)
+                # Captive upstream networks can assign the same private address
+                # to different clients. A remote node must never route to this
+                # machine merely because its advertisement includes that address.
+                if self.node!=self.sender:
+                    local_addresses={ip for _,ip in network_signature()}
+                    addresses=[ip for ip in addresses if ip not in local_addresses]
                 last=None
                 for ip in addresses:
                     try:return multipath_connection((ip,address[1]),min(timeout,2) if len(addresses)>1 else timeout,source_address,**kwargs)

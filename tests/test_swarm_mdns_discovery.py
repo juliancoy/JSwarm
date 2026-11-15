@@ -163,6 +163,7 @@ def test_named_agent_connection_resolves_dns_sd_without_nss(tmp_path,monkeypatch
     monkeypatch.setattr(agent_client.socket,'getaddrinfo',forbidden)
     resolver=MagicMock(return_value=('worker-swarm.local',['10.42.0.222']))
     monkeypatch.setattr(discovery,'resolve_service',resolver)
+    monkeypatch.setattr(discovery,'network_signature',lambda:(('eth0','10.42.0.1'),))
     sock=MagicMock();monkeypatch.setattr(agent_client.socket,'socket',lambda *args:sock)
     client=agent_client.AgentClient({'host':'worker.local','agent_endpoint':'http://worker-swarm.local:8790'})
     assert client.connection._create_connection(('worker-swarm.local',8790)) is sock
@@ -215,3 +216,20 @@ def test_signed_command_bootstrap_can_import_discovery_outside_workspace(tmp_pat
     code="import runpy;runpy.run_path("+repr(str(script))+");import scripts.launcher_discovery"
     result=subprocess.run([sys.executable,'-I','-c',code],cwd=tmp_path,capture_output=True,text=True,timeout=15)
     assert result.returncode==0,result.stderr
+
+
+def test_remote_advertisement_cannot_connect_back_to_controller(tmp_path,monkeypatch):
+    import sys
+    from pathlib import Path
+    sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'swarm-control/server'))
+    import agent_client
+    config=tmp_path/'peers.json'
+    config.write_text(json.dumps({'name':'controller.local','peers':{'worker.local':'unused'},'key':'ab'*32}))
+    monkeypatch.setattr(agent_client,'CONFIG',config)
+    monkeypatch.setattr(discovery,'resolve_service',lambda name:('worker-swarm.local',['172.20.20.20','10.42.0.49']))
+    monkeypatch.setattr(discovery,'network_signature',lambda:(('wlan0','172.20.20.20'),))
+    connected=object();connect=MagicMock(return_value=connected)
+    monkeypatch.setattr(agent_client,'multipath_connection',connect)
+    client=agent_client.AgentClient({'host':'worker.local','agent_endpoint':'http://172.20.20.20:8790'})
+    assert client.connection._create_connection(('172.20.20.20',8790),timeout=15) is connected
+    assert [call.args[0] for call in connect.call_args_list]==[('10.42.0.49',8790)]
