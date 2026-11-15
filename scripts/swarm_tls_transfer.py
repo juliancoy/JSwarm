@@ -218,6 +218,13 @@ def _fetch(url, destination, expected_sha256, size, ca, cert, key, *, pinned_key
                             '--header', 'If-Match: "' + expected_sha256 + '"',
                             '--continue-at', '-', '--output', str(partial)]
             if pinned_key:command += ['--pinnedpubkey', pinned_key]
+            if metadata and metadata.get('resolved_addresses'):
+                import ipaddress
+                from urllib.parse import urlsplit
+                endpoint=urlsplit(url)
+                addresses=[ipaddress.ip_address(ip) for ip in metadata['resolved_addresses']]
+                routes=','.join('['+str(ip)+']' if ip.version==6 else str(ip) for ip in addresses)
+                command += ['--resolve',endpoint.hostname+':'+str(endpoint.port or 443)+':'+routes]
             command.append(url)
             started = time.monotonic(); initial = partial.stat().st_size
             process = subprocess.Popen(command)

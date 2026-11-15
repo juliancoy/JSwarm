@@ -139,3 +139,15 @@ def test_protected_capabilities_do_not_reuse_legacy_or_other_job_grants(tmp_path
     assert legacy['grant']!=protected['grant']
     manifest=json.loads((tmp_path/'inboxes'/(protected['grant']+'.json')).read_text())
     assert manifest['protected'] is True and manifest['expires']<=time.time()+30
+
+
+def test_discovered_routes_skip_local_overlap_and_keep_transfer_metadata(tmp_path,monkeypatch):
+    from scripts import launcher_discovery
+    source,dest,receipt=setup(tmp_path,monkeypatch)
+    source['resolved_addresses']=['172.20.20.20','10.42.0.49']
+    monkeypatch.setattr(launcher_discovery,'network_signature',lambda:(('wlan0','172.20.20.20'),))
+    run=Mock(side_effect=[subprocess.CompletedProcess([],0,json.dumps({'object':'x'})),subprocess.CompletedProcess([],0,'')])
+    monkeypatch.setattr(bulk.subprocess,'run',run)
+    assert bulk.try_copy(source,dest,receipt,'/cache',json.dumps({'id':'test'}),lambda host,args:args)=='mtls-https'
+    command=run.call_args.args[0];metadata=json.loads(command[command.index('--metadata')+1])
+    assert metadata=={'id':'test','resolved_addresses':['10.42.0.49']}

@@ -19,7 +19,7 @@ class TransferTests(unittest.TestCase):
         openssl('req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-keyout', 'ca.key', '-out', 'ca.crt', '-subj', '/CN=test-ca', '-days', '1', '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'keyUsage=critical,keyCertSign,cRLSign')
         for name, purpose in [('server', 'serverAuth'), ('client', 'clientAuth')]:
             openssl('req', '-new', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-keyout', name+'.key', '-out', name+'.csr', '-subj', '/CN='+name)
-            (cls.root/(name+'.ext')).write_text('basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage='+purpose+'\nsubjectAltName=IP:127.0.0.1\n')
+            (cls.root/(name+'.ext')).write_text('basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage='+purpose+'\nsubjectAltName=IP:127.0.0.1,DNS:discovered-peer.invalid\n')
             openssl('x509', '-req', '-in', name+'.csr', '-CA', 'ca.crt', '-CAkey', 'ca.key', '-CAcreateserial', '-out', name+'.crt', '-days', '1', '-extfile', name+'.ext')
         cls.data = bytes(range(256)) * 8192
         source = cls.root/'source'; source.write_bytes(cls.data)
@@ -32,6 +32,18 @@ class TransferTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.server.shutdown(); cls.server.server_close(); cls.thread.join(); cls.temp.cleanup()
+
+    def test_discovered_address_preserves_tls_hostname_and_resumes(self):
+        dest=self.root/'dns-sd-result'
+        partial=Path(str(dest)+'.partial');partial.write_bytes(self.data[:12345])
+        url=self.url.replace('127.0.0.1','discovered-peer.invalid')
+        fetch(url,dest,self.sha,len(self.data),self.root/'ca.crt',self.root/'client.crt',self.root/'client.key',metadata={'id':'dns-sd','resolved_addresses':['127.0.0.1']})
+        self.assertEqual(dest.read_bytes(),self.data)
+
+    def test_discovered_address_does_not_bypass_tls_hostname_check(self):
+        url=self.url.replace('127.0.0.1','wrong-peer.invalid')
+        with self.assertRaises(ValueError):
+            fetch(url,self.root/'wrong-dns-result',self.sha,len(self.data),self.root/'ca.crt',self.root/'client.crt',self.root/'client.key',metadata={'id':'wrong-dns','resolved_addresses':['127.0.0.1']})
 
     def context(self, client=True):
         ctx=ssl.create_default_context(cafile=str(self.root/'ca.crt'))

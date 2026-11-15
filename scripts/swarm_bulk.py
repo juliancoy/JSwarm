@@ -42,6 +42,13 @@ def try_copy(source, destination, receipt, target, metadata, execute):
     if result.returncode == 78:raise IntegrityError('Bulk source identity or immutable receipt rejected')
     if result.returncode:return None
     obj = json.loads(result.stdout)
+    if source.get('resolved_addresses'):
+        # DNS-SD service aliases need not be available through host NSS.
+        # Keep the URL hostname for TLS while supplying discovery results to curl.
+        from scripts.launcher_discovery import network_signature
+        local={ip for _,ip in network_signature()} if source['host']!=destination['host'] else set()
+        metadata=json.dumps({**json.loads(metadata), 'resolved_addresses':[
+            ip for ip in source['resolved_addresses'] if ip not in local]})
     receive = ['python3',destination_root+'/current/bulk.py','receive','--source',source['host'],
                '--machine',source['machine'],'--object',obj['object'],'--destination',target,
                '--sha256',receipt['sha256'],'--size',str(receipt['bytes']),'--metadata',metadata]
