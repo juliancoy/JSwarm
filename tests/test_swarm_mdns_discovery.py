@@ -206,3 +206,12 @@ def test_numeric_discovered_endpoint_fails_over_with_mptcp_without_pinning_first
     assert client.connection._create_connection(('10.104.105.132',8790),timeout=15) is connected
     assert [call.args[0] for call in connect.call_args_list]==[(ip,8790) for ip in addresses]
     assert [call.args[1] for call in connect.call_args_list]==[2,2]
+
+
+def test_signed_command_bootstrap_can_import_discovery_outside_workspace(tmp_path):
+    import subprocess,sys
+    from pathlib import Path
+    script=Path(__file__).resolve().parents[1]/'scripts/swarm_command.py'
+    code="import runpy;runpy.run_path("+repr(str(script))+");import scripts.launcher_discovery"
+    result=subprocess.run([sys.executable,'-I','-c',code],cwd=tmp_path,capture_output=True,text=True,timeout=15)
+    assert result.returncode==0,result.stderr
