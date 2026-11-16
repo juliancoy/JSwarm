@@ -38,8 +38,8 @@ print(json.dumps(sorted(paths)))
         for mount in sorted(mounts,key=lambda m:len(m['Destination']),reverse=True):
             target=Path(mount['Destination'])
             if not running.is_relative_to(target):continue
-            if mount['Type']!='bind' or not mount['RW']:
-                raise RuntimeError('Node supervisor requires a writable host source mount')
+            if mount['Type']!='bind':
+                raise RuntimeError('Node supervisor requires a host source bind mount')
             bootstrap=Path(mount['Source'])/running.relative_to(target)
             if not bootstrap.is_file():raise RuntimeError('Mounted supervisor is unavailable to command owner')
             return docker,container['Id'],bootstrap
@@ -62,7 +62,7 @@ def install(payload):
     compile(supervisor,'launcher_peer_supervisor.py','exec')
     namespace={'__name__':'node_git_source'}
     exec(compile(source['installer'],'node_git_source.py','exec'),namespace)
-    workspace=namespace['workspace'](source['repositories'],config.parent/'node-source',offline=True)
+    workspace=namespace['workspace'](source['repositories'],config.parent/'node-source')
     # Source and bootstrap must come from the same committed publication.
     project=workspace/'JSwarm/scripts'
     if ((project/'launcher_peer_supervisor.py').read_text()!=supervisor
@@ -71,7 +71,7 @@ def install(payload):
         raise ValueError('Bootstrap differs from pinned Git source')
     for name,content in payload['files'].items():
         if name not in ('launcher_peers.py','launcher_discovery.py','launcher_registration.py',
-                        'launcher_agent.py','launcher_registry.py','launcher_update.py'):
+                        'launcher_agent.py','launcher_registry.py'):
             raise ValueError('Unexpected node source file')
         if (project/name).read_text()!=content:raise ValueError('Source differs from publication')
     docker,container,bootstrap=owned_node(config)

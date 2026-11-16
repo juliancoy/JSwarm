@@ -33,20 +33,7 @@ def startup_timeout(config):
 def verify_release(folder,releases):
     folder=folder.resolve()
     if folder.parent!=releases.resolve():raise ValueError('Agent release escapes release directory')
-    if (folder/'source.json').exists():
-        source_workspace(folder,releases,verify=True)
-        return folder
-    manifest=json.loads((folder/'manifest.json').read_text())
-    expected=('launcher_peers.py','launcher_discovery.py','launcher_registration.py','launcher_agent.py','launcher_registry.py')
-    if set(manifest)!=set(expected):raise ValueError('Incomplete agent release')
-    sources=[]
-    for name in expected:
-        path=folder/name
-        if path.is_symlink():raise ValueError('Agent release contains a mutable source link')
-        data=path.read_bytes()
-        if hashlib.sha256(data).hexdigest()!=manifest[name]:raise ValueError('Agent release checksum mismatch')
-        compile(data,name,'exec');sources.append(data)
-    if hashlib.sha256(b''.join(sources)).hexdigest()!=folder.name:raise ValueError('Agent release identity mismatch')
+    source_workspace(folder,releases,verify=True)
     return folder
 
 
@@ -55,8 +42,7 @@ def source_workspace(folder, releases, *, verify=False):
     descriptor=json.loads((folder/'source.json').read_text())
     repositories=descriptor['repositories']
     if (descriptor.get('mode')!='mounted-v1' or descriptor.get('revision')!=folder.name
-            or set(repositories) not in ({'Organization','JSwarm','HarborGenetics'},
-                                         {'Organization','JSwarm','GenomeHarbor'})):
+            or set(repositories)!={'Organization','JSwarm','HarborGenetics'}):
         raise ValueError('Invalid mounted source descriptor')
     identity=hashlib.sha256(json.dumps(repositories,sort_keys=True).encode()).hexdigest()
     base=releases.parent/'node-source/mounted-workspaces'
@@ -98,8 +84,7 @@ class ReleaseCache:
 
     def verify(self,folder,releases):
         folder=folder.resolve()
-        names=(('source.json',) if (folder/'source.json').exists() else
-               ('manifest.json','launcher_peers.py','launcher_discovery.py','launcher_registration.py','launcher_agent.py','launcher_registry.py'))
+        names=('source.json',)
         signature=(str(folder),tuple((name,*(getattr((folder/name).lstat(),field) for field in
                    ('st_dev','st_ino','st_size','st_mtime_ns','st_ctime_ns'))) for name in names))
         if signature!=self.signature:
@@ -152,7 +137,7 @@ def main():
         if folder!=base:verify_release(folder,releases)
         marker.unlink(missing_ok=True)
         drain.unlink(missing_ok=True)
-        if (folder/'source.json').exists():
+        if folder!=base:
             return launch_source(folder,releases,sys.executable,args.prefix)
         return subprocess.Popen([sys.executable,'-B',str(folder/'launcher_peers.py'),'--prefix',args.prefix])
 
@@ -175,7 +160,7 @@ def main():
                         pending=True
                     child=launch(active);started=time.monotonic()
                 elif pending:
-                    # A delayed legacy update bridge must not re-close startup admission.
+                    # Startup admission remains open while the replacement reports readiness.
                     drain.unlink(missing_ok=True)
                     # Recovering thousands of durable job records can exceed 45s on HDD nodes.
                     ready=json.loads(marker.read_text()) if marker.exists() else {}

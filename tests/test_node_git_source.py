@@ -3,7 +3,8 @@ import json
 from pathlib import Path
 import subprocess
 import pytest
-from scripts.node_git_source import git,snapshot,workspace
+from scripts.node_git_source import git,snapshot,workspace,import_bundle
+from scripts.node_source_delivery import bundle
 
 
 def repositories(tmp_path):
@@ -22,14 +23,23 @@ def repositories(tmp_path):
     return root
 
 
+def deliver(root, manifest, base):
+    for name,spec in manifest.items():
+        repository=root if name=='Organization' else root/name
+        receipt=bundle(repository,spec['commit'],root.parent/(name+'-'+spec['commit']+'.bundle'))
+        import_bundle(base,name,spec['commit'],receipt['path'],receipt['sha256'])
+
+
 def test_git_update_is_pinned_and_preserves_previous_source_and_developer_edits(tmp_path):
     root=repositories(tmp_path);manifest=snapshot(root)
+    deliver(root,manifest,tmp_path/'node-source')
     first=workspace(manifest,tmp_path/'node-source')
     assert snapshot(first)==manifest
     project=root/'JSwarm'
     (project/'source.py').write_text('version = 2\n')
     git(project,'commit','-qam','second')
     updated=snapshot(root)
+    deliver(root,updated,tmp_path/'node-source')
     (project/'source.py').write_text('unsaved developer work\n')
     second=workspace(updated,tmp_path/'node-source')
     assert first!=second
@@ -43,6 +53,7 @@ def test_git_update_is_pinned_and_preserves_previous_source_and_developer_edits(
 
 def test_changed_managed_checkout_is_rejected(tmp_path):
     root=repositories(tmp_path);manifest=snapshot(root)
+    deliver(root,manifest,tmp_path/'node-source')
     deployed=workspace(manifest,tmp_path/'node-source')
     (deployed/'JSwarm/source.py').write_text('tampered\n')
     with pytest.raises(RuntimeError,match='Managed Git source changed'):
@@ -61,6 +72,7 @@ def test_workspace_preserves_cross_repository_relative_assets(tmp_path):
     git(root/'HarborGenetics','add','web')
     git(root/'HarborGenetics','commit','-qm','genome asset')
     manifest=snapshot(root)
+    deliver(root,manifest,tmp_path/'node-source')
     deployed=workspace(manifest,tmp_path/'node-source')
     assert not (deployed/'JSwarm').is_symlink()
     assert (deployed/'JSwarm/swarm-control/server/view/genome.js').read_text()=='pinned genome asset\n'
@@ -70,9 +82,10 @@ def test_workspace_preserves_cross_repository_relative_assets(tmp_path):
 
 def test_unavailable_commit_cannot_switch_existing_workspace(tmp_path):
     root=repositories(tmp_path);manifest=snapshot(root)
+    deliver(root,manifest,tmp_path/'node-source')
     deployed=workspace(manifest,tmp_path/'node-source')
     bad=json.loads(json.dumps(manifest));bad['JSwarm']['commit']='a'*40
-    with pytest.raises(subprocess.CalledProcessError):workspace(bad,tmp_path/'node-source')
+    with pytest.raises(RuntimeError,match='not been delivered'):workspace(bad,tmp_path/'node-source')
     assert (deployed/'JSwarm/source.py').read_text()=='version = 1\n'
 
 
@@ -85,23 +98,19 @@ def test_frozen_publication_records_git_commits(tmp_path):
     assert (tmp_path/'snapshot/JSwarm/source.py').read_text()=='version = 1\n'
 
 
-def test_legacy_genomeharbor_publication_remains_usable_for_rollback(tmp_path):
-    root=repositories(tmp_path)
-    manifest=snapshot(root)
-    assert 'HarborGenetics' in manifest
-    manifest['GenomeHarbor']=manifest.pop('HarborGenetics')
-    (root/'.gitignore').write_text('/JSwarm/\n/HarborGenetics/\n/GenomeHarbor/\n')
-    git(root,'add','.gitignore');git(root,'commit','-qm','retain legacy directory ignore')
-    manifest['Organization']['commit']=git(root,'rev-parse','HEAD')
-    deployed=workspace(manifest,tmp_path/'legacy-node-source')
-    assert (deployed/'GenomeHarbor/source.py').read_text()=='version = 1\n'
-    assert workspace(manifest,tmp_path/'legacy-node-source')==deployed
-
 
 def test_pinned_objects_remain_usable_when_origin_is_offline(tmp_path):
     root=repositories(tmp_path);manifest=snapshot(root)
+    deliver(root,manifest,tmp_path/'node-source')
     deployed=workspace(manifest,tmp_path/'node-source')
     for item in manifest.values():item['origin']=str(tmp_path/'offline')
     # Origin metadata may change without changing the immutable source objects.
     again=workspace(manifest,tmp_path/'node-source')
     assert (again/'JSwarm/source.py').read_bytes()==(deployed/'JSwarm/source.py').read_bytes()
+
+
+def test_retired_repository_layout_is_rejected(tmp_path):
+    from scripts.node_git_source import validate
+    manifest=snapshot(repositories(tmp_path))
+    manifest['GenomeHarbor']=manifest.pop('HarborGenetics')
+    with pytest.raises(ValueError,match='Incomplete Git source manifest'):validate(manifest)

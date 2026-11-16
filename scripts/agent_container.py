@@ -6,7 +6,7 @@ import re
 import shlex
 
 
-def service(*, source, config, jobs, socket, image, uid, gid, socket_gid, hostname, gpus=False, worker_socket=None, fixed_release=False, reserved_cpus=1):
+def service(*, source, config, jobs, socket, image, uid, gid, socket_gid, hostname, gpus=False, worker_socket=None, reserved_cpus=1):
     if type(reserved_cpus) is not int or reserved_cpus<0:raise ValueError('reserved_cpus must be a nonnegative integer')
     paths=[Path(value) for value in (source,config,jobs,socket)]
     if any(not path.is_absolute() or '..' in path.parts for path in paths):
@@ -23,7 +23,7 @@ def service(*, source, config, jobs, socket, image, uid, gid, socket_gid, hostna
     worker_socket=worker_socket or socket
     if not Path(worker_socket).is_absolute() or '..' in Path(worker_socket).parts:raise ValueError('Worker Docker socket must be an absolute normalized path')
     home=str(Path(config).parent.parent.parent)
-    args=['/usr/bin/env','DOCKER_HOST=unix://'+socket,'/usr/bin/docker','run','--rm','--init','--pull=never','--name','organization-test-agent',
+    args=['/usr/bin/env','DOCKER_HOST=unix://'+socket,'/usr/bin/docker','run','--rm','--init','--pull=never','--name','swarm-node',
           '--network','host','--pid','host','--hostname',hostname,'--user',f'{uid}:{gid}',
           '--group-add',str(socket_gid),'--cap-drop','ALL','--security-opt','no-new-privileges',
           '--read-only','--tmpfs','/tmp:rw,nosuid,nodev,size=128m']
@@ -35,12 +35,12 @@ def service(*, source, config, jobs, socket, image, uid, gid, socket_gid, hostna
                   'LIFETECH_JOB_ROOT='+jobs,'SWARM_RESERVED_CPUS='+str(reserved_cpus),'PYTHONUNBUFFERED=1','PYTHONDONTWRITEBYTECODE=1'):
         args+=['--env',value]
     if gpus:args+=['--gpus','all']
-    entry='launcher_peers.py' if fixed_release else 'launcher_peer_supervisor.py'
+    entry='launcher_peer_supervisor.py'
     args+=['--entrypoint','python',image,str(Path(source)/entry)]
     quote=lambda arg:json.dumps(str(arg).replace('%','%%'))
     return ('[Unit]\nDescription=Containerized enrolled swarm agent (Python 3.12)\nAfter=network-online.target\n\n'
             '[Service]\nType=simple\nExecStart='+' '.join(map(quote,args))+'\n'
-            'ExecStop=/usr/bin/env DOCKER_HOST=unix://'+socket+' /usr/bin/docker stop --time 30 organization-test-agent\n'
+            'ExecStop=/usr/bin/env DOCKER_HOST=unix://'+socket+' /usr/bin/docker stop --time 30 swarm-node\n'
             'TimeoutStopSec=45\nRestart=on-failure\nRestartSec=5\nUMask=0077\n\n'
             '[Install]\nWantedBy=default.target\n')
 
@@ -54,7 +54,6 @@ def main():
     parser.add_argument('--worker-socket',help='Keep worker jobs on their existing Docker daemon')
     parser.add_argument('--reserved-cpus',type=int,default=1,help='Logical CPUs left for host services (default: 1; 0 disables)')
     parser.add_argument('--gpus',action='store_true')
-    parser.add_argument('--fixed-release',action='store_true',help='Run the mounted source release directly; change it by replacing this service')
     print(service(**vars(parser.parse_args())),end='')
 
 

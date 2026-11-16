@@ -61,7 +61,7 @@ def select(current, previous, full, changed):
     if (current.files!=previous.files or current.supervisor_source!=previous.supervisor_source
             or current.git_source['installer']!=previous.git_source['installer']):return full
     if any(current.git_source['repositories'][name]!=previous.git_source['repositories'][name]
-           for name in ('Organization','GenomeHarbor')):return full
+           for name in ('Organization','HarborGenetics')):return full
     from deployment_components import FILES, FILESYSTEM_FILES
     known=set(FILES)|set(FILESYSTEM_FILES)|WORKFLOW_SOURCE
     selected=[]

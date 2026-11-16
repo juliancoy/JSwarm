@@ -72,25 +72,6 @@ def test_native_http_routes_serve_pipeline_and_enforce_origin(tmp_path,monkeypat
     asyncio.run(exercise())
 
 
-def test_pipeline_assets_are_bundled_into_the_legacy_node_revision():
-    import base64,gzip,sys
-    from pathlib import Path
-    sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'swarm-control/server'))
-    from agent_updates import LauncherUpdates
-    # Exercise historical bundled publications even inside a mounted-source export.
-    from unittest.mock import patch
-    exists=Path.exists
-    with patch.object(Path,'exists',lambda path: path.name!='.node-git-source.json' and exists(path)):
-        release=LauncherUpdates(Path(__file__).resolve().parents[2],lambda:False,lambda *args:None)
-    import ast
-    tree=ast.parse(release.files['launcher_peers.py'])
-    value=next(ast.literal_eval(node.value) for node in tree.body if isinstance(node,ast.Assign)
-               and any(isinstance(target,ast.Name) and target.id=='PIPELINE_ASSETS_B64' for target in node.targets))
-    assets=json.loads(gzip.decompress(base64.b64decode(value)))
-    assert b'Pipeline' in base64.b64decode(assets['pipeline.html'])
-    assert 'node-web.js' in assets
-    assert release.files['launcher_peers.py'].index('PIPELINE_ASSETS_B64 =')<release.files['launcher_peers.py'].index("if __name__=='__main__':main()")
-
 
 def test_native_api_routing_does_not_depend_on_the_retired_nginx_view(tmp_path,monkeypatch):
     monkeypatch.setattr('launcher_discovery.resolve_endpoint',lambda node:('http://'+node[:-6]+'-swarm.local:8790',['10.42.0.1']))

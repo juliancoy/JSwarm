@@ -28,7 +28,7 @@ def repositories(tmp_path):
         if name=='Organization':(path/'.gitignore').write_text('/JSwarm/\n/HarborGenetics/\n')
         if name=='JSwarm':
             scripts=path/'scripts';scripts.mkdir()
-            for filename in (*NAMES,'launcher_peer_supervisor.py','node_git_source.py','node_source_install.py','launcher_update.py'):
+            for filename in (*NAMES,'launcher_peer_supervisor.py','node_git_source.py','node_source_install.py'):
                 (scripts/filename).write_text((PROJECT/'scripts'/filename).read_text())
         source.git(path,'add','.');source.git(path,'commit','-qm','source')
     return root
@@ -169,7 +169,7 @@ def test_installer_migrates_only_node_and_preserves_enrollment(tmp_path,monkeypa
     payload={'node':'worker.local','machine':hashlib.sha256(Path('/etc/machine-id').read_bytes()).hexdigest(),
              'controller_public_key':'ab'*32,'revision':revision,
              'supervisor_source':(scripts/'launcher_peer_supervisor.py').read_text(),
-             'files':{name:(scripts/name).read_text() for name in (*NAMES,'launcher_update.py')},
+             'files':{name:(scripts/name).read_text() for name in NAMES},
              'supervisor_supports_source':modern,
              'git_source':{'mode':'mounted-v1','repositories':manifest,
                            'installer':(scripts/'node_git_source.py').read_text(),
@@ -203,7 +203,9 @@ def test_owned_node_requires_actual_bind_mounted_supervisor(tmp_path,monkeypatch
     monkeypatch.setattr(installer.subprocess,'run',run)
     assert installer.owned_node(config)==(['docker'],'owned',bootstrap)
     container['Mounts'][1]['RW']=False
-    with pytest.raises(RuntimeError,match='writable host source mount'):installer.owned_node(config)
+    assert installer.owned_node(config)==(['docker'],'owned',bootstrap)
+    container['Mounts'][1]['Type']='volume'
+    with pytest.raises(RuntimeError,match='host source bind mount'):installer.owned_node(config)
     container['Mounts'][0]['Source']=str(tmp_path/'different-owner')
     with pytest.raises(RuntimeError,match='No node container'):installer.owned_node(config)
 

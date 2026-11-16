@@ -9,7 +9,7 @@ from scripts import release_validation as v
 def release():
     return SimpleNamespace(files={'agent':'stable'},supervisor_source='stable',
         git_source={'installer':'stable','repositories':{name:{'origin':'https://example.test/'+name,'commit':'a'*40}
-        for name in ('Organization','JSwarm','GenomeHarbor')}},components={
+        for name in ('Organization','JSwarm','HarborGenetics')}},components={
         'private-filesystem':{'sha256':'private'},'public-pager':{'sha256':'public'}})
 
 

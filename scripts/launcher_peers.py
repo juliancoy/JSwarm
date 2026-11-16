@@ -87,10 +87,6 @@ def pipeline_target(config,authority):
 
 def pipeline_assets():
     """Public UI assets are covered by the existing immutable node release."""
-    import base64,gzip
-    bundled=globals().get('PIPELINE_ASSETS_B64')
-    if bundled:
-        return {name:base64.b64decode(body) for name,body in json.loads(gzip.decompress(base64.b64decode(bundled))).items()}
     view=Path(__file__).resolve().parents[1]/'swarm-control/server/view'
     assets={str(path.relative_to(view)):path.read_bytes() for path in view.rglob('*') if path.is_file()}
     genome=view.parents[3]/'HarborGenetics/web'

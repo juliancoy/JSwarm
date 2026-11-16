@@ -214,7 +214,9 @@ def test_reload_source_is_content_addressed(tmp_path):
     from scripts.launcher_agent import load_stream_runtime
     m=load_stream_runtime(tmp_path);assert m.VERSION==s.VERSION
     assert load_stream_runtime(tmp_path) is m
-    Path(m.__file__).write_text('changed')
+    assert Path(m.__file__).resolve()==Path(s.__file__).resolve()
+    worker=tmp_path/'.stream-runtime'/hashlib.sha256(Path(m.__file__).read_bytes()).hexdigest()/'launcher_streams.py'
+    worker.write_text('changed')
     with pytest.raises(ValueError,match='runtime changed'):load_stream_runtime(tmp_path)
 
 

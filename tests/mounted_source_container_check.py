@@ -28,7 +28,7 @@ def main():
 assert pathlib.Path(__file__).is_relative_to('/run/launcher-config/node-source/mounted-workspaces')
 assert os.environ['SWARM_WORKSPACE']==str(pathlib.Path(__file__).parents[2])
 import launcher_agent as agent
-assert not agent.STREAM_RUNTIME_SOURCE and not agent.PERFORMANCE_RUNTIME_B64
+assert not hasattr(agent,'STREAM_RUNTIME_SOURCE') and not hasattr(agent,'PERFORMANCE_RUNTIME_B64')
 agent.load_command_runtime()
 agent.load_cache_runtime()
 agent.load_filesystem_runtime()

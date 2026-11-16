@@ -4,17 +4,10 @@ from pathlib import Path
 from unittest.mock import Mock
 import pytest
 from agent_updates import LauncherUpdates
-from scripts import launcher_update
 
 
 def release_source():
-    # Exercise historical bundled publications even inside a mounted-source export.
-    from unittest.mock import patch
-    exists=Path.exists
-    with patch.object(Path,'exists',lambda path: path.name!='.node-git-source.json' and exists(path)):
-        source=LauncherUpdates(Path(__file__).parents[1],lambda:False,Mock())
-    source.git_source={'repositories':{name:{'origin':'https://example.com/'+name+'.git','commit':'a'*40}
-                       for name in ('Organization','JSwarm','HarborGenetics')},'installer':'# test Git installer\n'}
+    source=LauncherUpdates(Path(__file__).parents[1],lambda:False,Mock())
     return source
 
 
@@ -55,19 +48,6 @@ def test_corrupt_publication_is_rejected(tmp_path):
     bad=tmp_path/'bad.json';bad.write_text(json.dumps(value))
     with pytest.raises(ValueError,match='checksum'):LauncherUpdates.published(bad,lambda:False,Mock())
 
-
-def test_corrupt_installed_release_cannot_be_activated(tmp_path,monkeypatch):
-    config=tmp_path/'config/peers.json';config.parent.mkdir();config.write_text('{}')
-    sources=tmp_path/'sources';sources.mkdir()
-    for name in launcher_update.FILES:(sources/name).write_text('# source\n')
-    revision=hashlib.sha256(b''.join((sources/name).read_bytes() for name in launcher_update.FILES)).hexdigest()
-    release=config.parent/'agent-releases'/revision;release.mkdir(parents=True)
-    for name in launcher_update.FILES:(release/name).write_text('# tampered\n')
-    (release/'manifest.json').write_text(json.dumps({n:hashlib.sha256(b'# source\n').hexdigest() for n in launcher_update.FILES}))
-    monkeypatch.setenv('LIFETECH_PEER_CONFIG',str(config));monkeypatch.setattr(launcher_update,'__file__',str(sources/'launcher_update.py'))
-    monkeypatch.setattr('sys.argv',['launcher_update.py'])
-    with pytest.raises(ValueError,match='checksum'):launcher_update.main()
-    assert not (release.parent/'current').exists()
 
 
 def test_publication_retains_previous_and_idempotent_publish_preserves_it(tmp_path):
@@ -130,33 +110,14 @@ def test_source_snapshot_uses_commits_without_dirty_or_untracked_runtime_data(tm
     assert not (target/'runtime-private').exists()
 
 
-def test_local_update_bundles_stream_runtime_in_installed_agent(tmp_path,monkeypatch):
-    sources=tmp_path/'sources';sources.mkdir()
-    config=tmp_path/'config/peers.json';config.parent.mkdir();config.write_text('{}')
-    for name in launcher_update.FILES:(sources/name).write_text('# source\n')
-    (sources/'launcher_streams.py').write_text('VERSION="bundled-test"\n')
-    (sources/'launcher_commands.py').write_text('VERSION="command-test"\n')
-    monkeypatch.setenv('LIFETECH_PEER_CONFIG',str(config))
-    monkeypatch.setattr(launcher_update,'__file__',str(sources/'launcher_update.py'))
-    monkeypatch.setattr('sys.argv',['launcher_update.py'])
-    launcher_update.main()
-    installed=(config.parent/'agent-releases/current').resolve()
-    namespace={}
-    exec((installed/'launcher_agent.py').read_text(),namespace)
-    assert namespace['STREAM_RUNTIME_SOURCE']==(sources/'launcher_streams.py').read_text()
-
-    assert namespace['COMMAND_RUNTIME_SOURCE']==(sources/'launcher_commands.py').read_text()
-
 
 def test_git_provenance_is_covered_by_publication_integrity(tmp_path):
     source=release_source()
-    source.git_source={'repositories':{name:{'origin':'https://example.com/'+name+'.git','commit':'a'*40}
-                       for name in ('Organization','JSwarm','HarborGenetics')},'installer':'# verified installer\n'}
     path=source.publish(tmp_path)
     assert LauncherUpdates.published(path,lambda:False,Mock()).git_source==source.git_source
     value=json.loads(path.read_text());value['git_source']['repositories']['JSwarm']['commit']='b'*40
     corrupt=tmp_path/'corrupt.json';corrupt.write_text(json.dumps(value))
-    with pytest.raises(ValueError,match='artifact version history'):
+    with pytest.raises(ValueError,match='checksum mismatch'):
         LauncherUpdates.published(corrupt,lambda:False,Mock())
 
 
@@ -167,55 +128,15 @@ def test_publication_and_staging_reject_missing_git_provenance(tmp_path):
     assert not (tmp_path/'desired').exists()
 
 
-def test_pre_git_history_can_be_replaced_but_never_deployed_or_rolled_back(tmp_path):
+def test_unsupported_publication_is_never_loaded_or_offered_for_rollback(tmp_path):
     source=release_source()
-    path=source.publish(tmp_path)
-    value=json.loads(path.read_text());value.pop('git_source')
-    # Model a valid historical pre-Git publication with its original content hash.
-    content={key:value[key] for key in ('schema','revision','files','supervisor_source','supervisor_sha256','components')}
-    identity=hashlib.sha256(json.dumps(content,sort_keys=True).encode()).hexdigest()
-    value['artifact_versions']={identity:1}
-    path.write_text(json.dumps(value))
-    with pytest.raises(ValueError,match='Git source provenance required'):
+    path=tmp_path/'00000000000000000052-old.json'
+    path.write_text(json.dumps({'schema':'retired-format','untrusted_code':'never execute'}))
+    (tmp_path/'desired').symlink_to(path.name)
+    with pytest.raises(ValueError,match='Unsupported published release schema'):
         LauncherUpdates.published(path,lambda:False,Mock())
     updated=source.publish(tmp_path)
-    assert updated!=path
-    assert source.generation==2
-    with pytest.raises(ValueError,match='Git source provenance required'):LauncherUpdates.rollback(tmp_path)
+    assert updated!=path and source.generation==53
+    assert not (tmp_path/'previous').exists()
+    assert path.exists()  # Opaque receipts remain available for audit.
     assert (tmp_path/'desired').resolve()==updated
-
-
-def test_asset_bundle_identity_is_independent_of_python_gzip_os_header(monkeypatch):
-    import gzip
-    compress=gzip.compress
-    def build(os_code):
-        def encoded(*args,**kwargs):
-            data=bytearray(compress(*args,**kwargs));data[9]=os_code;return bytes(data)
-        monkeypatch.setattr(gzip,'compress',encoded)
-        return release_source()
-    linux=build(3);portable=build(255)
-    assert linux.files==portable.files
-    assert linux.revision==portable.revision
-
-
-def test_historical_pager_layout_can_be_replaced_but_not_deployed(tmp_path):
-    from deployment_components import digest, validate
-    source=release_source();path=source.publish(tmp_path)
-    value=json.loads(path.read_text())
-    component=value['components']['public-pager']
-    del component['files']['scripts/launcher_discovery.py']
-    component['sha256']=digest(component['files'])
-    content={key:value[key] for key in ('schema','revision','files','supervisor_source','supervisor_sha256','components','git_source')}
-    identity=hashlib.sha256(json.dumps(content,sort_keys=True).encode()).hexdigest()
-    value['artifact_versions']={identity:1};path.write_text(json.dumps(value))
-    with pytest.raises(ValueError,match='Incomplete deployment component'):
-        LauncherUpdates.published(path,lambda:False,Mock())
-    updated=source.publish(tmp_path)
-    assert updated!=path and source.generation==2
-    assert LauncherUpdates.published(updated,lambda:False,Mock()).components==source.components
-    component['files']['unexpected.py']=''
-    component['sha256']=digest(component['files'])
-    assert validate(component,historical=True) is component
-    with pytest.raises(ValueError,match='Incomplete deployment component'):validate(component)
-    component['files']['unexpected.py']='changed without updating checksum'
-    with pytest.raises(ValueError,match='checksum mismatch'):validate(component,historical=True)

@@ -60,8 +60,8 @@ def test_swarm_node_update_uses_standard_deployer(monkeypatch):
     assert main(['update','--watch'])==['swarm-node','--watch']
 
 
-def test_swarm_node_enrollment_requires_explicit_target():
-    with pytest.raises(SystemExit):main(['enroll'])
+def test_retired_native_enrollment_command_is_removed():
+    with pytest.raises(SystemExit):main(['enroll','--target','owner@node.local'])
 
 
 def test_node_image_contains_shared_sdk_and_discovery_dependencies(monkeypatch):

@@ -1350,13 +1350,11 @@ class GpuSampler:
         return {**hardware,'gpus':[{**gpu,**rows.get(gpu.get('pci_id'),{})} for gpu in hardware.get('gpus',[])]}
 
 
-COMMAND_RUNTIME_SOURCE = ''
-
 
 def load_command_runtime():
-    """The command channel ships inside the existing verified agent release."""
+    """Load the command channel from the mounted Git checkout."""
     import types
-    source=COMMAND_RUNTIME_SOURCE or (Path(__file__).resolve().parent/'launcher_commands.py').read_text()
+    source=(Path(__file__).resolve().parent/'launcher_commands.py').read_text()
     name='launcher_commands_'+hashlib.sha256(source.encode()).hexdigest()
     if name not in sys.modules:
         module=types.ModuleType(name)
@@ -1365,12 +1363,10 @@ def load_command_runtime():
     return sys.modules[name]
 
 
-CACHE_RUNTIME_SOURCE = ''
-
 
 def load_cache_runtime():
     import types
-    source = CACHE_RUNTIME_SOURCE or (Path(__file__).resolve().parent/'launcher_cache.py').read_text()
+    source = (Path(__file__).resolve().parent/'launcher_cache.py').read_text()
     name = 'launcher_cache_' + hashlib.sha256(source.encode()).hexdigest()
     if name not in sys.modules:
         module = types.ModuleType(name)
@@ -1379,15 +1375,11 @@ def load_cache_runtime():
     return sys.modules[name]
 
 
-FILESYSTEM_RUNTIME_SOURCE = ''
-
 
 def load_filesystem_runtime():
     import types
-    source = FILESYSTEM_RUNTIME_SOURCE
-    if not source:
-        folder = Path(__file__).resolve().parent
-        source = (folder/'swarm_filesystem.py').read_text() + '\nCACHE_SOURCE = ' + repr((folder/'run_input_cache.py').read_text()) + '\n' + "\nif __name__ == '__main__':\n    import sys\n    serve(sys.argv[2])\n"
+    folder = Path(__file__).resolve().parent
+    source = (folder/'swarm_filesystem.py').read_text() + '\nCACHE_SOURCE = ' + repr((folder/'run_input_cache.py').read_text()) + '\n' + "\nif __name__ == '__main__':\n    import sys\n    serve(sys.argv[2])\n"
     name = 'filesystem_' + hashlib.sha256(source.encode()).hexdigest()
     if name not in sys.modules:
         module = types.ModuleType(name)
@@ -1397,20 +1389,20 @@ def load_filesystem_runtime():
     return sys.modules[name]
 
 
-STREAM_RUNTIME_SOURCE = ''
-
 
 def load_stream_runtime(root):
-    """Materialize the launcher-bundled runtime at a stable, content-addressed path."""
+    """Load the streaming runtime from the mounted Git checkout."""
     import importlib.util
-    source=STREAM_RUNTIME_SOURCE
-    if not source:source=(Path(__file__).resolve().parent/'launcher_streams.py').read_text()
-    revision=hashlib.sha256(source.encode()).hexdigest();folder=Path(root)/'.stream-runtime'/revision
-    folder.mkdir(mode=0o700,parents=True,exist_ok=True);path=folder/'launcher_streams.py'
-    if path.exists():
-        if hashlib.sha256(path.read_bytes()).hexdigest()!=revision:raise ValueError('Immutable streaming runtime changed')
+    path=Path(__file__).resolve().parent/'launcher_streams.py'
+    source=path.read_bytes();revision=hashlib.sha256(source).hexdigest()
+    # Accepted Docker contracts retain their worker script across node updates.
+    # The node itself imports the module from its mounted Git checkout.
+    folder=Path(root)/'.stream-runtime'/revision;folder.mkdir(mode=0o700,parents=True,exist_ok=True)
+    worker=folder/'launcher_streams.py'
+    if worker.exists():
+        if worker.read_bytes()!=source:raise ValueError('Immutable streaming runtime changed')
     else:
-        temporary=folder/'source.tmp';temporary.write_text(source);temporary.chmod(0o600);temporary.replace(path)
+        temporary=folder/'source.tmp';temporary.write_bytes(source);temporary.chmod(0o600);temporary.replace(worker)
     name='launcher_streams_'+revision
     if name not in sys.modules:
         spec=importlib.util.spec_from_file_location(name,path);module=importlib.util.module_from_spec(spec);sys.modules[name]=module
@@ -1419,26 +1411,14 @@ def load_stream_runtime(root):
     return sys.modules[name]
 
 
-PERFORMANCE_RUNTIME_B64 = ''
-PERFORMANCE_RUNTIME_DIRECTORY = None
 PERFORMANCE_RUNTIME_LOCK = threading.Lock()
 
 
 def load_performance_runtime():
-    """Import the monitor shipped inside this atomically verified agent source."""
-    global PERFORMANCE_RUNTIME_DIRECTORY
+    """Import the monitor directly from the mounted source tree."""
     with PERFORMANCE_RUNTIME_LOCK:
-        if PERFORMANCE_RUNTIME_B64:
-            if PERFORMANCE_RUNTIME_DIRECTORY is None:
-                import base64
-                PERFORMANCE_RUNTIME_DIRECTORY=tempfile.TemporaryDirectory(prefix='swarm-monitor-')
-                archive=Path(PERFORMANCE_RUNTIME_DIRECTORY.name)/'runtime.zip'
-                archive.write_bytes(base64.b64decode(PERFORMANCE_RUNTIME_B64,validate=True))
-                sys.path.insert(0,str(archive))
-        else:
-            package=(Path(__file__).resolve().parents[2] if Path(__file__).resolve().parents[1].name in ('HarborGenetics', 'JSwarm') else Path(__file__).resolve().parents[1])/'ramtop'
-            if (package/'ramtop/telemetry.py').is_file() and str(package) not in sys.path:
-                sys.path.insert(0,str(package))
+        package=Path(__file__).resolve().parents[1]/'ramtop'
+        if str(package) not in sys.path:sys.path.insert(0,str(package))
         from ramtop.telemetry import PerformanceSampler, brief, valid_snapshot
         return PerformanceSampler,brief,valid_snapshot
 
@@ -1943,7 +1923,7 @@ class Agent:
             if not isinstance(stream_directory,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}',stream_directory):raise ValueError('Invalid persistent streaming state directory')
             stream_root=self.config.parent/stream_directory
             stream_root.mkdir(mode=0o700,parents=True,exist_ok=True)
-        self.commands=load_command_runtime().CommandProxy(self,COMMAND_RUNTIME_SOURCE or (Path(__file__).resolve().parent/'launcher_commands.py').read_text())
+        self.commands=load_command_runtime().CommandProxy(self,(Path(__file__).resolve().parent/'launcher_commands.py').read_text())
         if (self.config.parent/'filesystem.json').exists():
             def start_filesystem():
                 try:

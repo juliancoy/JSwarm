@@ -129,23 +129,11 @@ def test_complete_write_primes_only_committed_local_cache(fs, tmp_path, monkeypa
     assert client.counters['local_hits'] == 1
 
 
-def test_publication_embeds_filesystem_and_ram_cache():
-    from agent_updates import LauncherUpdates
-    # Exercise historical bundled publications even inside a mounted-source export.
-    from unittest.mock import patch
-    exists=Path.exists
-    with patch.object(Path,'exists',lambda path: path.name!='.node-git-source.json' and exists(path)):
-        source=LauncherUpdates(Path(__file__).parents[1], lambda: False, Mock())
-    namespace = {'__name__': 'bundled_filesystem'}
-    agent = source.files['launcher_agent.py']
-    import ast
-    tree = ast.parse(agent)
-    values = [node.value.value for node in tree.body if isinstance(node, ast.Assign)
-              and any(isinstance(t, ast.Name) and t.id == 'FILESYSTEM_RUNTIME_SOURCE' for t in node.targets)
-              and isinstance(node.value, ast.Constant)]
-    exec(values[-1], namespace)
-    assert namespace['CACHE_SOURCE'].startswith('"""Private bounded block cache')
-    assert 'Filesystem' in namespace
+def test_mounted_filesystem_runtime_includes_owner_cache_service():
+    from scripts.launcher_agent import load_filesystem_runtime
+    runtime=load_filesystem_runtime()
+    assert runtime.CACHE_SOURCE.startswith('"""Private bounded block cache')
+    assert hasattr(runtime,'Filesystem')
 
 
 def test_host_mount_routes_through_local_node_without_host_crypto(fs, tmp_path, monkeypatch):

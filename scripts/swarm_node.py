@@ -61,7 +61,7 @@ def ensure_node_image(image='organization-swarm-node:1'):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(prog='swarm-node',description=__doc__)
-    parser.add_argument('command',nargs='?',default='run',choices=('run','status','drain','resume','update','enroll','join','monitor','telemetry','dashboard','performance','build','speed-test'))
+    parser.add_argument('command',nargs='?',default='run',choices=('run','status','drain','resume','update','join','monitor','telemetry','dashboard','performance','build','speed-test'))
     parser.add_argument('--serve',action='store_true',help='Run the built-in map backend in the foreground (dashboard command)')
     parser.add_argument('--prefix',default='lifetech-')
     parser.add_argument('--all',action='store_true',help='Apply a maintenance command to the enrolled fleet')
@@ -69,8 +69,7 @@ def main(argv=None):
     parser.add_argument('--reason',default='Owner-requested maintenance')
     parser.add_argument('--parallel',action='store_true',help='Update all selected nodes concurrently')
     parser.add_argument('--watch',action='store_true',help='Retry an update when a node is offline or busy')
-    parser.add_argument('--address',help='Enrollment SSH address or explicit speed-test destination IP')
-    parser.add_argument('--target',help='Enrollment target: user@hostname.local')
+    parser.add_argument('--address',help='Explicit speed-test destination IP')
     parser.add_argument('--origin',default='https://compai.lifetech.fyi',help='Trusted HTTPS swarm console for browser sign-in')
     parser.add_argument('--name',help='New node name for browser enrollment (hostname.local)')
     parser.add_argument('--bytes',type=int,default=64*1024*1024,help='Bytes per speed-test direction (maximum 256 MiB)')
@@ -161,10 +160,6 @@ def main(argv=None):
         forwarded=['--watch'] if args.watch else []
         if args.parallel:forwarded+=['--parallel']
         for node in args.node or []:forwarded+=['--node',node]
-    else:
-        if not args.target:parser.error('enroll requires --target user@hostname.local')
-        from onboard_node import main as run
-        forwarded=[args.target]+(['--address',args.address] if args.address else [])
     previous=sys.argv
     try:
         sys.argv=['swarm-node',*forwarded]

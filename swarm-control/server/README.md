@@ -411,29 +411,12 @@ statuses use the run's saved end/update time for duration, not the current clock
 
 ### Authenticated launcher agents
 
-To add one Linux Docker host without starting the application stack, run from
-the coordinator:
+Enroll the machine using the standard launcher enrollment (`run.py --peer-enroll`
+or `swarm-node join`) and start the source-mounted node container. The controller
+publishes exact committed source with `python -m scripts.deploy_swarm_inputs --publish`.
+Nodes receive verified Git bundles over the authenticated LAN transport and need
+no repository credentials, package installation or local update command.
 
-```sh
-./onboard_node.sh julian@julian-inspiron-3793.local
-# If mDNS is IPv6-only, use the discovered scoped address for SSH:
-./onboard_node.sh julian@julian-inspiron-3793.local --address 'fe80::c23e:baff:fe12:47aa%enp7s0'
-```
-
-The host must already trust the coordinator's SSH key and appear in its known
-hosts. Onboarding verifies the remote hostname, Docker, physical LAN address and
-authenticated agent machine identity, preferring a wired LAN address. It retains the fleet key and existing
-members, saves the SSH account, installs Python dependencies in a private venv,
-and enables the `organization-test-agent` user service and login lingering.
-The supervised agent uses the host's selected local Docker socket, including
-rootless Docker, while observing real host interfaces. It restarts on failure
-and starts after reboot without an interactive login.
-It uses `~/.local/share/organization-node` on the worker and never starts the
-application stack. Existing online peers receive the updated membership;
-offline peers stay enrolled and are reported for a later onboarding retry.
-Inspect worker runtime output with
-`journalctl --user -u organization-test-agent.service`.
-The next distributed run includes the enrolled node automatically.
 
 Routine distributed runs use the existing launcher's encrypted `lifetech-agent.v1` API on TCP 8790, discovered through `_lifetech._tcp.local.` DNS-SD/mDNS (UDP 5353). Announcements contain only node/protocol metadata. They never enroll or authenticate a device. Missing multicast announcements can use an already-enrolled address, followed by the same authenticated readiness check. The coordinator requires its enrolled address on `enp7s0` and only schedules endpoints on that Ethernet subnet.
 
@@ -445,7 +428,11 @@ Source code is fetched directly from GitHub by exact commit; image archives and 
 
 A run shares one synchronized image resolver across application and P2P preparation. Each image reference refreshes once per run, including concurrent callers. Unchanged image contents reuse worker-local IDs. Changed images publish once to the coordinator's persistent loopback registry; worker Docker daemons request only missing compressed layers through a worker-loopback registry bridge. Registry bytes traverse authenticated AES-GCM agent RPC with bounded chunks and immutable manifest/blob digests. There are no SSH tunnels, LAN registry listeners, Docker daemon configuration changes or full-image transfer archives in this path. Two destination transfers may run concurrently; those are distinct worker copies, not independent internet pulls. P2P browser setup, WebDriver control, fixture delivery and cleanup use the agent API. Application containers are not restarted by Start.
 
-Start automatically stages outdated agent sources over existing SSH access (locally for the coordinator), verifies the enrolled account and physical machine identity, and waits up to two minutes for the expected running revision. Current agents are reused; active jobs are not interrupted. Update progress and failures appear in the run record. For a manual update on an enrolled machine, `python3 scripts/launcher_update.py` atomically stages the current peer-agent sources; `--rollback` selects the previous installed release. The supervisor drains new jobs, waits for active jobs/browsers to finish, validates source checksums, and restores the previous release if the replacement fails its startup readiness check. An unchanged installed release does not reload. Updates to image dependencies or the supervisor itself require an explicit launcher-image rebuild/recreation. Initial activation of this migration also requires that rebuild on each machine; editing the coordinator files alone cannot upgrade existing agents.
+Task admission reuses ready compatible agents. Explicit controller publication
+activates mounted Git source and verifies the running revision. The supervisor
+replaces the node process while Docker workers continue and restores the previous
+mounted checkout if startup fails. Code updates do not rebuild the dependency image.
+
 
 ### Commit, push and test
 
@@ -494,8 +481,8 @@ fleet or a task that fits no worker fails explicitly instead of hanging.
 The dashboard and REST/MCP records expose pending tasks, per-machine capacity,
 active file IDs, individual timings and results. Per-file reruns use the same
 application-owned commands and dependency setup. No suite is split by a fixed
-machine count. Start applies `launcher_update.py` automatically when an enrolled
-agent revision differs. Editing source alone does not update agents or start tests.
+machine count. Publish through `scripts.deploy_swarm_inputs` to update enrolled
+agents. Editing source alone does not select a release or start tests.
 
 
 ### Post-deployment checks

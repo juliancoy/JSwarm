@@ -68,10 +68,10 @@ config=Path(os.environ['LIFETECH_PEER_CONFIG']);lock=launcher_lock(config.parent
 a=Agent.__new__(Agent);a.worker_journal=DockerWorkerJournal(config.parent/'docker-worker-journal.sqlite')
 a.recover_docker_workers()
 value=a.worker_status(json.loads((config.parent/'job.json').read_text()))
-value.update(pid=os.getpid(),folder=str(Path(__file__).parent))
+value.update(pid=os.getpid(),folder=os.environ.get('JSWARM_RELEASE_DIR',str(Path(__file__).parent)))
 (config.parent/'observed.json').write_text(json.dumps(value))
 Path('/tmp/launcher-agent-busy.json').write_text(json.dumps({'jobs':['already-running'],'browsers':[],'transfers':25,'workers_survive_restart':True}))
-Path('/tmp/launcher-agent-ready.json').write_text(json.dumps({'folder':str(Path(__file__).parent),'time':time.time()}))
+Path('/tmp/launcher-agent-ready.json').write_text(json.dumps({'folder':os.environ.get('JSWARM_RELEASE_DIR',str(Path(__file__).parent)),'time':time.time()}))
 while True:time.sleep(1)
 """
         files={n:'' for n in ('launcher_peers.py','launcher_discovery.py','launcher_registration.py','launcher_agent.py','launcher_registry.py')}
@@ -82,7 +82,7 @@ while True:time.sleep(1)
             '--mount','type=bind,src='+str(tmp_path)+',dst=/fixture',
             '--mount','type=bind,src=/usr/bin/docker,dst=/usr/local/bin/docker,readonly',
             '--mount','type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock',
-            '--env','LIFETECH_PEER_CONFIG=/fixture/config/peers.json',IMAGE,'python','/fixture/base/launcher_peer_supervisor.py'],text=True).strip()
+            '--env','LIFETECH_PEER_CONFIG=/fixture/config/peers.json',os.environ.get('SWARM_SOURCE_TEST_IMAGE','organization-swarm-node:1'),'python','/fixture/base/launcher_peer_supervisor.py'],text=True).strip()
         def await_observation(folder):
             deadline=time.monotonic()+35
             while time.monotonic()<deadline:
@@ -95,11 +95,14 @@ while True:time.sleep(1)
             raise AssertionError('Replacement did not become ready: '+logs)
         first=await_observation('/fixture/base')
         files['launcher_peers.py']+='\n# validated next release\n'
-        revision=hashlib.sha256(b''.join(files[n].encode() for n in files)).hexdigest()
-        release=config/'agent-releases'/revision;release.mkdir(parents=True)
-        for n,v in files.items():(release/n).write_text(v)
-        (release/'manifest.json').write_text(json.dumps({n:hashlib.sha256(v.encode()).hexdigest() for n,v in files.items()}))
-        (release.parent/'current').symlink_to(revision)
+        from test_mounted_node_source import repositories,delivered
+        from scripts import node_git_source as source
+        source_root=repositories(tmp_path/'repositories')
+        for n,v in files.items():(source_root/'JSwarm/scripts'/n).write_text(v)
+        source.git(source_root/'JSwarm','add','.')
+        source.git(source_root/'JSwarm','commit','-qm','worker adoption probe')
+        manifest,revision=delivered(source_root,config/'peers.json')
+        source.stage_source(manifest,config/'peers.json',revision)
         second=await_observation('/fixture/config/agent-releases/'+revision)
         assert first['pid']!=second['pid']
         assert first['container_id']==second['container_id']==worker

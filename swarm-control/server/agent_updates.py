@@ -2,7 +2,6 @@
 import hashlib
 import ast
 import fcntl
-import runpy
 import json
 from pathlib import Path
 import shlex
@@ -68,137 +67,19 @@ def check_publication(folder,expected):
 
 def require_git_source(source):
     """All deployable publications must carry validated Git provenance."""
-    if not isinstance(source,dict) or set(source) not in ({'repositories','installer'}, {'repositories','installer','mode','activation'}):
+    if not isinstance(source,dict) or set(source)!={'repositories','installer','mode','activation'}:
         raise ValueError('Git source provenance required; publish committed source with --publish')
     from scripts.node_git_source import validate
     validate(source['repositories'])
     compile(source['installer'],'node_git_source.py','exec')
-    if 'mode' in source:
-        if source['mode']!='mounted-v1':raise ValueError('Unsupported node source mode')
-        compile(source['activation'],'node_source_install.py','exec')
+    if source['mode']!='mounted-v1':raise ValueError('Unsupported node source mode')
+    compile(source['activation'],'node_source_install.py','exec')
 
 
 def source_revision(files, git_source):
     data=b''.join(files[name].encode() for name in FILES)
-    if git_source and git_source.get('mode')=='mounted-v1':
-        data+=json.dumps(git_source['repositories'],sort_keys=True).encode()
+    data+=json.dumps(git_source['repositories'],sort_keys=True).encode()
     return hashlib.sha256(data).hexdigest()
-
-
-INSTALL = '''import hashlib,json,os,pathlib,runpy,sys,tempfile,subprocess
-payload=json.load(sys.stdin)
-if hashlib.sha256(pathlib.Path('/etc/machine-id').read_bytes()).hexdigest()!=payload['machine']:
- raise RuntimeError('Update owner differs from the authenticated agent machine')
-config=pathlib.Path(os.environ.get('LIFETECH_PEER_CONFIG',str(pathlib.Path.home()/'.config/lifetech-launcher/peers.json')))
-settings=json.loads(config.read_text())
-if settings['name']!=payload['node']:
- raise RuntimeError('Update command is not running as the enrolled launcher owner')
-public_key=payload['controller_public_key']
-if len(bytes.fromhex(public_key))!=32:raise RuntimeError('Invalid controller public key')
-import ipaddress,re
-peers=payload['peers']
-if not 1<=len(peers)<=24 or settings['name'] not in peers:raise RuntimeError('Invalid enrolled fleet')
-for name,address in peers.items():
- if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,252}',name):raise RuntimeError('Invalid enrolled node')
- ip=ipaddress.ip_address(address)
- if not ip.is_private or ip.is_loopback or ip.is_unspecified:raise RuntimeError('Enrolled LAN address required')
-# Fetch only the committed sources pinned by the validated publication. This
-# directory is host-backed through the existing persistent config mount.
-git_source=payload['git_source']
-namespace={'__name__':'node_git_source'}
-exec(compile(git_source['installer'],'node_git_source.py','exec'),namespace)
-workspace=namespace['workspace'](git_source['repositories'],config.parent/'node-source')
-project=workspace/'JSwarm'
-sys.path.insert(0,str(project/'swarm-control/server'))
-builder=runpy.run_path(str(project/'swarm-control/server/agent_updates.py'))['LauncherUpdates']
-release=builder(project,lambda:False,lambda *args:None)
-if release.files!=payload['files'] or release.supervisor_source!=payload['supervisor_source']:
- raise RuntimeError('Git sources differ from validated publication')
-payload['files']=release.files
-payload['supervisor_source']=release.supervisor_source
-supervisor=payload['supervisor_source']
-if hashlib.sha256(supervisor.encode()).hexdigest()!=payload['supervisor_sha256']:raise RuntimeError('Supervisor checksum mismatch')
-compile(supervisor,'launcher_peer_supervisor.py','exec')
-targets=[pathlib.Path.home()/'.local/share/organization-node/scripts/launcher_peer_supervisor.py']
-# The persistent API command owner may use rootless Docker while the node runs
-# on system Docker. Its enrollment-attested routing map still identifies the
-# existing writable bootstrap sources without host-PID or SSH access.
-routing=config.parent/'bulk-streams.json'
-if routing.exists():
- mapped=json.loads(routing.read_text())
- if mapped.get('config',{}).get('machine')!=payload['machine'] or mapped.get('config',{}).get('name')!=settings['name']:
-  raise RuntimeError('Bootstrap routing identity differs from enrolled node')
- for mount in mapped.get('host_paths',[]):
-  source=pathlib.Path(mount['host'])
-  if not source.is_absolute() or '..' in source.parts:raise RuntimeError('Invalid bootstrap source mapping')
-  for candidate in (source/'launcher_peer_supervisor.py',source/'scripts/launcher_peer_supervisor.py'):
-   if candidate.is_file():targets.append(candidate.resolve())
-settings['peers']=dict(peers)
-settings['controller_public_key']=public_key
-pending=config.with_suffix('.controller.tmp');pending.write_text(json.dumps(settings,indent=2)+'\\n');pending.chmod(0o600);pending.replace(config)
-# The launcher hosts coordinator threads and Docker clients for multiple runs.
-# Raise undersized provisioned limits without restarting active containers.
-# The controller can use system Docker while its jobs use rootless Docker.
-# Inspect both endpoints; ownership still requires the enrolled config mount.
-for docker_command in (['docker'],['docker','--host','unix:///var/run/docker.sock']):
- for container_name in ('swarm-node',):
-  result=subprocess.run(docker_command+['inspect',container_name],capture_output=True,text=True,timeout=15)
-  if result.returncode:continue
-  container=json.loads(result.stdout)[0]
-  owned=any(m['Destination'] in ('/run/launcher-config',str(config.parent)) and pathlib.Path(m['Source']).resolve()==config.parent.resolve() for m in container.get('Mounts',[]))
-  for mount in container.get('Mounts',[]):
-   if owned and mount['Destination'].endswith('/scripts') and (pathlib.Path(mount['Source'])/'launcher_peer_supervisor.py').exists():targets.append(pathlib.Path(mount['Source'])/'launcher_peer_supervisor.py')
-  current_limit=container['HostConfig'].get('PidsLimit') or 0
-  target_limit=min(32768,max(1024,len(os.sched_getaffinity(0))*256+512))
-  if owned and 0<current_limit<target_limit:
-   subprocess.run(docker_command+['update','--pids-limit',str(target_limit),container_name],check=True,stdout=subprocess.DEVNULL,timeout=20)
-for target in targets:
- if not target.exists():continue
- temporary=target.with_suffix('.update.tmp');temporary.write_text(supervisor);temporary.chmod(target.stat().st_mode & 0o777);temporary.replace(target)
-# Publish only public TLS routing metadata into the launcher config mount.
-bulk_root=pathlib.Path.home()/'.local/state/lifetech-launcher/bulk-transport'
-if (bulk_root/'config.json').exists():
- bulk=json.loads((bulk_root/'config.json').read_text())
- if bulk.get('machine')!=payload['machine'] or bulk.get('name')!=settings['name']:raise RuntimeError('Streaming transport identity differs from launcher')
- descriptor=config.parent/'bulk-streams.json';temporary=descriptor.with_suffix('.tmp')
- host_paths=[]
- # Recover owner-attested bind mappings from the foreground standard launcher
- # bootstrap when Docker's live-restore metadata no longer lists the agent.
- for proc in pathlib.Path('/proc').glob('[0-9]*'):
-  try:
-   if proc.stat().st_uid!=os.getuid():continue
-   args=[a.decode() for a in (proc/'cmdline').read_bytes().split(bytes([0])) if a]
-   if not args or pathlib.Path(args[0]).name!='docker' or 'run' not in args:continue
-   mounts=[]
-   for i,arg in enumerate(args[:-1]):
-    if arg!='--mount':continue
-    mount=dict(part.split('=',1) for part in args[i+1].split(',') if '=' in part)
-    if mount.get('type')=='bind' and 'src' in mount and 'dst' in mount:mounts.append(mount)
-   if not any(m['src']==str(config.parent) and m['dst'] in (str(config.parent),'/run/launcher-config') for m in mounts):continue
-   for mount in mounts:
-    source=pathlib.Path(mount['src']);target=pathlib.Path(mount['dst'])
-    if source.is_absolute() and target.is_absolute() and '..' not in source.parts and '..' not in target.parts:
-     host_paths.append({'container':str(target),'host':str(source)})
-  except (OSError,ValueError,UnicodeError):pass
- if not host_paths and descriptor.exists():
-  prior=json.loads(descriptor.read_text())
-  if prior.get('config',{}).get('machine')!=payload['machine'] or prior.get('config',{}).get('name')!=settings['name']:
-   raise RuntimeError('Existing streaming routing identity differs')
-  host_paths=prior.get('host_paths',[])
- temporary.write_text(json.dumps({'root':str(bulk_root),'config_dir':str(config.parent),'config':bulk,'host_paths':host_paths}));temporary.chmod(0o600);temporary.replace(descriptor)
-files=payload['files']
-expected=('launcher_peers.py','launcher_discovery.py','launcher_registration.py','launcher_agent.py','launcher_registry.py')
-if set(files)!=set(expected)|{'launcher_update.py'}:
- raise RuntimeError('Incomplete launcher update')
-if hashlib.sha256(b''.join(files[name].encode() for name in expected)).hexdigest()!=payload['revision']:
- raise RuntimeError('Launcher update checksum mismatch')
-for name,source in files.items():compile(source,name,'exec')
-with tempfile.TemporaryDirectory(prefix='launcher-start-update-') as temporary:
- for name,source in files.items():(pathlib.Path(temporary)/name).write_text(source)
- sys.argv=['launcher_update.py']
- runpy.run_path(str(pathlib.Path(temporary)/'launcher_update.py'),run_name='__main__')
-
-'''
 
 
 class LauncherUpdates:
@@ -208,35 +89,13 @@ class LauncherUpdates:
         if (root/'JSwarm/scripts').is_dir():root=root/'JSwarm'
         folder=Path(root)/'scripts'
         manifest=Path(root)/'.node-git-source.json'
-        self.git_source=None
-        if manifest.exists():
-            from scripts.node_git_source import validate
-            repositories=json.loads(manifest.read_text());validate(repositories)
-            self.git_source={'repositories':repositories,'installer':(folder/'node_git_source.py').read_text()}
+        from scripts.node_git_source import snapshot,validate
+        repositories=json.loads(manifest.read_text()) if manifest.exists() else snapshot(root.parent)
+        validate(repositories)
+        self.git_source={'repositories':repositories,'installer':(folder/'node_git_source.py').read_text(),
+                         'mode':'mounted-v1','activation':(folder/'node_source_install.py').read_text()}
         self.supervisor_source=(folder/'launcher_peer_supervisor.py').read_text()
-        self.files={name:(folder/name).read_text() for name in (*FILES,'launcher_update.py')}
-        if self.git_source is not None:
-            self.git_source.update(mode='mounted-v1',activation=(folder/'node_source_install.py').read_text())
-        else:
-            import base64,gzip
-            view=Path(root)/'swarm-control/server/view'
-            assets={str(path.relative_to(view)):base64.b64encode(path.read_bytes()).decode() for path in view.rglob('*') if path.is_file()}
-            genome=(Path(root).parent if Path(root).name=='JSwarm' else Path(root))/'HarborGenetics/web'
-            assets.update({'genome/'+str(path.relative_to(genome)):base64.b64encode(path.read_bytes()).decode() for path in genome.rglob('*') if path.is_file()})
-            compressed=bytearray(gzip.compress(json.dumps(assets,sort_keys=True).encode(),compresslevel=9,mtime=0))
-            compressed[9]=255  # Python 3.12/3.13 differ in the default gzip OS header.
-            encoded=base64.b64encode(compressed).decode()
-            marker="if __name__=='__main__':main()"
-            self.files['launcher_peers.py']=self.files['launcher_peers.py'].replace(marker,'PIPELINE_ASSETS_B64 = '+repr(encoded)+'\n\n'+marker)
-            runtime=Path(root)/'ramtop/ramtop'
-            bundle=runpy.run_path(str(runtime/'bundle.py'))['encoded_runtime'](runtime)
-            self.files['launcher_agent.py'] += '\n# Built-in monitor source is covered by the existing atomic release checksum.\nPERFORMANCE_RUNTIME_B64 = '+repr(bundle)+'\n'
-            self.files['launcher_agent.py'] += '\n# Durable streaming runtime is part of this same verified launcher release.\nSTREAM_RUNTIME_SOURCE = '+repr((folder/'launcher_streams.py').read_text())+'\n'
-            self.files['launcher_agent.py'] += '\n# Durable streaming runtime is part of this same verified launcher release.\nCACHE_RUNTIME_SOURCE = '+repr((folder/'launcher_cache.py').read_text())+'\n'
-            self.files['launcher_agent.py'] += '\n# Signed command runtime shares this same verified release.\nCOMMAND_RUNTIME_SOURCE = '+repr((folder/'launcher_commands.py').read_text())+'\n'
-            filesystem = (folder/'swarm_filesystem.py').read_text() + '\nCACHE_SOURCE = ' + repr((folder/'run_input_cache.py').read_text()) + '\n' + "\nif __name__ == '__main__':\n    import sys\n    serve(sys.argv[2])\n"
-            self.files['launcher_agent.py'] += '\n# Writable filesystem and bounded RAM cache share the node release.\nFILESYSTEM_RUNTIME_SOURCE = '+repr(filesystem)+'\n'
-            self.files['launcher_agent.py'] += '\n# The supervisor version is part of the published release identity.\nSUPERVISOR_SHA256 = '+repr(hashlib.sha256(self.supervisor_source.encode()).hexdigest())+'\n'
+        self.files={name:(folder/name).read_text() for name in FILES}
         self.capabilities=set()
         for node in ast.walk(ast.parse(self.files['launcher_agent.py'])):
             if isinstance(node,ast.Dict):
@@ -258,13 +117,14 @@ class LauncherUpdates:
 
     @classmethod
     def _read_publication(cls,path,stopped,progress):
-        """Read verified history, including pre-Git receipts, without deploying it."""
+        """Read only the current mounted-source publication format."""
         path=Path(path).resolve(strict=True)
         value=json.loads(path.read_text())
-        if value.get('schema')!='jswarm-agent-release.v1':raise ValueError('Unsupported published release schema')
-        files=value['files'];expected=set(FILES)|{'launcher_update.py'}
+        if value.get('schema')!='jswarm-mounted-release.v1':raise ValueError('Unsupported published release schema')
+        files=value['files'];expected=set(FILES)
         if set(files)!=expected:raise ValueError('Incomplete published agent release')
-        revision=source_revision(files,value.get('git_source'))
+        require_git_source(value.get('git_source'))
+        revision=source_revision(files,value['git_source'])
         if revision!=value['revision']:raise ValueError('Published agent release checksum mismatch')
         supervisor=value['supervisor_source']
         if hashlib.sha256(supervisor.encode()).hexdigest()!=value['supervisor_sha256']:raise ValueError('Published supervisor checksum mismatch')
@@ -279,11 +139,10 @@ class LauncherUpdates:
         instance.source_versions=value.get('source_versions',{instance.revision:instance.generation})
         if (not isinstance(instance.source_versions,dict) or instance.revision not in instance.source_versions or any(not isinstance(key,str) or type(version) is not int or not 0<=version<=instance.generation for key,version in instance.source_versions.items())):
             raise ValueError('Invalid source version history')
-        instance.git_source=value.get('git_source')
-        if instance.git_source is not None:require_git_source(instance.git_source)
+        instance.git_source=value['git_source']
         instance.components=value.get('components',{})
         if set(instance.components)-{'public-pager','private-filesystem'}:raise ValueError('Unknown deployment component')
-        for component in instance.components.values():validate(component,historical=True)
+        for component in instance.components.values():validate(component)
         content={key:value.get(key,{}) if key=='components' else value[key] for key in ('schema','revision','files','supervisor_source','supervisor_sha256','components')}
         if 'git_source' in value:content['git_source']=value['git_source']
         content_id=hashlib.sha256(json.dumps(content,sort_keys=True).encode()).hexdigest()
@@ -307,7 +166,7 @@ class LauncherUpdates:
         """Publish checksummed sources only; enrolled identities and keys stay separate."""
         import os,tempfile
         folder=Path(folder);folder.mkdir(parents=True,exist_ok=True,mode=0o700)
-        value={'schema':'jswarm-agent-release.v1','revision':self.revision,'files':self.files,
+        value={'schema':'jswarm-mounted-release.v1','revision':self.revision,'files':self.files,
                'supervisor_source':self.supervisor_source,'supervisor_sha256':hashlib.sha256(self.supervisor_source.encode()).hexdigest(),
                'components':getattr(self,'components',{})}
         require_git_source(self.git_source)
@@ -317,7 +176,9 @@ class LauncherUpdates:
         token=publication_token(folder)
         current=folder/token if token else None
         versions={};artifacts={}
-        if current:
+        prior=None
+        # Unsupported prior artifacts remain opaque audit history, never executable rollback targets.
+        if current and json.loads(current.read_text()).get('schema')==value['schema']:
             prior=self._read_publication(current,self.stopped,self.progress)
             prior_value=json.loads(current.read_text())
             content={key:prior_value.get(key,{}) if key=='components' else prior_value[key]
@@ -337,7 +198,7 @@ class LauncherUpdates:
             raise RuntimeError('Previously published release requires explicit rollback')
         generations=[int(path.name.split('-',1)[0]) for path in folder.glob('*-*.json')
                      if path.name.split('-',1)[0].isdigit()]
-        generation=max([prior.generation if current else 0,*generations])+1
+        generation=max([prior.generation if prior else 0,*generations])+1
         versions.setdefault(self.revision,generation);artifacts.setdefault(artifact,generation)
         value.update(generation=generation,predecessor=token,source_versions=versions,artifact_versions=artifacts)
         path=folder/(f'{generation:020d}-'+artifact+'.json');encoded=json.dumps(value,sort_keys=True)
@@ -351,9 +212,10 @@ class LauncherUpdates:
         finally:temp.unlink(missing_ok=True)
         self.published(path,self.stopped,self.progress)
         pointer=folder/'desired'
-        if pointer.is_symlink() and pointer.resolve()!=path.resolve():
+        if prior and pointer.is_symlink() and pointer.resolve()!=path.resolve():
             prior=folder/'previous.tmp';prior.unlink(missing_ok=True)
             prior.symlink_to(pointer.resolve().name);prior.replace(folder/'previous')
+        if prior is None:(folder/'previous').unlink(missing_ok=True)
         pending=folder/'desired.tmp';pending.unlink(missing_ok=True)
         pending.symlink_to(path.name);pending.replace(pointer)
         directory=os.open(folder,os.O_RDONLY)
@@ -441,13 +303,10 @@ class LauncherUpdates:
         if len(bytes.fromhex(public_key))!=32:raise ValueError('Invalid pinned controller key')
         payload={'supervisor_source':self.supervisor_source,'supervisor_sha256':hashlib.sha256(self.supervisor_source.encode()).hexdigest(),'machine':status['machine'],'node':status['node'],'revision':self.revision,'files':self.files,'controller_public_key':public_key,'peers':json.loads(CONFIG.read_text())['peers']}
         payload['git_source']=self.git_source
-        if self.git_source.get('mode')=='mounted-v1':
-            from scripts.node_source_delivery import deliver
-            deliver(self,host,status)
-            payload['supervisor_supports_source']=status.get('update',{}).get('source_runtime')=='mounted-v1'
-            command=self.command(host,self.git_source['activation'],status=status)
-        else:
-            command=self.command(host,INSTALL,status=status)
+        from scripts.node_source_delivery import deliver
+        deliver(self,host,status)
+        payload['supervisor_supports_source']=status.get('update',{}).get('source_runtime')=='mounted-v1'
+        command=self.command(host,self.git_source['activation'],status=status)
         try:result=subprocess.run(command,input=json.dumps(payload),capture_output=True,text=True,timeout=600)
         except subprocess.TimeoutExpired:raise RuntimeError('Launcher staging timed out; existing jobs preserved and retry is safe') from None
         if result.returncode:

@@ -7,26 +7,17 @@ from agent_updates import LauncherUpdates
 
 class LauncherUpdateTests(unittest.TestCase):
     def setUp(self):
-        # These compatibility fixtures describe historical bundled publications.
-        exists=Path.exists
-        legacy=patch.object(Path,'exists',lambda path: path.name!='.node-git-source.json' and exists(path))
-        legacy.start();self.addCleanup(legacy.stop)
         self.progress=Mock()
         self.updates=LauncherUpdates(Path(__file__).resolve().parents[3],lambda:False,self.progress)
-        self.updates.git_source={'repositories':{name:{'origin':'https://example.com/'+name+'.git','commit':'a'*40}
-                       for name in ('Organization','JSwarm','HarborGenetics')},'installer':'# test Git installer\n'}
         self.host={'host':'worker','lan_address':'10.42.0.2','agent_endpoint':'http://worker-swarm.local:8790'}
         self.status={'node':'worker','machine':'a'*64,'ready':True,'source_revision':'old','active_jobs':[],'capabilities':['node-command-v1']}
 
-    def test_stream_and_command_runtimes_are_in_the_verified_release(self):
-        import ast,hashlib
-        source=self.updates.files['launcher_agent.py']
-        tree=ast.parse(source)
-        embedded=[n.value.value for n in tree.body if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='STREAM_RUNTIME_SOURCE' for t in n.targets)][-1]
-        self.assertEqual(embedded,(Path(__file__).resolve().parents[3]/'scripts/launcher_streams.py').read_text())
-        command=[n.value.value for n in tree.body if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='COMMAND_RUNTIME_SOURCE' for t in n.targets)][-1]
-        self.assertEqual(command,(Path(__file__).resolve().parents[3]/'scripts/launcher_commands.py').read_text())
-        self.assertEqual(self.updates.revision,hashlib.sha256(b''.join(self.updates.files[n].encode() for n in ('launcher_peers.py','launcher_discovery.py','launcher_registration.py','launcher_agent.py','launcher_registry.py'))).hexdigest())
+    def test_node_release_contains_only_pinned_unmodified_source(self):
+        from agent_updates import source_revision
+        root=Path(__file__).resolve().parents[3]
+        self.assertEqual(self.updates.files['launcher_agent.py'],(root/'scripts/launcher_agent.py').read_text())
+        self.assertEqual(self.updates.git_source['mode'],'mounted-v1')
+        self.assertEqual(self.updates.revision,source_revision(self.updates.files,self.updates.git_source))
 
     def test_current_launcher_does_not_reload(self):
         status={**self.status,'source_revision':self.updates.revision}
@@ -35,7 +26,7 @@ class LauncherUpdateTests(unittest.TestCase):
         stage.assert_not_called()
 
     def test_staging_uses_signed_api_and_ignores_ambient_ssh_settings(self):
-        with patch('agent_updates.subprocess.run',return_value=Mock(returncode=0)) as run, patch('agent_client.CONFIG') as config:
+        with patch('agent_updates.subprocess.run',return_value=Mock(returncode=0)) as run, patch('agent_client.CONFIG') as config, patch('scripts.node_source_delivery.deliver') as delivery:
             config.read_text.return_value='{"controller_public_key":"'+'ab'*32+'","peers":{"worker":"10.42.0.2"}}'
             self.updates.stage(self.host,self.status)
         command=run.call_args.args[0]
@@ -120,7 +111,7 @@ class LauncherUpdateTests(unittest.TestCase):
 
     def test_supervisor_fix_is_part_of_standard_api_deployment(self):
         import json,hashlib
-        with patch('agent_updates.subprocess.run',return_value=Mock(returncode=0)) as run,patch('agent_client.CONFIG') as config:
+        with patch('agent_updates.subprocess.run',return_value=Mock(returncode=0)) as run,patch('agent_client.CONFIG') as config, patch('scripts.node_source_delivery.deliver') as delivery:
             config.read_text.return_value=json.dumps({'controller_public_key':'ab'*32,'peers':{'worker':'10.42.0.2'}})
             self.updates.stage(self.host,self.status)
         payload=json.loads(run.call_args.kwargs['input'])

@@ -34,7 +34,7 @@ a small supervisor, and persistent bind-mounted source and state directories.
    Transfers use enrolled hostnames and the existing IPv4/IPv6 discovery and
    connection fallback. Source checksums and enrolled machine identity are checked.
 3. Each node imports the verified bundles with `git fetch` and checks out pinned
-   detached worktrees in the persistent configuration volume's `node-source/`.
+   detached checkouts in the persistent configuration volume's `node-source/`.
    Missing objects fail staging; nodes never fall back to Internet origins.
 4. Activation writes a small `source.json` descriptor and atomically switches
    `agent-releases/current`. The supervisor executes `launcher_peers.py` directly
@@ -50,7 +50,7 @@ replacement together. Code-only updates require neither an image build nor manua
 node intervention. Changes to dependencies still require provisioning the updated
 dependency image; a source rollout does not install packages or silently build.
 
-The first rollout from the old supervisor verifies its actual writable source
+The first rollout from the old supervisor verifies its actual host source
 bind mount and persistent configuration bind mount, installs the new bootstrap,
 and restarts only the enrolled `swarm-node` container. Later bootstrap changes
 reload the supervisor automatically. A node without these mounts is rejected
@@ -59,9 +59,9 @@ or custom runners need migration to that mounted container layout.
 
 Modified managed worktrees, corrupt transfers, unavailable pinned source or an
 identity mismatch leave the active release selected. Developer working trees are
-never reset, stashed or cleaned. Existing legacy publications remain readable and
-retain their original deployment/rollback path; new committed publications use
-mounted source. Rollback retains both Git checkouts and legacy runtime releases.
+never reset, stashed or cleaned. Only mounted-source publications can be loaded, activated or rolled back. Retired
+publication files remain opaque audit receipts; no bundled-code execution or
+node-side origin fetching is supported. Rollback uses retained Git checkouts.
 
 ## Parallel updates
 
@@ -95,8 +95,10 @@ install this behavior without changing Avahi configuration or rebuilding images.
 ## Private repository source
 
 All three repositories, including private HarborGenetics source, are delivered by
-the controller. GitHub credentials remain on the controller. The earlier manual
-`seed_git_source_mirror` step is unnecessary for mounted-source publications; it
-remains available for older publications only. Local cached commits require no
-transfer. Failed or interrupted delivery can be retried without selecting a new
+the controller. GitHub credentials remain on the controller. Local cached commits require no transfer. Failed or interrupted delivery can be retried without selecting a new
 active release.
+
+The retired native onboarding installer and local bundle-update command have been
+removed. Enroll with `run.py --peer-enroll` or `swarm-node join`, then start the
+standard container runner. The supervisor is the only process entry point; fixed
+release services cannot bypass controller-managed updates.

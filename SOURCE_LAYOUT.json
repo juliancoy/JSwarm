@@ -38,10 +38,6 @@
       "path": "scripts/check_peer_browser.py"
     },
     {
-      "previous_path": "scripts/launcher_update.py",
-      "path": "scripts/launcher_update.py"
-    },
-    {
       "previous_path": "scripts/agent_container.py",
       "path": "scripts/agent_container.py"
     },
@@ -108,10 +104,6 @@
     {
       "previous_path": "scripts/worker_maintenance.py",
       "path": "scripts/worker_maintenance.py"
-    },
-    {
-      "previous_path": "scripts/onboard_node.py",
-      "path": "scripts/onboard_node.py"
     },
     {
       "previous_path": "scripts/swarm_runtime.py",
@@ -2224,10 +2216,6 @@
     {
       "previous_path": "tests/LAN_JOB_ACCEPTANCE.md",
       "path": "tests/LAN_JOB_ACCEPTANCE.md"
-    },
-    {
-      "previous_path": "scripts/tests/test_onboard_node.py",
-      "path": "scripts/tests/test_onboard_node.py"
     },
     {
       "previous_path": "scripts/tests/test_swarm_performance.py",

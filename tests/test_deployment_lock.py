@@ -11,13 +11,7 @@ import agent_updates as updates
 
 @pytest.fixture
 def source():
-    # Exercise historical bundled publications even inside a mounted-source export.
-    from unittest.mock import patch
-    exists=Path.exists
-    with patch.object(Path,'exists',lambda path: path.name!='.node-git-source.json' and exists(path)):
-        value=updates.LauncherUpdates(Path(__file__).parents[1],lambda:False,Mock())
-    value.git_source={'repositories':{name:{'origin':'https://example.com/'+name+'.git','commit':'a'*40}
-                       for name in ('Organization','JSwarm','HarborGenetics')},'installer':'# test Git installer\n'}
+    value=updates.LauncherUpdates(Path(__file__).parents[1],lambda:False,Mock())
     return value
 
 

@@ -8,16 +8,10 @@ from agent_client import AgentSessions
 
 class AgentReadinessTests(unittest.TestCase):
     def setUp(self):
-        # These compatibility fixtures describe historical bundled publications.
-        exists=Path.exists
-        legacy=patch.object(Path,'exists',lambda path: path.name!='.node-git-source.json' and exists(path))
-        legacy.start();self.addCleanup(legacy.stop)
         from agent_updates import LauncherUpdates
         folder=tempfile.TemporaryDirectory();self.addCleanup(folder.cleanup)
         root=Path(__file__).resolve().parents[3]
         updater=LauncherUpdates(root,lambda:False,Mock())
-        updater.git_source={'repositories':{name:{'origin':'https://example.com/'+name+'.git','commit':'a'*40}
-                            for name in ('Organization','JSwarm','HarborGenetics')},'installer':'# test Git installer\n'}
         artifact=updater.publish(folder.name)
         publication=LauncherUpdates.published(artifact,lambda:False,Mock())
         selected=patch('agent_updates.LauncherUpdates.desired',return_value=publication)
