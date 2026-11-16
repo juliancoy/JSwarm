@@ -53,6 +53,7 @@ int dial(const Json& discovery,const std::string& name,int port,Counters& stats)
     }
     auto deadline=Clock::now()+std::chrono::seconds(3);
     while(!sockets.empty()&&Clock::now()<deadline) {
+        if(std::none_of(sockets.begin(),sockets.end(),[](const pollfd& p){return p.fd>=0;}))break;
         int remaining=std::chrono::duration_cast<std::chrono::milliseconds>(deadline-Clock::now()).count();
         if(poll(sockets.data(),sockets.size(),std::max(1,remaining))<=0)break;
         for(size_t i=0;i<sockets.size();i++)if(sockets[i].fd>=0&&sockets[i].revents) {
@@ -109,7 +110,7 @@ std::unordered_map<std::string,std::string> read_headers(Connection& c) {
     return headers;
 }
 
-Transport::Transport(const Json& config):config_(config),enrollment_(read_json(config.at("tls_root").get<std::string>()+"/config.json")) {
+Transport::Transport(const Json& config):config_({{"discovery",config.at("discovery")}}),enrollment_(read_json(config.at("tls_root").get<std::string>()+"/config.json")) {
     std::ifstream machine("/etc/machine-id");std::stringstream content;content<<machine.rdbuf();auto value=content.str();
     if(hex(hash(reinterpret_cast<const unsigned char*>(value.data()),value.size()))!=enrollment_.at("machine"))throw IntegrityError("Local machine identity differs");
     auto root=config.at("tls_root").get<std::string>();
@@ -129,7 +130,9 @@ std::unique_ptr<Connection> Transport::connect(const std::string& peer,int port)
     int fd=dial(read_json(config_.at("discovery")),peer,port,stats);SSL* ssl=SSL_new(client_);
     auto connection=std::make_unique<Connection>(fd,ssl);
     tls_ok(ssl&&SSL_set_fd(ssl,fd)==1&&SSL_set1_host(ssl,hostname.c_str())==1&&SSL_set_tlsext_host_name(ssl,hostname.c_str())==1,"TLS setup failed");
-    tls_ok(SSL_connect(ssl)==1&&SSL_get_verify_result(ssl)==X509_V_OK,"TLS authentication failed");
+    int connected=SSL_connect(ssl);
+    tls_ok(SSL_get_verify_result(ssl)==X509_V_OK,"TLS certificate verification failed");
+    if(connected!=1)throw std::runtime_error("TLS handshake interrupted");
     tls_ok(fingerprint(ssl)==row.at("certificate_sha256"),"Peer certificate pin differs");
     sockaddr_storage remote{};socklen_t length=sizeof(remote);getpeername(fd,reinterpret_cast<sockaddr*>(&remote),&length);
     stats.add(remote.ss_family==AF_INET6?"ipv6_connections":"ipv4_connections");return connection;

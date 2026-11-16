@@ -88,7 +88,7 @@ int main(int argc,char** argv) {
                 fuse_lowlevel_ops ops{};ops.init=init;ops.lookup=lookup;ops.getattr=getattr;ops.readdir=readdir;ops.open=open;ops.read=read;
                 m->session=fuse_session_new(&args,&ops,sizeof(ops),m.get());fuse_opt_free_args(&args);
                 if(!m->session||fuse_session_mount(m->session,m->object->mountpoint.c_str())!=0)throw std::runtime_error("Cannot mount native object");
-                auto* state=m.get();m->loop=std::thread([state]{fuse_session_loop(state->session);});mounts.push_back(std::move(m));
+                auto* state=m.get();m->loop=std::thread([state]{fuse_session_loop(state->session);stopping=true;});mounts.push_back(std::move(m));
             }
         }
         // Listener failure is propagated to main, and all mounted sessions are

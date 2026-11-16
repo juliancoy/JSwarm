@@ -34,7 +34,7 @@ def supervise(config_path,binary):
     config=json.loads(config_path.read_text());enrollment=json.loads((Path(config['tls_root'])/'config.json').read_text())
     names={name for obj in config['objects'] for name in [*obj['peers'],*(s['source'] for s in obj['sources'])]}
     if any(name not in enrollment['peers'] for name in names):raise ValueError('Unenrolled memory route')
-    pending={};answers={};due={};stopped=False;process=None
+    pending={};answers={};due={};errors={};stopped=False;process=None
     def stop(*_):
         nonlocal stopped
         stopped=True
@@ -49,8 +49,10 @@ def supervise(config_path,binary):
                 for kind in pools:
                     key=(name,kind)
                     if key in pending and pending[key].done():
-                        try:answers[key]=(now,routes(pending[key].result()))
-                        except (OSError,ValueError):answers[key]=(now,[])
+                        try:
+                            answers[key]=(now,routes(pending[key].result()));errors.pop(name+':'+kind,None)
+                        except Exception as error:
+                            answers[key]=(now,[]);errors[name+':'+kind]=str(error)
                         del pending[key];due[key]=now+3
                     if key not in pending and due.get(key,0)<=now:
                         if kind=='nss':pending[key]=pools[kind].submit(socket.getaddrinfo,name,enrollment['port'],socket.AF_UNSPEC,socket.SOCK_STREAM)
@@ -62,7 +64,7 @@ def supervise(config_path,binary):
                         if row not in hosts[name]:hosts[name].append(row)
             snapshot.parent.mkdir(parents=True,exist_ok=True)
             temporary=snapshot.with_suffix('.tmp')
-            temporary.write_text(json.dumps({'updated':int(time.time()),'hosts':hosts}));temporary.chmod(0o600);temporary.replace(snapshot)
+            temporary.write_text(json.dumps({'updated':int(time.time()),'hosts':hosts,'errors':errors}));temporary.chmod(0o600);temporary.replace(snapshot)
             if process is None and (all(hosts.values()) or now-started>=3):
                 process=subprocess.Popen([str(binary),'--config',str(config_path)])
             if process is not None and process.poll() is not None:return process.returncode

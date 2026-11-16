@@ -51,9 +51,14 @@ def service_candidates(host, port, timeout):
     import ipaddress
     result = []
     for address in info.parsed_scoped_addresses(IPVersion.All):
-        ip = ipaddress.ip_address(address.split('%')[0])
-        if ip.version == 6 and ip.is_link_local and '%' not in address: continue
-        result.extend(socket.getaddrinfo(address, port, socket.AF_UNSPEC, socket.SOCK_STREAM, 0, socket.AI_NUMERICHOST))
+        try:
+            ip = ipaddress.ip_address(address.split('%')[0])
+            if ip.version == 6 and ip.is_link_local and '%' not in address: continue
+            result.extend(socket.getaddrinfo(address, port, socket.AF_UNSPEC, socket.SOCK_STREAM, 0, socket.AI_NUMERICHOST))
+        except (OSError, ValueError):
+            # A stale/unusable scoped address must not erase other families or
+            # interfaces advertised by the same enrolled service.
+            continue
     return result
 
 

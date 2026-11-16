@@ -96,6 +96,46 @@ with page hits, source bytes, replica outcomes and observed address families.
 Scientific applications must separately qualify their mapped representation
 and private-memory budgets before dispatching production work.
 
+The native data service in `native/swarm-memory` provides the same immutable
+object files through libfuse3. C++ owns page reads, SHA-256 validation, raw binary
+mTLS transfers, persistent connections, compact peer inventories and one O(1)
+LRU cache shared by every configured object and donated page. Source misses are
+coalesced into at most 256 KiB transfers. The default payload budget is 256 MiB;
+metadata, bounded in-flight buffers and reclaimable kernel mapping pages are
+additional. Python's `swarm_memory_control.py` only refreshes enrolled DNS-SD /
+AF_UNSPEC route metadata and supervises the process. IPv6 scopes are preserved;
+MPTCP-capable sockets retain ordinary TCP compatibility. Socket support alone
+is not evidence of negotiated multipath subflows.
+
+Build with CMake and the libfuse3, OpenSSL and nlohmann-json development packages.
+For older fleet runtimes, build the supplied Dockerfile through
+`docker_utils.policy.build_image`, then extract `/build/swarm-memory` and
+`/build/swarm-memory-cache-test`. `scripts.deploy_swarm_memory_native` accepts
+`--publication`, `--binary`, repeated enrolled `--node` names, `--output` and
+`--python-dependency` for each pure Python discovery wheel. Resolve those wheels
+with `python -m scripts.build_swarm_memory_discovery --output /tmp/memory-wheels`.
+This builds a current Python 3.10-compatible zeroconf without native extensions,
+checks that the wheel contains no native binaries and corrects its platform
+tag. Downloading only pre-existing platform-independent wheels can select an
+obsolete zeroconf with broken dual-stack initialization. The immutable release
+carries the exact wheels explicitly.
+An optional `--runtime-library libfuse3.so.3` (with its adjacent `.copyright`)
+provides the FUSE library on hosts that already have a mount helper but lack
+the shared library. `--install-node` updates selected participants while retaining
+other verified records. It installs new immutable mounts, preserving existing
+workers' mounts. Native
+peers use an authenticated dual-stack listener on port 9450 by default. One
+service can mount several objects under a shared budget; the deployment helper
+currently installs one publication. A second native service needs a distinct
+port and budget until existing consumers are drained. Installation alone does
+not mark a node ready: use `tests/swarm_memory_live.py` for container reads and
+`tests/native_swarm_memory_live.py` for peer-only and real IPv6 qualification.
+`tests/native_swarm_memory_remote_live.py` checks the reverse peer path from an
+enrolled remote execution environment.
+`tests/test_native_swarm_memory.py` exercises actual host FUSE, concurrent cache
+eviction, corrupt data, certificate pins, binary admission and address-family
+fallback. Run checks through `run.run_logged_test` to retain matching evidence.
+
 Each updated node has one bounded RAM cache keeper, managed by its agent through
 controller-signed `resource.cache.*` operations. Immutable object sets live in
 separate directories of one Docker tmpfs volume. Jobs mount only their required

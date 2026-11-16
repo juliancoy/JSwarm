@@ -165,3 +165,45 @@ def test_actual_fuse_mmap_peer_only_reads_and_binary_admission(environment,tmp_p
             try:p.wait(timeout=15)
             except subprocess.TimeoutExpired:p.kill();p.wait();raise
         for log in logs:log.close()
+
+
+def test_refused_addresses_fail_without_waiting_out_connect_deadline(environment):
+    env=environment;root=env['roots']['a.local'];config=json.loads((root/'config.json').read_text())
+    config['port']=port();(root/'config.json').write_text(json.dumps(config))
+    started=time.monotonic();result=run_read(env)
+    assert result.returncode!=0 and b'Page unavailable' in result.stderr
+    assert time.monotonic()-started<2.5
+
+
+def test_discovery_failure_does_not_terminate_independent_nss_route(environment,tmp_path,monkeypatch):
+    from scripts import swarm_memory_control as control
+    env=environment;path,config=env['configs']['a.local']
+    monkeypatch.setattr(control,'service_candidates',lambda *a:(_ for _ in ()).throw(ModuleNotFoundError('fixture missing DNS-SD')))
+    monkeypatch.setattr(control.socket,'getaddrinfo',lambda *a:[(socket.AF_INET6,socket.SOCK_STREAM,0,'',('fe80::1',9448,0,9))])
+    binary=tmp_path/'child'
+    binary.write_text('#!'+sys.executable+'\nimport json,sys\nfrom pathlib import Path\nc=json.loads(Path(sys.argv[2]).read_text()); s=json.loads(Path(c["discovery"]).read_text()); assert s["hosts"]["origin.local"][0]["scope"]==9; assert "origin.local:dns-sd" in s["errors"]\n')
+    binary.chmod(0o700)
+    assert control.supervise(path,binary)==0
+
+
+def test_unusable_scoped_discovery_address_keeps_viable_other_family(monkeypatch):
+    from scripts import swarm_immutable_read as module,launcher_discovery
+    class Info:
+        port=8790;server='peer.local.'
+        properties={b'node':b'peer.local',b'protocol':b'lifetech-launcher.v1'}
+        def parsed_scoped_addresses(self,version):return ['fe80::1%unavailable','127.0.0.1']
+    class Discovery:
+        def get_service_info(self,*a,**kw):return Info()
+    class Signature:
+        def read_text(self):return 'fixture'
+    monkeypatch.setattr(launcher_discovery,'network_signature',lambda:())
+    monkeypatch.setattr(module,'Path',lambda *a:Signature())
+    monkeypatch.setattr(module,'_DISCOVERY',Discovery())
+    monkeypatch.setattr(module,'_DISCOVERY_NETWORK',((),'fixture'))
+    original=socket.getaddrinfo
+    def resolve(address,*args):
+        if address.startswith('fe80:'):raise OSError('Address family for hostname not supported')
+        return original(address,*args)
+    monkeypatch.setattr(module.socket,'getaddrinfo',resolve)
+    rows=module.service_candidates('peer.local',9450,1)
+    assert len(rows)==1 and rows[0][0]==socket.AF_INET and rows[0][4]==('127.0.0.1',9450)
