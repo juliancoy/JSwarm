@@ -7,6 +7,8 @@ import errno
 import hashlib
 import json
 import os
+import queue
+import threading
 from pathlib import Path
 import sys
 import time
@@ -25,6 +27,15 @@ class Client:
         self.cache = cache or ram_cache(16*1024**2)
         self.cooldown = {}
         self.immutable_stats = {}
+        self.peer_miss_until = {}
+        self.publish_queue = None
+        self.publish_guard = threading.Lock()
+        self.immutable_reader = None
+        if settings.get('immutable_bulk_files'):
+            from scripts.swarm_immutable_read import Reader
+            if set(settings['immutable_bulk_files'])-set(settings.get('immutable_files',{})):
+                raise ValueError('Bulk ranges require pinned immutable file versions')
+            self.immutable_reader=Reader(settings['immutable_bulk_files'])
         self.counters = {'local_hits': 0, 'peer_hits': 0, 'origin_reads': 0, 'durable_writes': 0, 'peer_errors': 0, 'peer_misses': 0, 'peer_admission_failures': 0}
 
     def call(self, node, operation, *, timeout=None, **args):
@@ -69,10 +80,79 @@ class Client:
             raise OSError(errno.EROFS,'Pinned reference is read-only')
         return {'direct_io':not immutable,'keep_cache':immutable}
 
+    def publish_immutable(self,key,data):
+        # A peer replica must never hold a page fault open. Bound queued RAM to
+        # 64 small pages and reuse one publisher for the node filesystem client.
+        with self.publish_guard:
+            if self.publish_queue is None:
+                self.publish_queue=queue.Queue(maxsize=64)
+                threading.Thread(target=self._publish_immutable,daemon=True,name='filesystem-peer-publish').start()
+        try:self.publish_queue.put_nowait((key,data))
+        except queue.Full:pass
+
+    def _publish_immutable(self):
+        while True:
+            key,data=self.publish_queue.get()
+            try:
+                for peer in self.settings.get('peers',[]):
+                    if self.cooldown.get(peer,0)>time.monotonic():continue
+                    try:
+                        row=self.call(peer,'cache.put',timeout=1,key=key,length=len(data),data=base64.b64encode(data).decode())
+                        if row.get('stored'):break
+                        self.counters['peer_admission_failures']+=1
+                    except (OSError,RuntimeError,ValueError):
+                        self.cooldown[peer]=time.monotonic()+2
+            finally:self.publish_queue.task_done()
+
+    def read_immutable(self,path,size,offset,st):
+        from scripts.swarm_immutable_read import IntegrityError
+        page=16*1024;stop=min(st['st_size'],offset+size);result=bytearray()
+        revision=st['version']+':page16k'
+        while offset<stop:
+            start=offset//page*page;length=min(page,st['st_size']-start)
+            key=block_key(self.settings['namespace'],path,revision,start)
+            data=self.cache.lookup(key,length,0)
+            if data is not None:
+                self.counters['local_hits']+=1
+            else:
+                for peer in self.settings.get('peers',[]):
+                    if max(self.cooldown.get(peer,0),self.peer_miss_until.get(peer,0))>time.monotonic():continue
+                    try:
+                        row=self.call(peer,'cache.get',timeout=.5,key=key,length=length)
+                        if row['data'] is not None:
+                            data=base64.b64decode(row['data'],validate=True)
+                            if len(data)!=length:raise ValueError('Peer immutable page length differs')
+                            self.counters['peer_hits']+=1;break
+                        self.counters['peer_misses']+=1
+                        self.peer_miss_until[peer]=time.monotonic()+30
+                    except (OSError,RuntimeError,ValueError):self.cooldown[peer]=time.monotonic()+2
+                if data is None:
+                    end=min(st['st_size'],((stop+page-1)//page)*page,start+BLOCK)
+                    try:blob=self.immutable_reader.read(path,start,end-start)
+                    except IntegrityError:raise
+                    except (OSError,RuntimeError):
+                        row=self.origin('read',path=path,version=st['version'],offset=start,length=end-start)
+                        blob=base64.b64decode(row['data'],validate=True)
+                        if len(blob)!=end-start or hashlib.sha256(blob).hexdigest()!=row['sha256']:raise OSError(errno.EIO,'Immutable origin verification failed')
+                    self.counters['origin_reads']+=1
+                    # One coalesced range fills the same shared 16KiB page keys.
+                    for position in range(start,end,page):
+                        part=blob[position-start:position-start+page]
+                        part_key=block_key(self.settings['namespace'],path,revision,position)
+                        self.cache.block(part_key,len(part),0,lambda *_,part=part:part)
+                        self.publish_immutable(part_key,part)
+                    data=blob[:length]
+                else:self.cache.block(key,length,0,lambda *_:data)
+            count=min(stop-offset,len(data)-(offset-start))
+            result.extend(data[offset-start:offset-start+count]);offset+=count
+        return bytes(result)
+
     def read(self, path, size, offset):
         immutable=path in self.settings.get('immutable_files',{})
         st = self.immutable_stats.get(path) if immutable else None
         if st is None:st=self.stat(path)
+        if immutable and self.immutable_reader is not None and path in self.settings.get('immutable_bulk_files',{}):
+            return self.read_immutable(path,size,offset,st)
         block_size=16*1024 if immutable else BLOCK
         stop = min(st['st_size'], offset+size)
         result = bytearray()

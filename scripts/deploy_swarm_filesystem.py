@@ -14,7 +14,7 @@ from scripts.launcher_discovery import resolve_endpoint, attest_addresses
 
 PLAN = Path.home()/'.config/map-master/filesystem-plan.json'
 FILES = ('scripts/__init__.py', 'scripts/swarm_filesystem.py', 'scripts/swarm_fs_mount.py',
-         'scripts/run_input_cache.py', 'scripts/launcher_discovery.py',
+         'scripts/run_input_cache.py', 'scripts/swarm_immutable_read.py', 'scripts/launcher_discovery.py',
          'swarm-control/server/agent_client.py', 'scripts/swarm_host_service.py')
 
 INSTALL = r'''
