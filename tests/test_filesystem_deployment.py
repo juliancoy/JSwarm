@@ -37,3 +37,17 @@ def test_ssh_owner_command_uses_enrolled_mdns_and_literal_code():
     assert args[-2]=='codecollective@codecollective.local'
     assert shlex.split(args[-1])==['python3','-c',code]
     with pytest.raises(ValueError):ssh_command('unknown.local',code,plan,enrolled)
+
+
+def test_standard_snapshot_contains_every_filesystem_runtime_dependency(tmp_path):
+    from deployment_components import snapshot,deploy
+    from scripts.deploy_swarm_filesystem import FILES
+    root=Path(__file__).resolve().parents[1]
+    component=snapshot(root)['private-filesystem']
+    assert set(FILES)<=set(component['files'])
+    # Import/run the frozen component with no private plan, so deployment stays
+    # local and does not contact fleet nodes or use the developer checkout.
+    import subprocess
+    from unittest.mock import patch
+    with patch.dict(os.environ,{'HOME':str(tmp_path)}):
+        assert deploy(component,[])=={}

@@ -16,6 +16,7 @@ FILES=('scripts/__init__.py','scripts/launcher_discovery.py','scripts/swarm_page
 
 FILESYSTEM_FILES=tuple(dict.fromkeys((*FILES, 'scripts/deploy_swarm_filesystem.py',
     'scripts/swarm_filesystem.py','scripts/swarm_fs_mount.py','scripts/run_input_cache.py',
+    'scripts/swarm_immutable_read.py',
     'scripts/launcher_discovery.py','scripts/swarm_host_service.py')))
 
 
