@@ -53,8 +53,22 @@ class Client:
 
     def origin(self, operation, **args):return self.call(self.settings['origin'], operation, **args)
 
+    def stat(self, path):
+        row=self.origin('stat',path=path)
+        expected=self.settings.get('immutable_files',{}).get(path)
+        if expected is not None and (row['version']!=expected or row['st_mode'] & 0o222):
+            raise OSError(errno.ESTALE,'Pinned immutable file changed')
+        return row
+
+    def open_flags(self, path, flags):
+        self.stat(path)
+        immutable=path in self.settings.get('immutable_files',{})
+        if immutable and flags & os.O_ACCMODE != os.O_RDONLY:
+            raise OSError(errno.EROFS,'Pinned reference is read-only')
+        return {'direct_io':not immutable,'keep_cache':immutable}
+
     def read(self, path, size, offset):
-        st = self.origin('stat', path=path)
+        st = self.stat(path)
         stop = min(st['st_size'], offset+size)
         result = bytearray()
         while offset < stop:
@@ -186,17 +200,22 @@ def mount(settings, mountpoint, foreground=False):
         def statfs(self, path):return client.origin('statfs')
         @checked
         def getattr(self, path, fh=None):
-            row = client.origin('stat', path=path)
+            row = client.stat(path)
             row['st_uid'] = os.getuid();row['st_gid'] = os.getgid()
             return row
         @checked
         def readdir(self, path, fh):return ['.', '..', *client.origin('list', path=path)['names']]
         @checked
-        def open(self, path, flags):
-            if flags & os.O_APPEND:raise OSError(errno.EOPNOTSUPP, 'Atomic append is not supported')
-            client.origin('stat', path=path);return 0
+        def open(self, path, fi):
+            if fi.flags & os.O_APPEND:raise OSError(errno.EOPNOTSUPP, 'Atomic append is not supported')
+            policy=client.open_flags(path,fi.flags)
+            fi.direct_io=policy['direct_io'];fi.keep_cache=policy['keep_cache'];fi.fh=0
+            return 0
         @checked
-        def create(self, path, mode, fi=None):client.origin('create', path=path);return 0
+        def create(self, path, mode, fi=None):
+            client.origin('create', path=path)
+            if fi is not None:fi.direct_io=True;fi.keep_cache=False;fi.fh=0
+            return 0
         @checked
         def read(self, path, size, offset, fh):return client.read(path, size, offset)
         @checked
@@ -218,7 +237,7 @@ def mount(settings, mountpoint, foreground=False):
         def flush(self, path, fh):return 0
         def fsync(self, path, datasync, fh):return 0  # Every write already fsyncs at origin.
     FUSE(Files(), str(mountpoint), foreground=foreground, nothreads=True,
-         attr_timeout=0, entry_timeout=0, negative_timeout=0, direct_io=True,
+         attr_timeout=0, entry_timeout=0, negative_timeout=0, raw_fi=True,
          fsname='swarm-'+settings['namespace'], default_permissions=True,
          allow_root=settings.get('allow_root', True))
 

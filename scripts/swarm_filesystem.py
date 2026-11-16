@@ -115,6 +115,15 @@ class Filesystem:
         finally:os.close(fd)
 
     def operation(self, settings, op, args):
+        # Registered immutable references may be kernel-mapped by readers.
+        # Fence all mutations, including renaming a containing directory.
+        if op in ('write','truncate','create','chmod','unlink','rmdir','rename'):
+            for target in (args.get('path'),args.get('destination')):
+                if not isinstance(target,str):continue
+                target='/'+target.strip('/')
+                if any(path==target or path.startswith(target.rstrip('/')+'/')
+                       for path in settings.get('immutable_files',{})):
+                    raise OSError(errno.EROFS,'Pinned immutable reference cannot be mutated')
         if op == 'mount.status':
             import subprocess
             path = Path.home()/'SwarmDNA'

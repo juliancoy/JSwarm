@@ -229,3 +229,35 @@ def test_optional_peer_timeout_budget_preserves_origin_reads(fs, tmp_path, monke
     assert client.read('/available',len(data),0)==data
     assert attempts==[('blocked.local',3)]
     assert client.counters['origin_reads']==1 and client.counters['peer_errors']==1
+
+
+def test_pinned_reference_open_is_mappable_and_normal_files_keep_direct_io(fs,tmp_path):
+    root,settings,service,call=fs
+    path=root/'reference';path.write_bytes(b'reference');path.chmod(0o444)
+    version=call('stat',path='/reference')['version'];settings['immutable_files']={'/reference':version}
+    client=Client(settings,cache=InputCache(tmp_path/'client-ram',budget=BLOCK,reserve=0))
+    client.origin=lambda operation,**args:call(operation,**args)
+    assert client.open_flags('/reference',os.O_RDONLY)=={'direct_io':False,'keep_cache':True}
+    with pytest.raises(OSError) as error:client.open_flags('/reference',os.O_RDWR)
+    assert error.value.errno==errno.EROFS
+    (root/'ordinary').write_bytes(b'ordinary')
+    assert client.open_flags('/ordinary',os.O_RDONLY)=={'direct_io':True,'keep_cache':False}
+    path.chmod(0o600)
+    with pytest.raises(OSError) as error:client.stat('/reference')
+    assert error.value.errno==errno.ESTALE
+
+
+@pytest.mark.parametrize('operation,args',[
+    ('write',{'path':'/pinned/reference','data':'AA==','offset':0}),
+    ('truncate',{'path':'/pinned/reference','size':0}),
+    ('chmod',{'path':'/pinned/reference','mode':0o600}),
+    ('rename',{'path':'/pinned','destination':'/moved'}),
+    ('rename',{'path':'/ordinary','destination':'/pinned'}),
+    ('unlink',{'path':'/pinned/reference'}),
+])
+def test_pinned_reference_and_ancestors_cannot_be_mutated(fs,operation,args):
+    root,settings,service,call=fs
+    settings['immutable_files']={'/pinned/reference':'a'*64}
+    service.config.write_text(json.dumps(settings))
+    with pytest.raises(OSError) as error:call(operation,**args)
+    assert error.value.errno==errno.EROFS
