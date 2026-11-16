@@ -1,0 +1,12 @@
+FROM python:3.12-slim@sha256:05cda9777409a9c3ffddd94a4c476b79f0769a0b4857f0c7ed9226b6800b0d6f
+# Dependencies only. Organization and its sibling repositories are host mounts.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl openssl fuse3 libfuse2 libnss-mdns \
+    && rm -rf /var/lib/apt/lists/* \
+    && sed -i 's/^hosts:.*/hosts: files mdns_minimal [NOTFOUND=return] dns/' /etc/nsswitch.conf
+RUN pip install --no-cache-dir \
+    'mfusepy==3.1.1' 'cryptography>=43' 'zeroconf>=0.151,<1'
+RUN printf 'user_allow_other\n' > /etc/fuse.conf && ln -sf /usr/bin/fusermount3 /usr/bin/fusermount
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /workspace/Organization
+ENTRYPOINT ["python3"]
