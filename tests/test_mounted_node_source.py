@@ -188,6 +188,11 @@ def test_installer_migrates_only_node_and_preserves_enrollment(tmp_path,monkeypa
     assert config.read_bytes()==settings
     assert (config.parent/'agent-releases/current').resolve().name==revision
     assert bootstrap.read_text()==payload['supervisor_source']
+    assert (config.parent/'node-bootstrap/launcher_peer_supervisor.py').read_text()==payload['supervisor_source']
+    # Future source updates do not require access to the node's Docker daemon.
+    payload['supervisor_supports_source']=True
+    monkeypatch.setattr(installer,'owned_node',Mock(side_effect=AssertionError('Unexpected daemon access')))
+    installer.install(payload)
     assert not any('build' in call for call in calls)
 
 

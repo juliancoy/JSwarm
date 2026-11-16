@@ -78,7 +78,8 @@ while True:time.sleep(1)
         files.update({'launcher_peers.py':peer_source,'launcher_agent.py':Path(launcher_agent.__file__).read_text()})
         for n,v in files.items():(base/n).write_text(v)
         (base/'launcher_peer_supervisor.py').write_text(Path(launcher_peer_supervisor.__file__).read_text())
-        sandbox=subprocess.check_output(['docker','run','-d','--pull=never','--network','none','--memory','256m','--pids-limit','64',
+        sandbox=subprocess.check_output(['docker','run','-d','--pull=never','--network','none','--memory','256m','--pids-limit','64','--user',str(os.getuid())+':'+str(os.getgid()),
+            '--group-add',str(Path('/var/run/docker.sock').stat().st_gid),
             '--mount','type=bind,src='+str(tmp_path)+',dst=/fixture',
             '--mount','type=bind,src=/usr/bin/docker,dst=/usr/local/bin/docker,readonly',
             '--mount','type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock',

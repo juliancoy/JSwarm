@@ -74,13 +74,20 @@ def install(payload):
                         'launcher_agent.py','launcher_registry.py'):
             raise ValueError('Unexpected node source file')
         if (project/name).read_text()!=content:raise ValueError('Source differs from publication')
-    docker,container,bootstrap=owned_node(config)
-    # Never modify an immutable managed checkout, including a supervisor started
-    # there by a custom host runner. Standard bootstrap lives outside node-source.
-    if bootstrap.resolve().is_relative_to((config.parent/'node-source').resolve()):
-        raise RuntimeError('Standard supervisor bootstrap must be outside managed source')
-    temporary=bootstrap.with_suffix('.update.tmp')
-    temporary.write_text(supervisor);temporary.chmod(bootstrap.stat().st_mode & 0o777);temporary.replace(bootstrap)
+    bootstrap=config.parent/'node-bootstrap/launcher_peer_supervisor.py'
+    bootstrap.parent.mkdir(exist_ok=True,mode=0o700)
+    targets=[bootstrap]
+    docker=container=None
+    if not payload['supervisor_supports_source'] or not bootstrap.is_file():
+        docker,container,entry=owned_node(config)
+        if entry.resolve().is_relative_to((config.parent/'node-source').resolve()):
+            raise RuntimeError('Standard supervisor bootstrap must be outside managed source')
+        targets.append(entry)
+    # Once migrated, the enrolled owner can update the mounted bootstrap without
+    # access to the node daemon; worker jobs may use a separate rootless daemon.
+    for target in targets:
+        temporary=target.with_suffix('.update.tmp')
+        temporary.write_text(supervisor);temporary.chmod(0o600);temporary.replace(target)
     namespace['stage_source'](source['repositories'],config,payload['revision'])
     if not payload['supervisor_supports_source']:
         # One-time migration of the old supervisor. Only the node container is

@@ -52,8 +52,10 @@ dependency image; a source rollout does not install packages or silently build.
 
 The first rollout from the old supervisor verifies its actual host source
 bind mount and persistent configuration bind mount, installs the new bootstrap,
-and restarts only the enrolled `swarm-node` container. Later bootstrap changes
-reload the supervisor automatically. A node without these mounts is rejected
+and restarts only the enrolled `swarm-node` container. The runner then executes the bootstrap from
+`node-bootstrap/` in the configuration volume. Later updates replace that file
+and reload the supervisor automatically, even when workers use a separate rootless
+Docker daemon. A node without these mounts is rejected
 before activation and must be recreated using the standard runner. Legacy native
 or custom runners need migration to that mounted container layout.
 

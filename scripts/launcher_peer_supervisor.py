@@ -101,6 +101,9 @@ def main():
     bootstrap=Path(__file__).resolve()
     bootstrap_digest=hashlib.sha256(bootstrap.read_bytes()).digest() if bootstrap.is_file() else None
     config=Path(os.environ.get('LIFETECH_PEER_CONFIG',str(Path.home()/'.config/lifetech-launcher/peers.json')))
+    mounted_bootstrap=config.parent/'node-bootstrap/launcher_peer_supervisor.py'
+    if mounted_bootstrap.is_file() and mounted_bootstrap.resolve()!=bootstrap:
+        os.execv(sys.executable,[sys.executable,'-B',str(mounted_bootstrap),'--prefix',args.prefix])
     singleton=(config.parent/'launcher-supervisor.lock').open('a+')
     if os.geteuid()==0:os.fchown(singleton.fileno(),config.parent.stat().st_uid,config.parent.stat().st_gid)
     try:fcntl.flock(singleton,fcntl.LOCK_EX|fcntl.LOCK_NB)

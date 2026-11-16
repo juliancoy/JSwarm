@@ -135,6 +135,7 @@ def stage_source(repositories, config, revision):
     if current.is_symlink() and (current.resolve()/'source.json').is_file():
         pending=releases/'previous.tmp';pending.unlink(missing_ok=True)
         pending.symlink_to(os.readlink(current));pending.replace(releases/'previous')
+    else:(releases/'previous').unlink(missing_ok=True)
     pending=releases/'current.tmp';pending.unlink(missing_ok=True)
     pending.symlink_to(revision);pending.replace(current)
     return root
