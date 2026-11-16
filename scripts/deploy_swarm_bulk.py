@@ -52,7 +52,7 @@ pending=descriptor.with_suffix('.tmp');pending.write_text(json.dumps(metadata));
 pending=root/'current.tmp';pending.unlink(missing_ok=True);pending.symlink_to(release);pending.replace(root/'current')
 unit=pathlib.Path.home()/'.config/systemd/user/lifetech-bulk-https.service';unit.parent.mkdir(parents=True,exist_ok=True)
 old_unit=unit.read_text() if unit.exists() else None
-unit.write_text('[Unit]\nDescription=Enrolled mutual TLS bulk data transport\nAfter=network-online.target\n[Service]\nExecStart=/usr/bin/python3 '+str(root/'current/transfer.py')+' serve --bind '+p['config'].get('bind','0.0.0.0')+' --port '+str(p['config']['port'])+' --manifest '+str(root/'objects')+' --ca '+str(root/'ca.crt')+' --cert '+str(root/'identity.crt')+' --key '+str(root/'identity.key')+'\nUMask=0077\nNoNewPrivileges=true\nRestart=on-failure\nRestartSec=10\n[Install]\nWantedBy=default.target\n')
+unit.write_text('[Unit]\nDescription=Enrolled mutual TLS bulk data transport\nAfter=network-online.target\n[Service]\nExecStart=/usr/bin/python3 '+str(root/'current/transfer.py')+' serve --bind '+p['config'].get('bind','::')+' --port '+str(p['config']['port'])+' --manifest '+str(root/'objects')+' --ca '+str(root/'ca.crt')+' --cert '+str(root/'identity.crt')+' --key '+str(root/'identity.key')+'\nUMask=0077\nNoNewPrivileges=true\nRestart=on-failure\nRestartSec=10\n[Install]\nWantedBy=default.target\n')
 systemctl('daemon-reload',check=True)
 if old_unit is not None and old_unit!=unit.read_text():systemctl('restart',unit.name,check=True)
 # Reload this data-only service at an idle point when code/certificates renew.
@@ -130,7 +130,7 @@ def deploy():
     files={'transfer.py':(ROOT/'scripts/swarm_tls_transfer.py').read_text(),'bulk.py':(ROOT/'scripts/swarm_bulk.py').read_text(),'stream_verify.py':(ROOT/'scripts/swarm_stream_verify.py').read_text()}
     installed=[]
     for name,node in nodes.items():
-        config={'name':name,'machine':node['machine'],'address':node['address'],'bind':'0.0.0.0','port':9448,'min_bytes':64*1024**2,'peers':peers}
+        config={'name':name,'machine':node['machine'],'address':node['address'],'bind':'::','port':9448,'min_bytes':64*1024**2,'peers':peers}
         try:
             result=execute(node['host'],INSTALL,{'root':node['root'],'files':files,'config':config,'ca':(authority/'ca.crt').read_text(),'cert':node['cert'],'host_service':(Path(__file__).resolve().parent/'swarm_host_service.py').read_text()})
             installed.append(result);print(json.dumps(result),flush=True)

@@ -15,6 +15,7 @@ import re
 import secrets
 import shutil
 import ssl
+import socket
 import subprocess
 import time
 
@@ -171,7 +172,15 @@ def make_server(bind, port, manifest, cert, key, ca):
     context.verify_mode = ssl.CERT_REQUIRED
     if hasattr(ssl, 'OP_ENABLE_KTLS'):
         context.options |= ssl.OP_ENABLE_KTLS
-    server = ThreadingHTTPServer((bind, port), Handler)
+    server_type=ThreadingHTTPServer
+    if ':' in bind:
+        class DualStackServer(ThreadingHTTPServer):
+            address_family=socket.AF_INET6
+            def server_bind(self):
+                self.socket.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,0)
+                super().server_bind()
+        server_type=DualStackServer
+    server = server_type((bind, port), Handler)
     server.daemon_threads = True
     server.socket = context.wrap_socket(server.socket, server_side=True)
     return server

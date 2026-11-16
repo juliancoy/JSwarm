@@ -60,6 +60,21 @@ class TransferTests(unittest.TestCase):
         self.assertEqual(checked[-1],len(self.data))
         self.assertEqual(samples[-1][0][1],'complete')
 
+    def test_one_listener_serves_authenticated_ipv4_and_ipv6(self):
+        import socket
+        server=make_server('::',0,self.root/'objects.json',self.root/'server.crt',self.root/'server.key',self.root/'ca.crt')
+        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        try:
+            for address in ('::1','127.0.0.1'):
+                raw=socket.create_connection((address,server.server_port),timeout=3)
+                with self.context().wrap_socket(raw,server_hostname='discovered-peer.invalid') as stream:
+                    stream.sendall(b'GET /objects/sample HTTP/1.0\r\nHost: discovered-peer.invalid\r\nRange: bytes=0-15\r\n\r\n')
+                    response=bytearray()
+                    while block:=stream.recv(65536):response.extend(block)
+                    self.assertTrue(response.startswith(b'HTTP/1.1 206'))
+                    self.assertEqual(response.split(b'\r\n\r\n',1)[1],self.data[:16])
+        finally:server.shutdown();server.server_close();thread.join(timeout=3)
+
     def test_requires_client_certificate(self):
         with self.assertRaises(Exception):
             urllib.request.urlopen(self.url, context=self.context(False))
