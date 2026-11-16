@@ -35,3 +35,11 @@ def test_fixed_release_runs_read_only_source_instead_of_mutable_update_pointer()
     assert args[-1]=='/home/owner/agent/scripts/launcher_peers.py'
     assert 'type=bind,src=/home/owner/agent/scripts,dst=/home/owner/agent/scripts,readonly' in args
     assert unit().find('/home/owner/agent/scripts/launcher_peer_supervisor.py')>=0
+
+
+def test_cpu_reserve_defaults_to_one_and_can_be_disabled():
+    assert 'SWARM_RESERVED_CPUS=1' in unit()
+    assert 'SWARM_RESERVED_CPUS=0' in unit(reserved_cpus=0)
+    assert 'SWARM_RESERVED_CPUS=3' in unit(reserved_cpus=3)
+    for value in (-1,1.5,True):
+        with pytest.raises(ValueError,match='nonnegative integer'):unit(reserved_cpus=value)

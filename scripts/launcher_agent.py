@@ -359,7 +359,7 @@ def cpu_headroom(limits,active):
     physical=limits['cpus'];requested=sum(r['cpus'] for r in active)
     busy=limits.get('cpu_busy_fraction');pressure=limits.get('cpu_pressure_percent')
     if limits.get('cpu_admission_policy')=='timeshare':
-        measured=physical*busy if busy is not None else None
+        measured=limits.get('host_cpus',physical)*busy if busy is not None else None
         return {'available_cpus':physical,'reserved_cpus':requested,'charged_cpus':measured,
                 'cpu_admission_mode':'timeshare','cpu_quota_ceiling':None,'cpu_measured_busy':measured}
     if busy is None or pressure is None:
@@ -373,7 +373,7 @@ def cpu_headroom(limits,active):
             if now-sample.get('first',0)<10:pending+=max(0,row['cpus']-sample['used'])
             else:growth+=min(.1,row['cpus'])
         else:pending+=row['cpus']
-    measured=max(physical*busy,observed)
+    measured=max(limits.get('host_cpus',physical)*busy,observed)
     # CPU PSI is a trailing average and includes quota/affinity contention in
     # individual workloads. It must not strand an otherwise idle whole host.
     # Still stop lending early when host utilization corroborates contention.
@@ -507,10 +507,21 @@ class ResourceLease:
     def write(self):
         self.file.seek(0);self.file.truncate();json.dump(self.row,self.file);self.file.flush()
 
+    @staticmethod
+    def cpu_allocation():
+        """Leave the lowest allowed logical CPU IDs for host services."""
+        value=os.getenv('SWARM_RESERVED_CPUS','1')
+        if not re.fullmatch(r'[0-9]+',value):
+            raise ValueError('SWARM_RESERVED_CPUS must be a nonnegative integer')
+        ids=sorted(os.sched_getaffinity(0));reserved=min(int(value),len(ids))
+        workers=ids[reserved:]
+        return {'host_cpus':len(ids),'reserved_logical_cpus':reserved,
+                'cpus':len(workers),'cpuset_cpus':','.join(map(str,workers))}
+
     def capacity(self):
         if self.limits is not None:return self.limits
         memory={line.split(':',1)[0]:int(line.split()[1])//1024 for line in Path('/proc/meminfo').read_text().splitlines() if len(line.split())>=2 and line.split()[1].isdigit()}
-        limits={'cpus':max(1,len(os.sched_getaffinity(0))), 'memory_mb':max(0,memory['MemTotal']),
+        limits={**self.cpu_allocation(), 'memory_mb':max(0,memory['MemTotal']),
                 'available_mb':max(0,memory['MemAvailable'])}
         # Respect every finite cgroup ancestor, including the user/service slice
         # shared by rootless Docker. Reserve room for Docker and agent threads.
@@ -1941,7 +1952,7 @@ class Agent:
                     self.dispatch('filesystem.rpc', runtime.request(settings, 'status'))
                 except Exception as error:self.filesystem_error = str(error)[:200]
             threading.Thread(target=start_filesystem, daemon=True, name='node-filesystem').start()
-        self.stream_work=load_stream_runtime(stream_root).Engine(self,ResourceLease,worker_policy,state_root=stream_root)
+        self.stream_work=load_stream_runtime(stream_root).Engine(self,ResourceLease,worker_policy,state_root=stream_root,cpu_allocation=ResourceLease.cpu_allocation)
         from concurrent.futures import ThreadPoolExecutor
         self.control_executor=ThreadPoolExecutor(max_workers=max(2,min(4,os.cpu_count() or 2)),thread_name_prefix='launcher-control')
         directory=Path(os.getenv('SWARM_RESOURCE_DIR',str(self.root/'.resources')))
@@ -2544,7 +2555,7 @@ class Agent:
                     image=client.images.get('python:3.12-bookworm')
                     container=client.containers.run(image.id,['python','-c',GPU_SMOKE],detach=True,name=name,
                         network_mode='none',read_only=True,cap_drop=['ALL'],security_opt=['no-new-privileges'],
-                        mem_limit='512m',pids_limit=64,nano_cpus=1000000000,
+                        mem_limit='512m',pids_limit=64,nano_cpus=1000000000,cpuset_cpus=ResourceLease.cpu_allocation()['cpuset_cpus'],
                         device_requests=[docker.types.DeviceRequest(count=-1,capabilities=[['gpu']])])
                     try:
                         status=container.wait(timeout=40)
@@ -3036,7 +3047,7 @@ class Agent:
             image=client.images.get(args['image'])
             if image.id!=args['image']:raise ValueError('P2P requires immutable image ID')
             container=client.containers.run(image.id, ['/p2p/remote.py'],entrypoint='/usr/bin/python3',
-                detach=True,name='orgportal-test-'+ident+'-p2p',network_mode='host',nano_cpus=1500000000,
+                detach=True,name='orgportal-test-'+ident+'-p2p',network_mode='host',nano_cpus=1500000000,cpuset_cpus=ResourceLease.cpu_allocation()['cpuset_cpus'],
                 mem_limit='2g',pids_limit=512,user='1200:1201',shm_size='256m',cap_drop=['ALL'],
                 volumes={str(folder):{'bind':'/p2p','mode':'ro'}},environment={
                     'SE_OPTS':'--host 127.0.0.1 --port 4449','SE_START_VNC':'false','SE_START_NO_VNC':'false',

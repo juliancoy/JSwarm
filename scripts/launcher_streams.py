@@ -825,8 +825,9 @@ class Journal:
 
 class Engine:
     """Node-local admission and recovery; Docker workers survive launcher reloads."""
-    def __init__(self,agent,lease_factory,policy,start=True,state_root=None):
+    def __init__(self,agent,lease_factory,policy,start=True,state_root=None,cpu_allocation=None):
         worker_storage_policy(agent.config)
+        self.cpu_allocation=cpu_allocation
         self.agent=agent;self.lease_factory=lease_factory;self.policy=policy;self.root=Path(state_root or agent.root)/'.stream-work';self.root.mkdir(mode=0o700,exist_ok=True)
         self.store=Journal(self.root/'work.sqlite3');self.stopped=threading.Event();self.pending={};self.lock=threading.RLock();self.last_error=None
         self.stop_pool=concurrent.futures.ThreadPoolExecutor(max_workers=4,thread_name_prefix='stream-stop');self.stops={};self.maintenance_at=0
@@ -1137,6 +1138,10 @@ class Engine:
         atomic_json(folder/'job.json',job)
         args=['docker','run','-d','--pull=never','--name',row['container'],'--network','host','--read-only','--log-driver','none','--cpus',str(spec['resources']['cpus']),'--memory',str(spec['resources']['memory_mb']+gpu_host_memory_mb(definition.get('gpu')))+'m','--memory-swap',str(spec['resources']['memory_mb']+gpu_host_memory_mb(definition.get('gpu')))+'m','--pids-limit',str(max(32,spec['resources']['cpus']*4+16)),'--cap-drop','ALL','--security-opt','no-new-privileges','--user',self.worker_user(),'--tmpfs','/tmp:rw,nosuid,nodev,noexec,size='+str(max(1,spec['resources']['memory_mb']//8))+'m',
               '--label','org.lifetech.worker=true','--label','org.lifetech.job='+row['container'].removeprefix('swarm-job-'),'--label','org.lifetech.group=stream-work','--label','org.lifetech.stream-work='+row['id'],'--label','org.lifetech.stream-contract='+row['fingerprint'],'--label','org.lifetech.stream-attempt='+str(row['attempt']),'-e','PYTHONPATH=/runtime','-w','/work','--mount','type=bind,src='+self.host_path(folder)+',dst=/work','--mount','type=bind,src='+self.host_path(runtime)+',dst=/runtime/launcher_streams.py,readonly']
+        if self.cpu_allocation is not None:
+            allowed=self.cpu_allocation()['cpuset_cpus']
+            if not allowed:raise ValueError('All logical CPUs are reserved for the host')
+            args+=['--cpuset-cpus',allowed]
         if spec['resources'].get('memory_reservation_mb') or gpu_host_memory_mb(definition.get('gpu')):
             args+=['--memory-reservation',str(spec['resources'].get('memory_reservation_mb',spec['resources']['memory_mb'])+gpu_host_memory_mb(definition.get('gpu')))+'m']
         if ram:

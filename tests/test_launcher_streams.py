@@ -661,3 +661,18 @@ def test_cached_file_cleanup_waits_for_all_queued_jobs(engine):
     e.store.update('second',state='cancelled')
     e.release_job_cache(e.store.get('second'))
     assert not path.exists() and not path.with_suffix('.json').exists()
+
+
+def test_jobs_exclude_reserved_logical_cpus(engine):
+    engine.cpu_allocation=lambda:{'cpuset_cpus':'2,5,7'}
+    engine.dispatch('stream.submit',request());engine.tick()
+    argv=next(c for c in engine.commands if c[:2]==['docker','run'])
+    assert argv[argv.index('--cpuset-cpus')+1]=='2,5,7'
+
+
+def test_all_cpus_reserved_never_launches_unrestricted_container(engine):
+    engine.cpu_allocation=lambda:{'cpuset_cpus':''}
+    engine.dispatch('stream.submit',request())
+    with pytest.raises(ValueError,match='All logical CPUs'):
+        engine.launch(engine.store.get('piece-1'))
+    assert not any(c[:2]==['docker','run'] for c in engine.commands)

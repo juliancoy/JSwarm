@@ -6,7 +6,8 @@ import re
 import shlex
 
 
-def service(*, source, config, jobs, socket, image, uid, gid, socket_gid, hostname, gpus=False, worker_socket=None, fixed_release=False):
+def service(*, source, config, jobs, socket, image, uid, gid, socket_gid, hostname, gpus=False, worker_socket=None, fixed_release=False, reserved_cpus=1):
+    if type(reserved_cpus) is not int or reserved_cpus<0:raise ValueError('reserved_cpus must be a nonnegative integer')
     paths=[Path(value) for value in (source,config,jobs,socket)]
     if any(not path.is_absolute() or '..' in path.parts for path in paths):
         raise ValueError('Agent paths must be absolute and normalized')
@@ -31,7 +32,7 @@ def service(*, source, config, jobs, socket, image, uid, gid, socket_gid, hostna
     for path,readonly in ((source,True),(str(Path(config).parent),False),(jobs,False),(worker_socket,False),('/etc/machine-id',True)):
         args+=['--mount',f'type=bind,src={path},dst={path}'+(',readonly' if readonly else '')]
     for value in ('HOME='+home,'DOCKER_HOST=unix://'+worker_socket,'LIFETECH_PEER_CONFIG='+config,
-                  'LIFETECH_JOB_ROOT='+jobs,'PYTHONUNBUFFERED=1','PYTHONDONTWRITEBYTECODE=1'):
+                  'LIFETECH_JOB_ROOT='+jobs,'SWARM_RESERVED_CPUS='+str(reserved_cpus),'PYTHONUNBUFFERED=1','PYTHONDONTWRITEBYTECODE=1'):
         args+=['--env',value]
     if gpus:args+=['--gpus','all']
     entry='launcher_peers.py' if fixed_release else 'launcher_peer_supervisor.py'
@@ -51,6 +52,7 @@ def main():
     for name in ('uid','gid','socket-gid'):
         parser.add_argument('--'+name,type=int,required=True)
     parser.add_argument('--worker-socket',help='Keep worker jobs on their existing Docker daemon')
+    parser.add_argument('--reserved-cpus',type=int,default=1,help='Logical CPUs left for host services (default: 1; 0 disables)')
     parser.add_argument('--gpus',action='store_true')
     parser.add_argument('--fixed-release',action='store_true',help='Run the mounted source release directly; change it by replacing this service')
     print(service(**vars(parser.parse_args())),end='')
