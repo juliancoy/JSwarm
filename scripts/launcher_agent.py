@@ -1900,7 +1900,7 @@ class Agent:
         self.config = config
         self.instance_lock=launcher_lock(Path(config).parent/'launcher-agent.lock')
         folder=Path(__file__).resolve().parent
-        self.source_revision=hashlib.sha256(b''.join((folder/name).read_bytes() for name in ('launcher_peers.py','launcher_discovery.py','launcher_registration.py','launcher_agent.py','launcher_registry.py'))).hexdigest()
+        self.source_revision=os.environ.get('JSWARM_SOURCE_REVISION') or hashlib.sha256(b''.join((folder/name).read_bytes() for name in ('launcher_peers.py','launcher_discovery.py','launcher_registration.py','launcher_agent.py','launcher_registry.py'))).hexdigest()
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.lock = threading.RLock()

@@ -101,7 +101,8 @@ def pipeline_assets():
 def pipeline_web_root(config):
     """An owner-selected checkout supplies public UI files without a release bundle."""
     settings=json.loads(Path(config).read_text())
-    workspace=settings.get('web_workspace') or os.environ.get('SWARM_WEB_WORKSPACE') or os.environ.get('SWARM_WORKSPACE')
+    workspace=(os.environ.get('SWARM_WEB_WORKSPACE') if os.environ.get('JSWARM_SOURCE_REVISION') else None)
+    workspace=workspace or settings.get('web_workspace') or os.environ.get('SWARM_WEB_WORKSPACE') or os.environ.get('SWARM_WORKSPACE')
     if not workspace:return None
     root=Path(workspace)
     if not root.is_absolute() or not (root/'JSwarm/swarm-control/server/view').is_dir():
@@ -315,7 +316,7 @@ class Mesh:
         import hashlib
         folder = Path(__file__).resolve().parent
         self.config_revision = hashlib.sha256(json.dumps(self.peers,sort_keys=True).encode()).hexdigest()
-        self.source_revision = hashlib.sha256(b''.join((folder/name).read_bytes() for name in ('launcher_peers.py','launcher_discovery.py','launcher_registration.py','launcher_agent.py','launcher_registry.py'))).hexdigest()
+        self.source_revision = os.environ.get('JSWARM_SOURCE_REVISION') or hashlib.sha256(b''.join((folder/name).read_bytes() for name in ('launcher_peers.py','launcher_discovery.py','launcher_registration.py','launcher_agent.py','launcher_registry.py'))).hexdigest()
         if self.name not in self.peers or len(self.peers) > 24:
             raise ValueError('Mesh requires 1–24 enrolled launchers including this machine')
         self.cipher = AESGCM(bytes.fromhex(config['key']))
@@ -497,7 +498,7 @@ class Mesh:
                 if not readiness['ready']:raise RuntimeError('Agent execution capabilities are unavailable')
                 marker=Path('/tmp/launcher-agent-ready.json')
                 temporary=marker.with_suffix('.tmp')
-                temporary.write_text(json.dumps({'folder':str(Path(__file__).resolve().parent),'time':time.time()}));temporary.replace(marker)
+                temporary.write_text(json.dumps({'folder':os.environ.get('JSWARM_RELEASE_DIR',str(Path(__file__).resolve().parent)),'time':time.time()}));temporary.replace(marker)
             async with ClientSession(timeout=ClientTimeout(total=20), trust_env=False,
                                      connector=TCPConnector(socket_factory=transport_socket)) as session:
                 while not stopped.is_set():

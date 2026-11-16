@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -32,6 +33,9 @@ def startup_timeout(config):
 def verify_release(folder,releases):
     folder=folder.resolve()
     if folder.parent!=releases.resolve():raise ValueError('Agent release escapes release directory')
+    if (folder/'source.json').exists():
+        source_workspace(folder,releases,verify=True)
+        return folder
     manifest=json.loads((folder/'manifest.json').read_text())
     expected=('launcher_peers.py','launcher_discovery.py','launcher_registration.py','launcher_agent.py','launcher_registry.py')
     if set(manifest)!=set(expected):raise ValueError('Incomplete agent release')
@@ -46,13 +50,56 @@ def verify_release(folder,releases):
     return folder
 
 
+def source_workspace(folder, releases, *, verify=False):
+    """Resolve only a pinned checkout on the same persistent configuration mount."""
+    descriptor=json.loads((folder/'source.json').read_text())
+    repositories=descriptor['repositories']
+    if (descriptor.get('mode')!='mounted-v1' or descriptor.get('revision')!=folder.name
+            or set(repositories) not in ({'Organization','JSwarm','HarborGenetics'},
+                                         {'Organization','JSwarm','GenomeHarbor'})):
+        raise ValueError('Invalid mounted source descriptor')
+    identity=hashlib.sha256(json.dumps(repositories,sort_keys=True).encode()).hexdigest()
+    base=releases.parent/'node-source/mounted-workspaces'
+    workspace=(base/identity).resolve(strict=True)
+    if workspace.parent!=base.resolve():raise ValueError('Mounted source escapes configuration volume')
+    if verify:
+        for name,spec in repositories.items():
+            if not re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}',spec['commit']):
+                raise ValueError('Invalid source commit')
+            path=workspace if name=='Organization' else workspace/name
+            if path.is_symlink():raise ValueError('Source checkout must not be an alias')
+            def git(*args):
+                return subprocess.check_output(['git','-C',str(path),*args],text=True,
+                    stderr=subprocess.PIPE,timeout=30,env={**os.environ,'GIT_TERMINAL_PROMPT':'0'}).strip()
+            if git('rev-parse','HEAD')!=spec['commit'] or git('status','--porcelain','--untracked-files=all'):
+                raise ValueError('Mounted source checkout changed')
+        names=('launcher_peers.py','launcher_discovery.py','launcher_registration.py','launcher_agent.py','launcher_registry.py')
+        data=b''.join((workspace/'JSwarm/scripts'/name).read_bytes() for name in names)
+        if hashlib.sha256(data+json.dumps(repositories,sort_keys=True).encode()).hexdigest()!=folder.name:
+            raise ValueError('Mounted source revision mismatch')
+    return workspace
+
+
+def launch_source(folder,releases,python,prefix):
+    """Execute the actual Git source, with imports and web assets from that commit."""
+    root=source_workspace(folder,releases,verify=True)
+    project=root/'JSwarm'
+    env={**os.environ,'JSWARM_SOURCE_REVISION':folder.name,'JSWARM_RELEASE_DIR':str(folder),
+         'SWARM_WORKSPACE':str(root),'SWARM_WEB_WORKSPACE':str(root),'JSWARM_WORKSPACE':str(root),
+         'PYTHONDONTWRITEBYTECODE':'1',
+         'PYTHONPATH':os.pathsep.join(map(str,(project,root,project/'swarm-control/server',project/'ramtop')))}
+    return subprocess.Popen([python,'-B',str(project/'scripts/launcher_peers.py'),'--prefix',prefix],
+                            cwd=root,env=env)
+
+
 class ReleaseCache:
     """Recheck immutable release contents only when their file identity changes."""
     def __init__(self):self.signature=None;self.folder=None
 
     def verify(self,folder,releases):
         folder=folder.resolve()
-        names=('manifest.json','launcher_peers.py','launcher_discovery.py','launcher_registration.py','launcher_agent.py','launcher_registry.py')
+        names=(('source.json',) if (folder/'source.json').exists() else
+               ('manifest.json','launcher_peers.py','launcher_discovery.py','launcher_registration.py','launcher_agent.py','launcher_registry.py'))
         signature=(str(folder),tuple((name,*(getattr((folder/name).lstat(),field) for field in
                    ('st_dev','st_ino','st_size','st_mtime_ns','st_ctime_ns'))) for name in names))
         if signature!=self.signature:
@@ -66,6 +113,8 @@ def main():
     parser.add_argument('--prefix',default='lifetech-')
     args=parser.parse_args()
     base=Path(__file__).resolve().parent
+    bootstrap=Path(__file__).resolve()
+    bootstrap_digest=hashlib.sha256(bootstrap.read_bytes()).digest() if bootstrap.is_file() else None
     config=Path(os.environ.get('LIFETECH_PEER_CONFIG',str(Path.home()/'.config/lifetech-launcher/peers.json')))
     singleton=(config.parent/'launcher-supervisor.lock').open('a+')
     if os.geteuid()==0:os.fchown(singleton.fileno(),config.parent.stat().st_uid,config.parent.stat().st_gid)
@@ -103,11 +152,20 @@ def main():
         if folder!=base:verify_release(folder,releases)
         marker.unlink(missing_ok=True)
         drain.unlink(missing_ok=True)
+        if (folder/'source.json').exists():
+            return launch_source(folder,releases,sys.executable,args.prefix)
         return subprocess.Popen([sys.executable,'-B',str(folder/'launcher_peers.py'),'--prefix',args.prefix])
 
     try:
         while not stopped.is_set():
             try:
+                # The signed installer replaces this tiny bootstrap atomically.
+                # Reload it too, so supervisor fixes need no container rebuild.
+                if bootstrap_digest is not None and hashlib.sha256(bootstrap.read_bytes()).digest()!=bootstrap_digest:
+                    compile(bootstrap.read_bytes(),str(bootstrap),'exec')
+                    stop_child()
+                    singleton.close()
+                    os.execv(sys.executable,[sys.executable,'-B',str(bootstrap),'--prefix',args.prefix])
                 wanted=desired()
                 if wanted in rejected:wanted=active or base
                 if child is None:
@@ -145,13 +203,13 @@ def main():
                     drain.unlink(missing_ok=True)
                 status=Path('/tmp/launcher-agent-update.json')
                 temporary=status.with_suffix('.tmp')
-                temporary.write_text(json.dumps({'active':str(active),'desired':str(wanted),
+                temporary.write_text(json.dumps({'active':str(active),'desired':str(wanted),'source_runtime':'mounted-v1',
                                                 'phase':'starting' if pending else 'updating' if wanted!=active else 'ready',
                                                 'reason':'Declining new work before node replacement; existing Docker jobs continue' if wanted!=active and not pending else '',
                                                 'last_failure':last_failure,
                                                 'sampled_at':time.time(),'workers_survive_restart':bool(json.loads(busy.read_text()).get('workers_survive_restart')) if busy.exists() else False}))
                 temporary.replace(status)
-            except (OSError,ValueError,KeyError,TypeError) as error:
+            except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError) as error:
                 print('Agent update deferred: '+type(error).__name__,flush=True)
             stopped.wait(1)
     finally:

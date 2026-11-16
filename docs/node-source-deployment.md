@@ -5,6 +5,8 @@ Docker utilities and the monitor are read from host-backed source directories.
 `run.py` mounts the Organization checkout at its original path and read-only at
 `/opt/swarm-node`; job and configuration state keep their existing mounts.
 The original workspace mount remains writable for services that manage state there.
+The running agent uses its selected checkout under the configuration bind mount;
+the original checkout supplies only the bootstrap and local runner.
 
 `./build.sh` builds the dependency image. Launching or recreating the node checks
 an image label against the Dockerfile and resolved dependency requirements. It
@@ -16,39 +18,50 @@ build because they contain application code and lack the dependency fingerprint.
 
 ## Standard fleet update
 
-1. Commit and push the Organization, JSwarm and HarborGenetics changes to origins
-   reachable by every node. No deployment branches are needed.
-2. Run `python -m scripts.deploy_swarm_inputs --publish`. Validation exports the
-   exact recorded commits, excluding local edits and untracked data. The release
-   records all three origins and commit IDs, plus its Git installer, under the
-   existing publication integrity checks.
-3. Run `python -m scripts.swarm_node update` (optionally `--node NAME`). The
-   existing signed node command API fetches the pinned commits into dedicated
-   detached worktrees under the persistent config directory's `node-source/`.
-   Containers already mount this directory, so no image rebuild is required.
-4. Each node regenerates the existing checksummed agent runtime from its fetched
-   JSwarm and HarborGenetics source. It must exactly match the validated publication
-   before bootstrap files or active release pointers are changed. The supervisor
-   activates that runtime and the controller verifies readiness and revision.
+The controller owns validation, repository credentials, bundle preparation and
+rollout. Nodes need no GitHub access, build tools, deployment branches or manual
+update commands. They retain their enrolled identity, Docker, Python/Git runtime,
+a small supervisor, and persistent bind-mounted source and state directories.
 
-The generated runtime remains a small, immutable projection of the Git source:
-embedded streaming/command support, monitor sources and UI assets keep the
-existing native and container node protocols compatible. It is stored on the host
-configuration volume, rather than in a Docker layer. Docker workers keep running
-while the agent process is replaced. Existing rollback uses retained releases;
-it does not reset a developer checkout or rebuild an image.
+1. Commit the Organization, JSwarm and HarborGenetics changes on the controller.
+   Run `python -m scripts.deploy_swarm_inputs --publish`. Publication validates
+   those exact commits and then rolls out the selected release. Use
+   `--publish-only` to prepare a release without activating it.
+2. The controller delivers missing pinned Git objects over the existing enrolled
+   LAN transfer service. Mutually authenticated HTTPS is preferred, including for
+   small source bundles; the encrypted signed command channel remains a fallback.
+   No new Git server, node-side repository credential or Internet route is needed.
+   Transfers use enrolled hostnames and the existing IPv4/IPv6 discovery and
+   connection fallback. Source checksums and enrolled machine identity are checked.
+3. Each node imports the verified bundles with `git fetch` and checks out pinned
+   detached worktrees in the persistent configuration volume's `node-source/`.
+   Missing objects fail staging; nodes never fall back to Internet origins.
+4. Activation writes a small `source.json` descriptor and atomically switches
+   `agent-releases/current`. The supervisor executes `launcher_peers.py` directly
+   from that mounted Git checkout, with imports, monitor and web assets pointing
+   at the same workspace. No agent bundle is generated on the node.
+5. The controller verifies the running revision and readiness. The supervisor
+   restores the retained previous release if startup fails. Existing Docker job
+   containers remain running while the node agent is replaced.
 
-Git operations are noninteractive. Missing repository credentials, unreachable
-origins, missing commits or modified managed worktrees stop staging and leave
-running agents and jobs in place. Enrollment must supply Git access separately
-from controller signing credentials. Publications without Git provenance are rejected for deployment and rollback.
-Run `--publish` from committed source to replace an old desired publication. Old
-receipts are retained only for audit history and generation ordering. The updater
-does not bridge or restart legacy draining supervisors; recover an unsupported
-bootstrap with the normal local runner before retrying.
-Dependency changes require updating the dependency image on each container host
-using `./build.sh` and recreating its node container; fleet code updates do not
-silently rebuild Docker images or install Python packages.
+`git fetch` downloads objects; it does not change a checkout or loaded Python
+modules. The standard update command handles fetch, checkout selection and process
+replacement together. Code-only updates require neither an image build nor manual
+node intervention. Changes to dependencies still require provisioning the updated
+dependency image; a source rollout does not install packages or silently build.
+
+The first rollout from the old supervisor verifies its actual writable source
+bind mount and persistent configuration bind mount, installs the new bootstrap,
+and restarts only the enrolled `swarm-node` container. Later bootstrap changes
+reload the supervisor automatically. A node without these mounts is rejected
+before activation and must be recreated using the standard runner. Legacy native
+or custom runners need migration to that mounted container layout.
+
+Modified managed worktrees, corrupt transfers, unavailable pinned source or an
+identity mismatch leave the active release selected. Developer working trees are
+never reset, stashed or cleaned. Existing legacy publications remain readable and
+retain their original deployment/rollback path; new committed publications use
+mounted source. Rollback retains both Git checkouts and legacy runtime releases.
 
 ## Parallel updates
 
@@ -79,25 +92,11 @@ worker admission holds remain effective. Explicit WAN enrollment keeps its
 existing authenticated gateway path. Standard source publication and fleet update
 install this behavior without changing Avahi configuration or rebuilding images.
 
-## Private repository source mirrors
+## Private repository source
 
-When the enrolled node lacks GitHub credentials for Harbor Genetics, seed the
-published commit over its signed owner-command API before the normal rollout:
-
-```sh
-python -m scripts.seed_git_source_mirror --node julian-latitude.local
-python -m scripts.deploy_swarm_inputs --node julian-latitude.local
-```
-
-The controller makes a Git bundle from the exact published source commit. The
-node verifies the transfer SHA-256 and bundle head, stores the bundle with mode
-0600 under its private configuration, and fetches it into a local bare mirror.
-A repository-local URL rewrite lets the unchanged pinned installer fetch the
-GitHub origin from that mirror. The manifest retains its canonical GitHub URL
-and commit ID; all native source and runtime checksum checks still apply. No
-GitHub token or SSH private key is transferred. Refresh the mirror for each new
-private source commit. Previous mirrored commits remain available.
-
-This requires a responsive, enrolled signed command API. It does not authorize
-SSH fallback, restart an unavailable launcher, change worker policy, or activate
-a runtime. Launcher recovery remains a separate owner operation.
+All three repositories, including private HarborGenetics source, are delivered by
+the controller. GitHub credentials remain on the controller. The earlier manual
+`seed_git_source_mirror` step is unnecessary for mounted-source publications; it
+remains available for older publications only. Local cached commits require no
+transfer. Failed or interrupted delivery can be retried without selecting a new
+active release.

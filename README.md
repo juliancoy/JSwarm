@@ -150,8 +150,9 @@ contains runtime dependencies and is reused for code-only updates. See
 [Git source deployment](docs/node-source-deployment.md) for mount layout, Git
 access requirements, initial provisioning and dependency changes.
 
-Commit and push Organization, JSwarm and HarborGenetics to origins reachable by all
-nodes. From the Organization workspace:
+Commit Organization, JSwarm and HarborGenetics on the controller. Nodes receive
+pinned Git objects over the enrolled LAN transport and need no origin credentials
+or Internet access. From the Organization workspace:
 
 ```bash
 python -m scripts.deploy_swarm_inputs --publish
@@ -179,10 +180,12 @@ without either flag still updates nodes to the already published release.
 
 Publication validates committed snapshots and atomically selects the checksummed
 artifact at `~/.local/state/swarm-control/node-releases/desired`. The updater uses
-each enrolled node's signed owner-command API to fetch those exact commits into
-dedicated detached worktrees. Nodes regenerate the runtime from Git and verify it
-against the publication before activation. Local edits are excluded. Deployment
-requires Git provenance and does not fall back to SSH or source-only staging.
+the enrolled transfer service (preferably mutual HTTPS, with encrypted command
+pipes as fallback) to deliver Git bundles. Nodes fetch those local bundles into
+dedicated detached worktrees and execute the agent directly from the selected
+configuration-volume checkout. They do not regenerate runtime bundles or build
+images. Local edits are excluded; Git provenance, revision checks and rollback
+remain required. See the deployment guide for automatic bootstrap migration.
 
 The existing `swarm-input-deployment.service` follows the same publication and
 updates one enrolled machine at a time. Each node must report the target revision,

@@ -68,11 +68,21 @@ def check_publication(folder,expected):
 
 def require_git_source(source):
     """All deployable publications must carry validated Git provenance."""
-    if not isinstance(source,dict) or set(source)!={'repositories','installer'}:
+    if not isinstance(source,dict) or set(source) not in ({'repositories','installer'}, {'repositories','installer','mode','activation'}):
         raise ValueError('Git source provenance required; publish committed source with --publish')
     from scripts.node_git_source import validate
     validate(source['repositories'])
     compile(source['installer'],'node_git_source.py','exec')
+    if 'mode' in source:
+        if source['mode']!='mounted-v1':raise ValueError('Unsupported node source mode')
+        compile(source['activation'],'node_source_install.py','exec')
+
+
+def source_revision(files, git_source):
+    data=b''.join(files[name].encode() for name in FILES)
+    if git_source and git_source.get('mode')=='mounted-v1':
+        data+=json.dumps(git_source['repositories'],sort_keys=True).encode()
+    return hashlib.sha256(data).hexdigest()
 
 
 INSTALL = '''import hashlib,json,os,pathlib,runpy,sys,tempfile,subprocess
@@ -205,32 +215,35 @@ class LauncherUpdates:
             self.git_source={'repositories':repositories,'installer':(folder/'node_git_source.py').read_text()}
         self.supervisor_source=(folder/'launcher_peer_supervisor.py').read_text()
         self.files={name:(folder/name).read_text() for name in (*FILES,'launcher_update.py')}
-        import base64,gzip
-        view=Path(root)/'swarm-control/server/view'
-        assets={str(path.relative_to(view)):base64.b64encode(path.read_bytes()).decode() for path in view.rglob('*') if path.is_file()}
-        genome=(Path(root).parent if Path(root).name=='JSwarm' else Path(root))/'HarborGenetics/web'
-        assets.update({'genome/'+str(path.relative_to(genome)):base64.b64encode(path.read_bytes()).decode() for path in genome.rglob('*') if path.is_file()})
-        compressed=bytearray(gzip.compress(json.dumps(assets,sort_keys=True).encode(),compresslevel=9,mtime=0))
-        compressed[9]=255  # Python 3.12/3.13 differ in the default gzip OS header.
-        encoded=base64.b64encode(compressed).decode()
-        marker="if __name__=='__main__':main()"
-        self.files['launcher_peers.py']=self.files['launcher_peers.py'].replace(marker,'PIPELINE_ASSETS_B64 = '+repr(encoded)+'\n\n'+marker)
-        runtime=Path(root)/'ramtop/ramtop'
-        bundle=runpy.run_path(str(runtime/'bundle.py'))['encoded_runtime'](runtime)
-        self.files['launcher_agent.py'] += '\n# Built-in monitor source is covered by the existing atomic release checksum.\nPERFORMANCE_RUNTIME_B64 = '+repr(bundle)+'\n'
-        self.files['launcher_agent.py'] += '\n# Durable streaming runtime is part of this same verified launcher release.\nSTREAM_RUNTIME_SOURCE = '+repr((folder/'launcher_streams.py').read_text())+'\n'
-        self.files['launcher_agent.py'] += '\n# Durable streaming runtime is part of this same verified launcher release.\nCACHE_RUNTIME_SOURCE = '+repr((folder/'launcher_cache.py').read_text())+'\n'
-        self.files['launcher_agent.py'] += '\n# Signed command runtime shares this same verified release.\nCOMMAND_RUNTIME_SOURCE = '+repr((folder/'launcher_commands.py').read_text())+'\n'
-        filesystem = (folder/'swarm_filesystem.py').read_text() + '\nCACHE_SOURCE = ' + repr((folder/'run_input_cache.py').read_text()) + '\n' + "\nif __name__ == '__main__':\n    import sys\n    serve(sys.argv[2])\n"
-        self.files['launcher_agent.py'] += '\n# Writable filesystem and bounded RAM cache share the node release.\nFILESYSTEM_RUNTIME_SOURCE = '+repr(filesystem)+'\n'
-        self.files['launcher_agent.py'] += '\n# The supervisor version is part of the published release identity.\nSUPERVISOR_SHA256 = '+repr(hashlib.sha256(self.supervisor_source.encode()).hexdigest())+'\n'
+        if self.git_source is not None:
+            self.git_source.update(mode='mounted-v1',activation=(folder/'node_source_install.py').read_text())
+        else:
+            import base64,gzip
+            view=Path(root)/'swarm-control/server/view'
+            assets={str(path.relative_to(view)):base64.b64encode(path.read_bytes()).decode() for path in view.rglob('*') if path.is_file()}
+            genome=(Path(root).parent if Path(root).name=='JSwarm' else Path(root))/'HarborGenetics/web'
+            assets.update({'genome/'+str(path.relative_to(genome)):base64.b64encode(path.read_bytes()).decode() for path in genome.rglob('*') if path.is_file()})
+            compressed=bytearray(gzip.compress(json.dumps(assets,sort_keys=True).encode(),compresslevel=9,mtime=0))
+            compressed[9]=255  # Python 3.12/3.13 differ in the default gzip OS header.
+            encoded=base64.b64encode(compressed).decode()
+            marker="if __name__=='__main__':main()"
+            self.files['launcher_peers.py']=self.files['launcher_peers.py'].replace(marker,'PIPELINE_ASSETS_B64 = '+repr(encoded)+'\n\n'+marker)
+            runtime=Path(root)/'ramtop/ramtop'
+            bundle=runpy.run_path(str(runtime/'bundle.py'))['encoded_runtime'](runtime)
+            self.files['launcher_agent.py'] += '\n# Built-in monitor source is covered by the existing atomic release checksum.\nPERFORMANCE_RUNTIME_B64 = '+repr(bundle)+'\n'
+            self.files['launcher_agent.py'] += '\n# Durable streaming runtime is part of this same verified launcher release.\nSTREAM_RUNTIME_SOURCE = '+repr((folder/'launcher_streams.py').read_text())+'\n'
+            self.files['launcher_agent.py'] += '\n# Durable streaming runtime is part of this same verified launcher release.\nCACHE_RUNTIME_SOURCE = '+repr((folder/'launcher_cache.py').read_text())+'\n'
+            self.files['launcher_agent.py'] += '\n# Signed command runtime shares this same verified release.\nCOMMAND_RUNTIME_SOURCE = '+repr((folder/'launcher_commands.py').read_text())+'\n'
+            filesystem = (folder/'swarm_filesystem.py').read_text() + '\nCACHE_SOURCE = ' + repr((folder/'run_input_cache.py').read_text()) + '\n' + "\nif __name__ == '__main__':\n    import sys\n    serve(sys.argv[2])\n"
+            self.files['launcher_agent.py'] += '\n# Writable filesystem and bounded RAM cache share the node release.\nFILESYSTEM_RUNTIME_SOURCE = '+repr(filesystem)+'\n'
+            self.files['launcher_agent.py'] += '\n# The supervisor version is part of the published release identity.\nSUPERVISOR_SHA256 = '+repr(hashlib.sha256(self.supervisor_source.encode()).hexdigest())+'\n'
         self.capabilities=set()
         for node in ast.walk(ast.parse(self.files['launcher_agent.py'])):
             if isinstance(node,ast.Dict):
                 for key,value in zip(node.keys,node.values):
                     if isinstance(key,ast.Constant) and key.value=='capabilities' and isinstance(value,ast.List):
                         self.capabilities.update(item.value for item in value.elts if isinstance(item,ast.Constant) and isinstance(item.value,str))
-        self.revision=hashlib.sha256(b''.join(self.files[name].encode() for name in FILES)).hexdigest()
+        self.revision=source_revision(self.files,self.git_source)
         from deployment_components import snapshot
         self.components=snapshot(root)
 
@@ -251,7 +264,7 @@ class LauncherUpdates:
         if value.get('schema')!='jswarm-agent-release.v1':raise ValueError('Unsupported published release schema')
         files=value['files'];expected=set(FILES)|{'launcher_update.py'}
         if set(files)!=expected:raise ValueError('Incomplete published agent release')
-        revision=hashlib.sha256(b''.join(files[name].encode() for name in FILES)).hexdigest()
+        revision=source_revision(files,value.get('git_source'))
         if revision!=value['revision']:raise ValueError('Published agent release checksum mismatch')
         supervisor=value['supervisor_source']
         if hashlib.sha256(supervisor.encode()).hexdigest()!=value['supervisor_sha256']:raise ValueError('Published supervisor checksum mismatch')
@@ -428,7 +441,13 @@ class LauncherUpdates:
         if len(bytes.fromhex(public_key))!=32:raise ValueError('Invalid pinned controller key')
         payload={'supervisor_source':self.supervisor_source,'supervisor_sha256':hashlib.sha256(self.supervisor_source.encode()).hexdigest(),'machine':status['machine'],'node':status['node'],'revision':self.revision,'files':self.files,'controller_public_key':public_key,'peers':json.loads(CONFIG.read_text())['peers']}
         payload['git_source']=self.git_source
-        command=self.command(host,INSTALL,status=status)
+        if self.git_source.get('mode')=='mounted-v1':
+            from scripts.node_source_delivery import deliver
+            deliver(self,host,status)
+            payload['supervisor_supports_source']=status.get('update',{}).get('source_runtime')=='mounted-v1'
+            command=self.command(host,self.git_source['activation'],status=status)
+        else:
+            command=self.command(host,INSTALL,status=status)
         try:result=subprocess.run(command,input=json.dumps(payload),capture_output=True,text=True,timeout=600)
         except subprocess.TimeoutExpired:raise RuntimeError('Launcher staging timed out; existing jobs preserved and retry is safe') from None
         if result.returncode:
