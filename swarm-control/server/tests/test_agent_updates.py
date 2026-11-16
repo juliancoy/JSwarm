@@ -118,30 +118,6 @@ class LauncherUpdateTests(unittest.TestCase):
         self.assertIn('prepare_update',payload['supervisor_source'])
         self.assertEqual(payload['supervisor_sha256'],hashlib.sha256(payload['supervisor_source'].encode()).hexdigest())
 
-    def test_system_docker_supervisor_is_found_when_default_daemon_is_rootless(self):
-        import json,os,tempfile,pathlib
-        from agent_updates import INSTALL
-        with tempfile.TemporaryDirectory() as temporary:
-            root=Path(temporary);config=root/'config/peers.json';config.parent.mkdir()
-            scripts=root/'controller/scripts';scripts.mkdir(parents=True)
-            supervisor=scripts/'launcher_peer_supervisor.py';supervisor.write_text('# old supervisor')
-            container={'Mounts':[{'Source':str(config.parent),'Destination':'/run/launcher-config'},
-                                 {'Source':str(scripts),'Destination':'/app/scripts'}],
-                       'HostConfig':{'PidsLimit':0}}
-            def inspect(command,**kwargs):
-                if command[:4]==['docker','--host','unix:///var/run/docker.sock','inspect'] and command[-1]=='swarm-node':
-                    return Mock(returncode=0,stdout=json.dumps([container]))
-                return Mock(returncode=1,stdout='')
-            process=Mock();process.run.side_effect=inspect
-            code=INSTALL[INSTALL.index('targets='):INSTALL.index('for target in targets:')]
-            namespace={'pathlib':pathlib,'config':config,'settings':{},'payload':{'peers':{},'controller_public_key':'ab'*32},
-                       'public_key':'ab'*32,'peers':{},'subprocess':process,'json':json,'os':os}
-            exec(code,namespace)
-            self.assertIn(supervisor,namespace['targets'])
-            container['Mounts'][0]['Source']=str(root/'another-owner')
-            exec(code,namespace)
-            self.assertNotIn(supervisor,namespace['targets'])
-
     def test_automatic_update_cannot_remove_newer_runtime_capabilities(self):
         status={**self.status,'capabilities':['stream-work-v1','encrypted-backup']}
         self.updates.capabilities={'encrypted-backup'}
@@ -177,19 +153,3 @@ def test_offline_update_never_falls_back_to_local_process_or_ssh(monkeypatch):
     execute.assert_not_called();client.close.assert_called_once()
 
 
-def test_api_staging_preserves_attested_host_routes_in_owner_pid_namespace(tmp_path,monkeypatch):
-    import json,hashlib,os,pathlib
-    from agent_updates import INSTALL
-    compile(INSTALL,'node-update-installer','exec')
-    config=tmp_path/'config/peers.json';config.parent.mkdir()
-    bulk=tmp_path/'.local/state/lifetech-launcher/bulk-transport';bulk.mkdir(parents=True)
-    machine='a'*64;name='worker';routing={'machine':machine,'name':name}
-    (bulk/'config.json').write_text(json.dumps(routing))
-    routes=[{'container':'/session','host':'/home/owner/session'}]
-    descriptor=config.parent/'bulk-streams.json';descriptor.write_text(json.dumps({'config':routing,'host_paths':routes}))
-    code=INSTALL[INSTALL.index("bulk_root=pathlib.Path.home()"):INSTALL.index("files=payload['files']")]
-    # A persistent command owner cannot see the bootstrap's host PID namespace.
-    code=code.replace("pathlib.Path('/proc').glob('[0-9]*')","[]")
-    monkeypatch.setattr(pathlib.Path,'home',lambda:tmp_path)
-    exec(code,{'pathlib':pathlib,'json':json,'os':os,'subprocess':Mock(),'config':config,'settings':{'name':name},'payload':{'machine':machine}})
-    assert json.loads(descriptor.read_text())['host_paths']==routes

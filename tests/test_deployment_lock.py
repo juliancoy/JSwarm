@@ -96,7 +96,7 @@ def test_old_source_with_new_component_content_cannot_masquerade_as_a_new_versio
     first=source.publish(tmp_path)
     old=updates.LauncherUpdates.published(first,lambda:False,Mock())
     source.files['launcher_agent.py']+='\n# newer node source\n'
-    source.revision=hashlib.sha256(b''.join(source.files[name].encode() for name in updates.FILES)).hexdigest()
+    source.revision=updates.source_revision(source.files,source.git_source)
     second=source.publish(tmp_path)
     old.supervisor_source+='\n# different packaging cannot upgrade older node code\n'
     with pytest.raises(RuntimeError,match='Older source version'):old.publish(tmp_path)

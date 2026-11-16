@@ -191,7 +191,8 @@ def test_installer_migrates_only_node_and_preserves_enrollment(tmp_path,monkeypa
     assert not any('build' in call for call in calls)
 
 
-def test_owned_node_requires_actual_bind_mounted_supervisor(tmp_path,monkeypatch):
+@pytest.mark.parametrize('system_daemon',[False,True])
+def test_owned_node_requires_actual_bind_mounted_supervisor(tmp_path,monkeypatch,system_daemon):
     from scripts import node_source_install as installer
     config=config_at(tmp_path);bootstrap=tmp_path/'checkout/scripts/launcher_peer_supervisor.py'
     bootstrap.parent.mkdir(parents=True);bootstrap.write_text('# bootstrap')
@@ -199,11 +200,14 @@ def test_owned_node_requires_actual_bind_mounted_supervisor(tmp_path,monkeypatch
         {'Type':'bind','Source':str(config.parent),'Destination':'/run/launcher-config','RW':True},
         {'Type':'bind','Source':str(tmp_path/'checkout'),'Destination':'/workspace','RW':True}]}
     def run(argv,**kwargs):
+        if system_daemon and argv[:2]==['docker','inspect']:return Mock(returncode=1)
         return Mock(returncode=0,stdout=json.dumps([container] if 'inspect' in argv else ['/workspace/scripts/launcher_peer_supervisor.py']))
     monkeypatch.setattr(installer.subprocess,'run',run)
-    assert installer.owned_node(config)==(['docker'],'owned',bootstrap)
+    expected_docker=['docker','--host','unix:///var/run/docker.sock'] if system_daemon else ['docker']
+    assert installer.owned_node(config)==(expected_docker,'owned',bootstrap)
     container['Mounts'][1]['RW']=False
-    assert installer.owned_node(config)==(['docker'],'owned',bootstrap)
+    expected_docker=['docker','--host','unix:///var/run/docker.sock'] if system_daemon else ['docker']
+    assert installer.owned_node(config)==(expected_docker,'owned',bootstrap)
     container['Mounts'][1]['Type']='volume'
     with pytest.raises(RuntimeError,match='host source bind mount'):installer.owned_node(config)
     container['Mounts'][0]['Source']=str(tmp_path/'different-owner')
