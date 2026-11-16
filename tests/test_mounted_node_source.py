@@ -341,3 +341,19 @@ def test_supervisor_activates_real_mounted_process_or_restores_previous(tmp_path
     assert state['active']==str(releases/revision if healthy else bootstrap)
     assert bool(state['last_failure']) is not healthy
     assert current.is_symlink() is healthy
+
+
+def test_parallel_bundle_preparation_publishes_one_immutable_receipt(tmp_path,monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    from scripts import node_source_delivery as delivery
+    root=repositories(tmp_path);commit=source.git(root/'JSwarm','rev-parse','HEAD')
+    target=tmp_path/'shared.bundle';barrier=threading.Barrier(2);git=delivery.git
+    def simultaneous(repository,*args):
+        if args[:2]==('bundle','create'):barrier.wait(timeout=10)
+        return git(repository,*args)
+    monkeypatch.setattr(delivery,'git',simultaneous)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results=list(pool.map(lambda _:delivery.bundle(root/'JSwarm',commit,target),range(2)))
+    assert results[0]==results[1]
+    assert results[0]['sha256']==hashlib.sha256(target.read_bytes()).hexdigest()

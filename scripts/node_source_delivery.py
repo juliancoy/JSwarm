@@ -1,6 +1,7 @@
 """Controller-owned Git delivery over enrolled, encrypted LAN transports."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -19,7 +20,9 @@ def bundle(repository, commit, destination):
             with tempfile.TemporaryDirectory(dir=destination.parent) as temporary:
                 path=Path(temporary)/'source.bundle'
                 git(repository,'bundle','create',str(path),reference)
-                path.chmod(0o600);path.replace(destination)
+                path.chmod(0o600)
+                try:os.link(path,destination)
+                except FileExistsError:pass  # Another node preparation published this commit first.
         finally:git(repository,'update-ref','-d',reference)
     if commit not in {line.split()[0] for line in git(repository,'bundle','list-heads',str(destination)).splitlines()}:
         raise ValueError('Cached Git bundle has the wrong commit')
