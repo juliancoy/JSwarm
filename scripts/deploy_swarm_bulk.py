@@ -69,6 +69,28 @@ print(json.dumps({'node':p['config']['name'],'revision':revision,'active':system
 '''
 
 
+
+def certificate_profile(builder, public_key, issuer_key, *, authority):
+    """RFC 5280 extensions required by modern strict TLS verification."""
+    from cryptography import x509
+    return (builder
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(public_key),critical=False)
+        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(issuer_key),critical=False)
+        .add_extension(x509.KeyUsage(digital_signature=True,content_commitment=False,
+            key_encipherment=False,data_encipherment=False,key_agreement=False,
+            key_cert_sign=authority,crl_sign=authority,encipher_only=None,decipher_only=None),critical=True))
+
+
+def current_certificate_profile(certificate, *, authority):
+    from cryptography import x509
+    try:
+        usage=certificate.extensions.get_extension_for_class(x509.KeyUsage).value
+        certificate.extensions.get_extension_for_class(x509.SubjectKeyIdentifier)
+        certificate.extensions.get_extension_for_class(x509.AuthorityKeyIdentifier)
+        return usage.digital_signature and usage.key_cert_sign==authority and usage.crl_sign==authority
+    except x509.ExtensionNotFound:return False
+
+
 def deploy():
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
@@ -80,11 +102,21 @@ def deploy():
     now=datetime.datetime.now(datetime.timezone.utc)
     if not (authority/'ca.key').exists():
         key=ec.generate_private_key(ec.SECP256R1());subject=x509.Name([x509.NameAttribute(NameOID.COMMON_NAME,'Enrolled swarm bulk transport')])
-        cert=(x509.CertificateBuilder().subject_name(subject).issuer_name(subject).public_key(key.public_key()).serial_number(x509.random_serial_number()).not_valid_before(now-datetime.timedelta(minutes=5)).not_valid_after(now+datetime.timedelta(days=3650)).add_extension(x509.BasicConstraints(ca=True,path_length=0),critical=True).sign(key,hashes.SHA256()))
+        cert=(x509.CertificateBuilder().subject_name(subject).issuer_name(subject).public_key(key.public_key()).serial_number(x509.random_serial_number()).not_valid_before(now-datetime.timedelta(minutes=5)).not_valid_after(now+datetime.timedelta(days=3650)).add_extension(x509.BasicConstraints(ca=True,path_length=0),critical=True))
+        cert=certificate_profile(cert,key.public_key(),key.public_key(),authority=True).sign(key,hashes.SHA256())
         (authority/'ca.key').write_bytes(key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()))
         (authority/'ca.crt').write_bytes(cert.public_bytes(serialization.Encoding.PEM))
     ca_key=serialization.load_pem_private_key((authority/'ca.key').read_bytes(),password=None)
     ca=x509.load_pem_x509_certificate((authority/'ca.crt').read_bytes())
+    if not current_certificate_profile(ca,authority=True):
+        # Keep the enrolled authority key and subject; renew its public profile.
+        builder=(x509.CertificateBuilder().subject_name(ca.subject).issuer_name(ca.subject)
+            .public_key(ca_key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(now-datetime.timedelta(minutes=5)).not_valid_after(now+datetime.timedelta(days=3650))
+            .add_extension(x509.BasicConstraints(ca=True,path_length=0),critical=True))
+        ca=certificate_profile(builder,ca_key.public_key(),ca_key.public_key(),authority=True).sign(ca_key,hashes.SHA256())
+        (authority/'ca.crt').write_bytes(ca.public_bytes(serialization.Encoding.PEM))
+
     # Reuse the standard deployer's pinned SSH construction and machine proof.
     updater=object.__new__(LauncherUpdates)
     def execute(host,code,payload):
@@ -107,7 +139,8 @@ def deploy():
             data=execute(host,INIT,{'machine':status['machine'],'node':name,'authority':settings['controller_public_key']})
             csr=x509.load_pem_x509_csr(data['csr'].encode())
             if not csr.is_signature_valid:raise ValueError('Invalid CSR')
-            cert=(x509.CertificateBuilder().subject_name(csr.subject).issuer_name(ca.subject).public_key(csr.public_key()).serial_number(x509.random_serial_number()).not_valid_before(now-datetime.timedelta(minutes=5)).not_valid_after(now+datetime.timedelta(days=90)).add_extension(x509.BasicConstraints(ca=False,path_length=None),critical=True).add_extension(x509.SubjectAlternativeName([x509.DNSName(address)]),critical=False).add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH,ExtendedKeyUsageOID.CLIENT_AUTH]),critical=False).sign(ca_key,hashes.SHA256()))
+            cert=(x509.CertificateBuilder().subject_name(csr.subject).issuer_name(ca.subject).public_key(csr.public_key()).serial_number(x509.random_serial_number()).not_valid_before(now-datetime.timedelta(minutes=5)).not_valid_after(now+datetime.timedelta(days=90)).add_extension(x509.BasicConstraints(ca=False,path_length=None),critical=True).add_extension(x509.SubjectAlternativeName([x509.DNSName(address)]),critical=False).add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH,ExtendedKeyUsageOID.CLIENT_AUTH]),critical=False))
+            cert=certificate_profile(cert,csr.public_key(),ca_key.public_key(),authority=False).sign(ca_key,hashes.SHA256())
             saved=authority/(name+'.crt')
             if saved.exists():
                 previous=x509.load_pem_x509_certificate(saved.read_bytes())
@@ -115,7 +148,7 @@ def deploy():
                 new_key=cert.public_key().public_bytes(serialization.Encoding.DER,serialization.PublicFormat.SubjectPublicKeyInfo)
                 old_expiry=previous.not_valid_after.replace(tzinfo=datetime.timezone.utc)
                 old_addresses=previous.extensions.get_extension_for_class(x509.SubjectAlternativeName).value.get_values_for_type(x509.DNSName)
-                if old_key==new_key and address in old_addresses and old_expiry>now+datetime.timedelta(days=30):cert=previous
+                if old_key==new_key and address in old_addresses and old_expiry>now+datetime.timedelta(days=30) and current_certificate_profile(previous,authority=False):cert=previous
             saved.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
             public=cert.public_key().public_bytes(serialization.Encoding.DER,serialization.PublicFormat.SubjectPublicKeyInfo)
             nodes[name]={'host':host,'cert':cert.public_bytes(serialization.Encoding.PEM).decode(),'root':data['root'],'machine':data['machine'],'address':address,'certificate_sha256':cert.fingerprint(hashes.SHA256()).hex(),'public_key_pin':'sha256//'+base64.b64encode(hashlib.sha256(public).digest()).decode()}
