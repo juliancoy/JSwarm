@@ -96,3 +96,12 @@ def test_legacy_genomeharbor_publication_remains_usable_for_rollback(tmp_path):
     deployed=workspace(manifest,tmp_path/'legacy-node-source')
     assert (deployed/'GenomeHarbor/source.py').read_text()=='version = 1\n'
     assert workspace(manifest,tmp_path/'legacy-node-source')==deployed
+
+
+def test_pinned_objects_remain_usable_when_origin_is_offline(tmp_path):
+    root=repositories(tmp_path);manifest=snapshot(root)
+    deployed=workspace(manifest,tmp_path/'node-source')
+    for item in manifest.values():item['origin']=str(tmp_path/'offline')
+    # Origin metadata may change without changing the immutable source objects.
+    again=workspace(manifest,tmp_path/'node-source')
+    assert (again/'JSwarm/source.py').read_bytes()==(deployed/'JSwarm/source.py').read_bytes()

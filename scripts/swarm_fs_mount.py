@@ -24,6 +24,7 @@ class Client:
         self.factory = factory
         self.cache = cache or ram_cache(16*1024**2)
         self.cooldown = {}
+        self.immutable_stats = {}
         self.counters = {'local_hits': 0, 'peer_hits': 0, 'origin_reads': 0, 'durable_writes': 0, 'peer_errors': 0, 'peer_misses': 0, 'peer_admission_failures': 0}
 
     def call(self, node, operation, *, timeout=None, **args):
@@ -58,6 +59,7 @@ class Client:
         expected=self.settings.get('immutable_files',{}).get(path)
         if expected is not None and (row['version']!=expected or row['st_mode'] & 0o222):
             raise OSError(errno.ESTALE,'Pinned immutable file changed')
+        if expected is not None:self.immutable_stats[path]=row
         return row
 
     def open_flags(self, path, flags):
@@ -68,13 +70,17 @@ class Client:
         return {'direct_io':not immutable,'keep_cache':immutable}
 
     def read(self, path, size, offset):
-        st = self.stat(path)
+        immutable=path in self.settings.get('immutable_files',{})
+        st = self.immutable_stats.get(path) if immutable else None
+        if st is None:st=self.stat(path)
+        block_size=16*1024 if immutable else BLOCK
         stop = min(st['st_size'], offset+size)
         result = bytearray()
         while offset < stop:
-            start = offset//BLOCK*BLOCK
-            length = min(BLOCK, st['st_size']-start)
-            key = block_key(self.settings['namespace'], path, st['version'], start)
+            start = offset//block_size*block_size
+            length = min(block_size, st['st_size']-start)
+            revision=st['version']+':page16k' if immutable else st['version']
+            key = block_key(self.settings['namespace'], path, revision, start)
             def fetch(*_):
                 deadline = time.monotonic()+self.settings.get('cache_probe_budget', 3)
                 for peer in self.settings.get('peers', []):
