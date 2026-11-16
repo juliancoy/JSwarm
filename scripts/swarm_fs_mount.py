@@ -245,7 +245,8 @@ def mount(settings, mountpoint, foreground=False):
     FUSE(Files(), str(mountpoint), foreground=foreground, nothreads=True,
          attr_timeout=0, entry_timeout=0, negative_timeout=0, raw_fi=True,
          fsname='swarm-'+settings['namespace'], default_permissions=True,
-         allow_root=settings.get('allow_root', True))
+         allow_root=settings.get('allow_root', True) and not settings.get('allow_other', False),
+         allow_other=settings.get('allow_other', False))
 
 
 if __name__ == '__main__':

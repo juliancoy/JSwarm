@@ -62,7 +62,7 @@ text='[Unit]\nDescription=Private swarm filesystem backed by Latitude\nAfter=net
 changed=not unit.exists() or unit.read_text()!=text
 unit.write_text(text)
 namespace={};exec(p['files']['scripts/swarm_host_service.py'],namespace);systemctl=namespace['systemctl']
-if settings.get('allow_root',True):namespace['configure_fuse_root_access']()
+if settings.get('allow_root',True) or settings.get('allow_other',False):namespace['configure_fuse_root_access']()
 systemctl('daemon-reload',check=True,capture_output=True)
 if changed:systemctl('try-restart',unit.name,check=True,capture_output=True)
 systemctl('enable',unit.name,check=True,capture_output=True)
@@ -134,6 +134,10 @@ def deploy_fleet(names=None):
             client = AgentClient(host);status = client.call('status', timeout=5)
             attest_addresses(host, status);host['machine'] = status['machine']
             settings = {k: v for k, v in plan.items() if k not in ('root', 'fuse_library')}
+            overrides=settings.pop('mount_options_by_node',{}).get(name,{})
+            if set(overrides)-{'allow_root','allow_other'} or any(type(v) is not bool for v in overrides.values()):
+                raise ValueError('Invalid node FUSE permission options')
+            settings.update(overrides)
             settings.setdefault('fuse', True)
             settings['peers'] = [n for n in enrolled['peers'] if n != name and n != plan['origin']]
             if name == plan['origin']:settings['root'] = plan['root']

@@ -40,6 +40,15 @@ def configure_fuse_root_access():
     """
     policy = Path('/etc/fuse.conf')
     if policy.exists() and 'user_allow_other' in [line.strip() for line in policy.read_text().splitlines()]:return
+    # The command capsule's /etc is not the host's /etc. Rootless owners can
+    # verify an already configured host policy through a read-only daemon bind.
+    probe="import pathlib; raise SystemExit(0 if 'user_allow_other' in [x.strip() for x in pathlib.Path('/policy/fuse.conf').read_text().splitlines()] else 1)"
+    result=subprocess.run(['docker','run','--rm','--pull=never','--network','none',
+        '--cap-drop','ALL','--security-opt','no-new-privileges','--read-only',
+        '--mount','type=bind,src=/etc/fuse.conf,dst=/policy/fuse.conf,readonly',
+        '--entrypoint','python3','organization-launcher:webrtc-1','-c',probe],
+        capture_output=True,timeout=30)
+    if result.returncode==0:return
     code = """import os
 p='/policy/fuse.conf'
 fd=os.open(p, os.O_RDWR | os.O_NOFOLLOW)

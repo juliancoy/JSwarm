@@ -18,3 +18,16 @@ def test_owner_capsule_uses_host_bus_without_ssh_or_privilege(monkeypatch, tmp_p
     assert any(value.startswith('DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/') for value in args)
     assert args[-2:] == ['--user', 'daemon-reload']
     assert args[args.index('--pid')+1] == 'host'
+
+
+def test_existing_host_fuse_policy_does_not_require_system_docker(monkeypatch):
+    from scripts import swarm_host_service as service
+    from unittest.mock import Mock
+    monkeypatch.setattr(service.Path,'exists',lambda path:False)
+    run=Mock(return_value=Mock(returncode=0))
+    monkeypatch.setattr(service.subprocess,'run',run)
+    service.configure_fuse_root_access()
+    assert run.call_count==1
+    command=run.call_args.args[0]
+    assert '-H' not in command
+    assert 'type=bind,src=/etc/fuse.conf,dst=/policy/fuse.conf,readonly' in command
