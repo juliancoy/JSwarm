@@ -235,3 +235,57 @@ def test_remote_advertisement_cannot_connect_back_to_controller(tmp_path,monkeyp
     assert client.connection._create_connection(('172.20.20.20',8790),timeout=15) is connected
     connected.settimeout.assert_called_once_with(15)
     assert [call.args[0] for call in connect.call_args_list]==[('10.42.0.49',8790)]
+
+
+def test_scoped_ipv6_discovery_and_endpoint(monkeypatch):
+    from types import SimpleNamespace
+    info=SimpleNamespace(parsed_addresses=lambda _: [],parsed_scoped_addresses=lambda _: ['fe80::12%eth0','fe80::13','192.0.2.4'])
+    assert discovery.service_addresses(info)==['fe80::12%eth0','192.0.2.4']
+    monkeypatch.setattr(discovery,'resolve_service',lambda _:('worker-swarm.local',['fe80::12%eth0']))
+    assert discovery.resolve_endpoint('worker.local')==('http://[fe80::12%eth0]:8790',['fe80::12%eth0'])
+
+
+def test_physical_listener_addresses_include_ipv6_scopes():
+    from scripts.launcher_registry import listener_addresses
+    rows=[{'ifname':'eth0','operstate':'UP','addr_info':[
+        {'family':'inet6','local':'fe80::12','scope':'link'},
+        {'family':'inet6','local':'2001:db8::12','scope':'global'},
+        {'family':'inet','local':'192.0.2.4','scope':'global'}]}]
+    assert listener_addresses(rows)==['fe80::12%eth0','2001:db8::12','192.0.2.4']
+
+
+def test_numeric_ipv6_preserves_interface_scope(monkeypatch):
+    import agent_client
+    import socket
+    monkeypatch.setattr(socket,'if_nametoindex',lambda name:7 if name=='eth0' else 0)
+    sock=MagicMock();monkeypatch.setattr(socket,'socket',lambda *args:sock)
+    assert agent_client.multipath_connection(('fe80::12%eth0',8790),timeout=10) is sock
+    sock.connect.assert_called_once_with(('fe80::12',8790,0,7))
+    assert sock.settimeout.call_args_list[0].args==(2,)
+    assert sock.settimeout.call_args_list[-1].args==(10,)
+
+
+def test_connection_falls_back_after_ipv6_path_failure(monkeypatch):
+    import agent_client
+    import socket
+    first=MagicMock();first.connect.side_effect=OSError('path disappeared')
+    second=MagicMock();sockets=iter([first,second])
+    monkeypatch.setattr(socket,'socket',lambda *args:next(sockets))
+    monkeypatch.setattr(socket,'getaddrinfo',lambda *args:[
+        (socket.AF_INET6,socket.SOCK_STREAM,socket.IPPROTO_TCP,'',('fe80::12',8790,0,7)),
+        (socket.AF_INET,socket.SOCK_STREAM,socket.IPPROTO_TCP,'',('192.0.2.4',8790))])
+    assert agent_client.multipath_connection(('worker.local',8790)) is second
+    first.close.assert_called_once()
+    second.connect.assert_called_once_with(('192.0.2.4',8790))
+
+
+def test_discovery_refreshes_after_interface_address_change(monkeypatch):
+    from types import SimpleNamespace
+    info=SimpleNamespace(port=8790,server='worker-swarm.local.',properties={b'node':b'worker.local',b'protocol':b'lifetech-launcher.v1'},parsed_addresses=lambda _:['192.0.2.4'])
+    old=MagicMock();new=MagicMock();new.get_service_info.return_value=info
+    monkeypatch.setattr(discovery,'_RESOLVER',old)
+    monkeypatch.setattr(discovery,'_RESOLVER_NETWORK',(('eth0','192.0.2.3'),))
+    monkeypatch.setattr(discovery,'network_signature',lambda:(('eth0','fe80::4%eth0'),))
+    monkeypatch.setattr(discovery,'Zeroconf',lambda **kwargs:new)
+    assert discovery.resolve_service('worker.local')[1]==['192.0.2.4']
+    old.close.assert_called_once()

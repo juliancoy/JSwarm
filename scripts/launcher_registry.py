@@ -76,10 +76,13 @@ def listener_addresses(rows):
         if not row['ifname'].startswith(('en','eth','wl')) or row.get('operstate')!='UP':continue
         if row.get('linkinfo',{}).get('info_kind'):continue
         for address in row.get('addr_info',[]):
-            if address.get('family')!='inet' or address.get('scope')!='global':continue
+            if address.get('family') not in ('inet','inet6'):continue
+            if address.get('tentative') or address.get('dadfailed'):continue
             ip=ipaddress.ip_address(address['local'])
-            if ip.version==4 and ip.is_private and not (ip.is_loopback or ip.is_unspecified):
-                if str(ip) not in result:result.append(str(ip))
+            if not (ip.is_loopback or ip.is_unspecified or ip.is_multicast):
+                value=str(ip)
+                if ip.version==6 and ip.is_link_local:value+='%'+str(row['ifname'])
+                if value not in result:result.append(value)
     return result
 
 

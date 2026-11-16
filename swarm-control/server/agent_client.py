@@ -27,7 +27,12 @@ def multipath_connection(address,timeout=30,source_address=None,**kwargs):
     except ValueError:ip=None
     if ip is not None:
         family=socket.AF_INET6 if ip.version==6 else socket.AF_INET
-        addresses=[(family,socket.SOCK_STREAM,socket.IPPROTO_TCP,'',(host,port,0,0) if ip.version==6 else (host,port))]
+        if ip.version==6:
+            raw,_,scope=host.partition('%')
+            scope_id=int(scope) if scope.isdecimal() else socket.if_nametoindex(scope) if scope else 0
+            destination=(raw,port,0,scope_id)
+        else:destination=(host,port)
+        addresses=[(family,socket.SOCK_STREAM,socket.IPPROTO_TCP,'',destination)]
     else:addresses=socket.getaddrinfo(host,port,0,socket.SOCK_STREAM)
     for family,kind,protocol,_,destination in addresses:
         sock=None
@@ -37,9 +42,9 @@ def multipath_connection(address,timeout=30,source_address=None,**kwargs):
                 if error.errno not in (errno.EPROTONOSUPPORT,errno.ENOPROTOOPT,errno.EINVAL,errno.EAFNOSUPPORT,errno.EPERM):raise
                 sock=socket.socket(family,kind,protocol)
             sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
-            sock.settimeout(timeout)
+            sock.settimeout(min(timeout,2))
             if source_address:sock.bind(source_address)
-            sock.connect(destination);return sock
+            sock.connect(destination);sock.settimeout(timeout);return sock
         except OSError as error:
             last=error
             if sock:sock.close()
@@ -80,7 +85,7 @@ class AgentClient:
                 last=None
                 for ip in addresses:
                     try:
-                        sock=multipath_connection((ip,address[1]),min(timeout,2) if len(addresses)>1 else timeout,source_address,**kwargs)
+                        sock=multipath_connection((ip,address[1]),min(timeout,2),source_address,**kwargs)
                         # Address fallback bounds connection setup, not the RPC.
                         sock.settimeout(timeout)
                         return sock

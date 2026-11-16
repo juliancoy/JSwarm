@@ -11,17 +11,26 @@ _RESOLVER_NETWORK = None
 
 def network_signature():
     """Notice physical link/address changes after boot or network reconnect."""
-    import fcntl
-    import struct
+    import json
+    import subprocess
+    from scripts.launcher_registry import listener_addresses
+    rows=json.loads(subprocess.check_output(['ip','-j','addr'],text=True,timeout=2))
     result=[]
-    with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as probe:
-        for _,name in socket.if_nameindex():
-            if name=='lo':continue
-            try:
-                address=fcntl.ioctl(probe.fileno(),0x8915,struct.pack('256s',name.encode()[:15]))[20:24]
-            except OSError:continue
-            result.append((name,socket.inet_ntoa(address)))
+    for row in rows:
+        for address in listener_addresses([row]):result.append((row['ifname'],address))
     return tuple(sorted(result))
+
+
+def service_addresses(info):
+    """Retain received link-local scopes; discard unusable unscoped routes."""
+    import ipaddress
+    reader=getattr(info,'parsed_scoped_addresses',info.parsed_addresses)
+    result=[]
+    for address in reader(IPVersion.All):
+        ip=ipaddress.ip_address(address)
+        if ip.version==6 and ip.is_link_local and '%' not in address:continue
+        if address not in result:result.append(address)
+    return result
 
 
 def resolve_service(node, timeout=1000):
@@ -33,7 +42,7 @@ def resolve_service(node, timeout=1000):
             _RESOLVER.close();_RESOLVER=None
         if _RESOLVER is None:
             import atexit
-            _RESOLVER = Zeroconf(unicast=True, ip_version=IPVersion.V4Only)
+            _RESOLVER = Zeroconf(unicast=True, ip_version=IPVersion.All)
             _RESOLVER_NETWORK=network
             atexit.register(_RESOLVER.close)
         zc = _RESOLVER
@@ -43,7 +52,7 @@ def resolve_service(node, timeout=1000):
             or info.properties.get(b'node') != node.encode()
             or info.properties.get(b'protocol') != b'lifetech-launcher.v1'):
         raise OSError('No enrolled mDNS advertisement for '+node)
-    addresses = info.parsed_addresses(IPVersion.V4Only)
+    addresses = service_addresses(info)
     if not addresses:raise OSError('No mDNS addresses for '+node)
     return info.server.rstrip('.'), addresses
 
@@ -65,7 +74,8 @@ def resolve_endpoint(node):
     service_hostname(node)  # Validate the enrolled name before discovery.
     try:
         _, addresses = resolve_service(node)
-        return 'http://' + addresses[0] + ':8790', addresses
+        address=addresses[0]
+        return 'http://' + ('['+address+']' if ':' in address else address) + ':8790', addresses
     except OSError as error:
         raise OSError('No mDNS endpoint for ' + node) from error
 
@@ -85,9 +95,9 @@ class Discovery:
         self.address = addresses[0]
         self.lock = threading.Lock()
         self.services = {}
-        self.zc = Zeroconf(interfaces=addresses, ip_version=IPVersion.V4Only)
+        self.zc = Zeroconf(interfaces=addresses, ip_version=IPVersion.All)
         self.info = ServiceInfo(SERVICE, name + '.' + SERVICE,
-            addresses=[socket.inet_aton(address) for address in addresses], port=port,
+            addresses=[socket.inet_pton(socket.AF_INET6 if ':' in address else socket.AF_INET,address.split('%')[0]) for address in addresses], port=port,
             properties={'node': name, 'protocol': 'lifetech-launcher.v1', 'agent':'lifetech-agent.v1'},
             server=service_hostname(name) + '.',
             host_ttl=45, other_ttl=45)
@@ -113,7 +123,7 @@ class Discovery:
         # Enrollment constrains the node and service name, not its DHCP address.
         # The encrypted protocol still authenticates every connection.
         hostname = info.server.rstrip('.')
-        if hostname in (service_hostname(node), node) and info.parsed_addresses(IPVersion.V4Only):
+        if hostname in (service_hostname(node), node) and service_addresses(info):
             with self.lock:
                 self.services[name] = (node, hostname, info.port)
 

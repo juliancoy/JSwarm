@@ -469,20 +469,34 @@ class Mesh:
         self.runner = web.AppRunner(app, access_log=None)
         await self.runner.setup()
         from launcher_discovery import Discovery
-        self.discovery = Discovery(self.name, self.peers, PORT, self.addresses)
+        bound_addresses=[]
         from launcher_registry import transport_socket
         import socket
         for address in self.addresses:
-            listener=transport_socket((socket.AF_INET,socket.SOCK_STREAM,0))
+            family=socket.AF_INET6 if ':' in address else socket.AF_INET
+            listener=transport_socket((family,socket.SOCK_STREAM,0))
             try:
                 listener.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-                listener.bind((address,PORT));listener.listen(128);listener.setblocking(False)
+                if family==socket.AF_INET6:
+                    listener.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,1)
+                    destination=socket.getaddrinfo(address,PORT,family,socket.SOCK_STREAM,0,socket.AI_NUMERICHOST)[0][4]
+                else:destination=(address,PORT)
+                listener.bind(destination);listener.listen(128);listener.setblocking(False)
                 await web.SockSite(self.runner,listener).start()
+                bound_addresses.append(address)
+            except OSError as error:
+                listener.close()
+                print(f'Launcher path unavailable: {address}: {error}',flush=True)
+                continue
             except BaseException:
                 listener.close()
                 await self.runner.cleanup()
-                self.discovery.close()
                 raise
+        if not bound_addresses:
+            await self.runner.cleanup()
+            raise OSError('No viable launcher listening address')
+        self.addresses=bound_addresses
+        self.discovery=Discovery(self.name,self.peers,PORT,bound_addresses)
         print(f'Launcher WebRTC listening on LAN port {PORT}; {len(self.peers)-1} enrolled peers', flush=True)
         initial = {'name':self.name,'source_revision':self.source_revision,'config_revision':self.config_revision,'peers':{peer:{'connection':'disconnected'} for peer in self.peers if peer!=self.name}}
         path = Path('/tmp/launcher-peers.json')
@@ -1109,7 +1123,7 @@ async def supervise(path,prefix,stopped):
                     desired['lan'] = {key:config[key] for key in ('name','peers','key')}
                     from launcher_registry import listener_addresses
                     import subprocess
-                    rows=json.loads(await asyncio.to_thread(subprocess.check_output,['ip','-j','-4','addr'],text=True,timeout=5))
+                    rows=json.loads(await asyncio.to_thread(subprocess.check_output,['ip','-j','addr'],text=True,timeout=5))
                     desired['lan']['addresses']=listener_addresses(rows)
                     if not desired['lan']['addresses']:
                         desired.pop('lan')
