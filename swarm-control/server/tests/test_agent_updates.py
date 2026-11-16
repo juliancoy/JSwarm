@@ -7,6 +7,10 @@ from agent_updates import LauncherUpdates
 
 class LauncherUpdateTests(unittest.TestCase):
     def setUp(self):
+        # These compatibility fixtures describe historical bundled publications.
+        exists=Path.exists
+        legacy=patch.object(Path,'exists',lambda path: path.name!='.node-git-source.json' and exists(path))
+        legacy.start();self.addCleanup(legacy.stop)
         self.progress=Mock()
         self.updates=LauncherUpdates(Path(__file__).resolve().parents[3],lambda:False,self.progress)
         self.updates.git_source={'repositories':{name:{'origin':'https://example.com/'+name+'.git','commit':'a'*40}

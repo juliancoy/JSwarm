@@ -131,7 +131,11 @@ def test_complete_write_primes_only_committed_local_cache(fs, tmp_path, monkeypa
 
 def test_publication_embeds_filesystem_and_ram_cache():
     from agent_updates import LauncherUpdates
-    source = LauncherUpdates(Path(__file__).parents[1], lambda: False, Mock())
+    # Exercise historical bundled publications even inside a mounted-source export.
+    from unittest.mock import patch
+    exists=Path.exists
+    with patch.object(Path,'exists',lambda path: path.name!='.node-git-source.json' and exists(path)):
+        source=LauncherUpdates(Path(__file__).parents[1], lambda: False, Mock())
     namespace = {'__name__': 'bundled_filesystem'}
     agent = source.files['launcher_agent.py']
     import ast

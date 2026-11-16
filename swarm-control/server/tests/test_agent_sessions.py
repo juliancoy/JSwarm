@@ -8,6 +8,10 @@ from agent_client import AgentSessions
 
 class AgentReadinessTests(unittest.TestCase):
     def setUp(self):
+        # These compatibility fixtures describe historical bundled publications.
+        exists=Path.exists
+        legacy=patch.object(Path,'exists',lambda path: path.name!='.node-git-source.json' and exists(path))
+        legacy.start();self.addCleanup(legacy.stop)
         from agent_updates import LauncherUpdates
         folder=tempfile.TemporaryDirectory();self.addCleanup(folder.cleanup)
         root=Path(__file__).resolve().parents[3]

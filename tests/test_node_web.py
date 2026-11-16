@@ -72,12 +72,16 @@ def test_native_http_routes_serve_pipeline_and_enforce_origin(tmp_path,monkeypat
     asyncio.run(exercise())
 
 
-def test_pipeline_assets_are_bundled_into_the_standard_node_revision():
+def test_pipeline_assets_are_bundled_into_the_legacy_node_revision():
     import base64,gzip,sys
     from pathlib import Path
     sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'swarm-control/server'))
     from agent_updates import LauncherUpdates
-    release=LauncherUpdates(Path(__file__).resolve().parents[2],lambda:False,lambda *args:None)
+    # Exercise historical bundled publications even inside a mounted-source export.
+    from unittest.mock import patch
+    exists=Path.exists
+    with patch.object(Path,'exists',lambda path: path.name!='.node-git-source.json' and exists(path)):
+        release=LauncherUpdates(Path(__file__).resolve().parents[2],lambda:False,lambda *args:None)
     import ast
     tree=ast.parse(release.files['launcher_peers.py'])
     value=next(ast.literal_eval(node.value) for node in tree.body if isinstance(node,ast.Assign)

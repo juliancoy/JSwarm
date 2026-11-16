@@ -201,10 +201,11 @@ def test_numeric_discovered_endpoint_fails_over_with_mptcp_without_pinning_first
     monkeypatch.setattr(agent_client,'CONFIG',config)
     addresses=['10.104.105.132','10.42.0.166']
     monkeypatch.setattr(discovery,'resolve_service',lambda name:('worker-swarm.local',addresses))
-    connected=object();connect=MagicMock(side_effect=[TimeoutError('unroutable Wi-Fi'),connected])
+    connected=MagicMock();connect=MagicMock(side_effect=[TimeoutError('unroutable Wi-Fi'),connected])
     monkeypatch.setattr(agent_client,'multipath_connection',connect)
     client=agent_client.AgentClient({'host':'worker.local','agent_endpoint':'http://10.104.105.132:8790'})
     assert client.connection._create_connection(('10.104.105.132',8790),timeout=15) is connected
+    connected.settimeout.assert_called_once_with(15)
     assert [call.args[0] for call in connect.call_args_list]==[(ip,8790) for ip in addresses]
     assert [call.args[1] for call in connect.call_args_list]==[2,2]
 
@@ -228,8 +229,9 @@ def test_remote_advertisement_cannot_connect_back_to_controller(tmp_path,monkeyp
     monkeypatch.setattr(agent_client,'CONFIG',config)
     monkeypatch.setattr(discovery,'resolve_service',lambda name:('worker-swarm.local',['172.20.20.20','10.42.0.49']))
     monkeypatch.setattr(discovery,'network_signature',lambda:(('wlan0','172.20.20.20'),))
-    connected=object();connect=MagicMock(return_value=connected)
+    connected=MagicMock();connect=MagicMock(return_value=connected)
     monkeypatch.setattr(agent_client,'multipath_connection',connect)
     client=agent_client.AgentClient({'host':'worker.local','agent_endpoint':'http://172.20.20.20:8790'})
     assert client.connection._create_connection(('172.20.20.20',8790),timeout=15) is connected
+    connected.settimeout.assert_called_once_with(15)
     assert [call.args[0] for call in connect.call_args_list]==[('10.42.0.49',8790)]
