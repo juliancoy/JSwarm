@@ -58,7 +58,8 @@ public:
         for(size_t i=0;i<count;i++) threads_.emplace_back([this]{
             while(true) { std::function<void()> f;
                 { std::unique_lock<std::mutex> l(mutex_); ready_.wait(l,[this]{return stopping_||!work_.empty();});
-                  if(work_.empty()&&stopping_) return; f=std::move(work_.front()); work_.pop_front(); }
+                  if(work_.empty()&&stopping_) return;
+                  f=std::move(work_.front()); work_.pop_front(); }
                 try { f(); } catch(...) { /* Every operation owns its error reply. */ }
             }
         });

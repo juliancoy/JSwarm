@@ -6,10 +6,12 @@ namespace swarm {
 struct Response {int status=0;std::unordered_map<std::string,std::string> headers;Bytes body;};
 class Connection {
     int fd_=-1; SSL* ssl_=nullptr; std::string pending_;
+    Clock::time_point deadline_=Clock::now()+std::chrono::seconds(10);
 public:
     Connection(int fd,SSL* ssl):fd_(fd),ssl_(ssl){}
     ~Connection();
     Connection(const Connection&)=delete;
+    void begin(){deadline_=Clock::now()+std::chrono::seconds(10);}
     void write(const unsigned char* p,size_t n);
     void write(const std::string& s){write(reinterpret_cast<const unsigned char*>(s.data()),s.size());}
     std::string line();
