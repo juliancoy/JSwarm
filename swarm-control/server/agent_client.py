@@ -79,7 +79,11 @@ class AgentClient:
                     addresses=[ip for ip in addresses if ip not in local_addresses]
                 last=None
                 for ip in addresses:
-                    try:return multipath_connection((ip,address[1]),min(timeout,2) if len(addresses)>1 else timeout,source_address,**kwargs)
+                    try:
+                        sock=multipath_connection((ip,address[1]),min(timeout,2) if len(addresses)>1 else timeout,source_address,**kwargs)
+                        # Address fallback bounds connection setup, not the RPC.
+                        sock.settimeout(timeout)
+                        return sock
                     except OSError as error:last=error
                 raise last or OSError('No current mDNS route')
             self.connection._create_connection=connect
