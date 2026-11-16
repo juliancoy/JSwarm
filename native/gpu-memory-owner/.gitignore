@@ -1,0 +1,4 @@
+*.so
+*.spv
+.test-output/
+*.test-log.jsonl.lock

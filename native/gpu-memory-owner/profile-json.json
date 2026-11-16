@@ -1,0 +1,75 @@
+{
+  "scope": "64 MiB synthetic warmed uint32 gather, not alignment; persistent sessions for BOTH transports; latency excludes output verification, throughput includes it; three trials; GPU not exclusive",
+  "gpu": "NVIDIA GeForce RTX 3060, 580.142, 1290 MiB, 10612 MiB, 12 %",
+  "rows": [
+    {
+      "transport": "shared",
+      "clients": 1,
+      "batch_words": 4096,
+      "batches_per_client_per_trial": 100,
+      "trial_seconds": [
+        0.07495689500137814,
+        0.06402502600030857,
+        0.08836279600291164
+      ],
+      "lookups_per_s": 5464473.948560292,
+      "latency_mean_ms": 0.629630720007602,
+      "latency_p50_ms": 0.2221630020358134,
+      "latency_p95_ms": 3.149410000332864,
+      "session_setup_p50_ms": 8.58247300129733,
+      "socket_payload_bytes_including_warmup": 0,
+      "verified_batches_including_warmup": 309,
+      "reference_vram_bytes": 67108864,
+      "reference_upload_bytes": 67108864,
+      "query_upload_copy_bytes": 0,
+      "result_readback_copy_bytes": 0,
+      "configured_parallelism": 4,
+      "session_slots": 16,
+      "peak_pending_submissions": 1,
+      "native_profile": {
+        "samples": 309,
+        "total_ns": 72466797,
+        "validation_ns": 705668,
+        "record_ns": 3962286,
+        "submit_ns": 2023052,
+        "fence_wait_ns": 65616127,
+        "gpu_span_ns": 4958336
+      }
+    },
+    {
+      "transport": "shared",
+      "clients": 8,
+      "batch_words": 4096,
+      "batches_per_client_per_trial": 100,
+      "trial_seconds": [
+        0.529356156999711,
+        0.4312060010015557,
+        0.18203327999799512
+      ],
+      "lookups_per_s": 7599152.127727875,
+      "latency_mean_ms": 3.280331314567775,
+      "latency_p50_ms": 2.3382104991469532,
+      "latency_p95_ms": 8.78590600041207,
+      "session_setup_p50_ms": 16.566256499572773,
+      "socket_payload_bytes_including_warmup": 0,
+      "verified_batches_including_warmup": 2472,
+      "reference_vram_bytes": 67108864,
+      "reference_upload_bytes": 67108864,
+      "query_upload_copy_bytes": 0,
+      "result_readback_copy_bytes": 0,
+      "configured_parallelism": 4,
+      "session_slots": 16,
+      "peak_pending_submissions": 4,
+      "native_profile": {
+        "samples": 2472,
+        "total_ns": 2039360383,
+        "validation_ns": 16278538,
+        "record_ns": 95314345,
+        "submit_ns": 112269650,
+        "fence_wait_ns": 1810547798,
+        "gpu_span_ns": 40795744
+      }
+    }
+  ],
+  "gpu_after": "1298 MiB, 10604 MiB, 2 %"
+}

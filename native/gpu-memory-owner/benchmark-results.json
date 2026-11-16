@@ -1,0 +1,331 @@
+{
+  "scope": "synthetic uint32 gather; not alignment; host wall timing includes socket, Python, GPU queue/fence and returned data; three trials; shared GPU activity uncontrolled",
+  "gpu": "NVIDIA GeForce RTX 3060, 580.142, 1339 MiB, 10563 MiB, 3 %",
+  "rows": [
+    {
+      "mode": "shared",
+      "clients": 1,
+      "batch_words": 64,
+      "batches_per_client_per_trial": 100,
+      "trial_seconds": [
+        0.050220459001138806,
+        0.029433935997076333,
+        0.024785433000943158
+      ],
+      "batches_per_s": 3397.4389293342547,
+      "lookups_per_s": 217436.0914773923,
+      "latency_p50_ms": 0.2662404986040201,
+      "latency_p95_ms": 0.6805519988120068,
+      "reference_vram_bytes": 67108864,
+      "reference_upload_bytes": 67108864,
+      "all_owners_startup_s": 0.39516668199939886
+    },
+    {
+      "mode": "shared",
+      "clients": 1,
+      "batch_words": 4096,
+      "batches_per_client_per_trial": 100,
+      "trial_seconds": [
+        0.0844357990026765,
+        0.04177643100047135,
+        0.04168210300122155
+      ],
+      "batches_per_s": 2393.69418605605,
+      "lookups_per_s": 9804571.386085581,
+      "latency_p50_ms": 0.3870444998028688,
+      "latency_p95_ms": 1.152596996689681,
+      "reference_vram_bytes": 67108864,
+      "reference_upload_bytes": 67108864,
+      "all_owners_startup_s": 0.39516668199939886
+    },
+    {
+      "mode": "private",
+      "clients": 1,
+      "batch_words": 64,
+      "batches_per_client_per_trial": 100,
+      "trial_seconds": [
+        0.022174887999426574,
+        0.02454122000199277,
+        0.022880306998558808
+      ],
+      "batches_per_s": 4370.570727320172,
+      "lookups_per_s": 279716.52654849103,
+      "latency_p50_ms": 0.20287999905121978,
+      "latency_p95_ms": 0.3042980024474673,
+      "reference_vram_bytes": 67108864,
+      "reference_upload_bytes": 67108864,
+      "all_owners_startup_s": 0.3144567700001062
+    },
+    {
+      "mode": "private",
+      "clients": 1,
+      "batch_words": 4096,
+      "batches_per_client_per_trial": 100,
+      "trial_seconds": [
+        0.04624377099753474,
+        0.04672731800019392,
+        0.043414048002887284
+      ],
+      "batches_per_s": 2162.4534038396437,
+      "lookups_per_s": 8857409.14212718,
+      "latency_p50_ms": 0.35819000004266854,
+      "latency_p95_ms": 0.5962720024399459,
+      "reference_vram_bytes": 67108864,
+      "reference_upload_bytes": 67108864,
+      "all_owners_startup_s": 0.3144567700001062
+    },
+    {
+      "mode": "cpu",
+      "clients": 1,
+      "batch_words": 64,
+      "batches_per_client_per_trial": 100,
+      "trial_seconds": [
+        0.00044728899956680834,
+        0.0005188639988773502,
+        0.0005701619993487839
+      ],
+      "batches_per_s": 192728.73087430783,
+      "lookups_per_s": 12334638.775955701,
+      "latency_p50_ms": 0.0019340004655532539,
+      "latency_p95_ms": 0.003516001015668735,
+      "reference_vram_bytes": 0,
+      "reference_upload_bytes": 0,
+      "all_owners_startup_s": 2.215001586591825e-06
+    },
+    {
+      "mode": "cpu",
+      "clients": 1,
+      "batch_words": 4096,
+      "batches_per_client_per_trial": 100,
+      "trial_seconds": [
+        0.017235573002835736,
+        0.014346068001032108,
+        0.015778427001350792
+      ],
+      "batches_per_s": 6337.767382733336,
+      "lookups_per_s": 25959495.199675743,
+      "latency_p50_ms": 0.11170699872309342,
+      "latency_p95_ms": 0.1871249987743795,
+      "reference_vram_bytes": 0,
+      "reference_upload_bytes": 0,
+      "all_owners_startup_s": 2.215001586591825e-06
+    },
+    {
+      "mode": "private",
+      "clients": 2,
+      "batch_words": 64,
+      "batches_per_client_per_trial": 100,
+      "trial_seconds": [
+        0.032687980001355754,
+        0.033108407998952316,
+        0.032072811998659745
+      ],
+      "batches_per_s": 6118.4569983126785,
+      "lookups_per_s": 391581.2478920114,
+      "latency_p50_ms": 0.28029199893353507,
+      "latency_p95_ms": 0.4499239985307213,
+      "reference_vram_bytes": 134217728,
+      "reference_upload_bytes": 134217728,
+      "all_owners_startup_s": 0.7466620670020347
+    },
+    {
+      "mode": "private",
+      "clients": 2,
+      "batch_words": 4096,
+      "batches_per_client_per_trial": 100,
+      "trial_seconds": [
+        0.04869853599666385,
+        0.05340498899749946,
+        0.054677744999935385
+      ],
+      "batches_per_s": 3744.968471192166,
+      "lookups_per_s": 15339390.858003112,
+      "latency_p50_ms": 0.43298149830661714,
+      "latency_p95_ms": 0.6063700020604301,
+      "reference_vram_bytes": 134217728,
+      "reference_upload_bytes": 134217728,
+      "all_owners_startup_s": 0.7466620670020347
+    },
+    {
+      "mode": "shared",
+      "clients": 2,
+      "batch_words": 64,
+      "batches_per_client_per_trial": 100,
+      "trial_seconds": [
+        0.04477288600173779,
+        0.03896744700250565,
+        0.038102385002275696
+      ],
+      "batches_per_s": 5132.489177110827,
+      "lookups_per_s": 328479.3073350929,
+      "latency_p50_ms": 0.3434415011724923,
+      "latency_p95_ms": 0.5630189989460632,
+      "reference_vram_bytes": 67108864,
+      "reference_upload_bytes": 67108864,
+      "all_owners_startup_s": 0.31594472199867596
+    },
+    {
+      "mode": "shared",
+      "clients": 2,
+      "batch_words": 4096,
+      "batches_per_client_per_trial": 100,
+      "trial_seconds": [
+        0.06510178600001382,
+        0.07138840699917637,
+        0.054803000999527285
+      ],
+      "batches_per_s": 3072.112338054098,
+      "lookups_per_s": 12583372.136669585,
+      "latency_p50_ms": 0.4610600008163601,
+      "latency_p95_ms": 1.2270090010133572,
+      "reference_vram_bytes": 67108864,
+      "reference_upload_bytes": 67108864,
+      "all_owners_startup_s": 0.31594472199867596
+    },
+    {
+      "mode": "cpu",
+      "clients": 2,
+      "batch_words": 64,
+      "batches_per_client_per_trial": 100,
+      "trial_seconds": [
+        0.0004653830001188908,
+        0.0006605439994018525,
+        0.0005471879994729534
+      ],
+      "batches_per_s": 365505.09183797566,
+      "lookups_per_s": 23392325.877630442,
+      "latency_p50_ms": 0.0019030012481380254,
+      "latency_p95_ms": 0.0035869998100679368,
+      "reference_vram_bytes": 0,
+      "reference_upload_bytes": 0,
+      "all_owners_startup_s": 3.025001205969602e-06
+    },
+    {
+      "mode": "cpu",
+      "clients": 2,
+      "batch_words": 4096,
+      "batches_per_client_per_trial": 100,
+      "trial_seconds": [
+        0.022592678000364685,
+        0.019290330998046556,
+        0.016954988001089077
+      ],
+      "batches_per_s": 10367.888452523344,
+      "lookups_per_s": 42466871.10153562,
+      "latency_p50_ms": 0.12565299948619213,
+      "latency_p95_ms": 0.20629099890356883,
+      "reference_vram_bytes": 0,
+      "reference_upload_bytes": 0,
+      "all_owners_startup_s": 3.025001205969602e-06
+    },
+    {
+      "mode": "private",
+      "clients": 4,
+      "batch_words": 64,
+      "batches_per_client_per_trial": 100,
+      "trial_seconds": [
+        0.06773528800113127,
+        0.049907814001926454,
+        0.04735708299995167
+      ],
+      "batches_per_s": 8014.777004349658,
+      "lookups_per_s": 512945.7282783781,
+      "latency_p50_ms": 0.4027895010949578,
+      "latency_p95_ms": 1.2219590025779326,
+      "reference_vram_bytes": 268435456,
+      "reference_upload_bytes": 268435456,
+      "all_owners_startup_s": 2.0890905129999737
+    },
+    {
+      "mode": "private",
+      "clients": 4,
+      "batch_words": 4096,
+      "batches_per_client_per_trial": 100,
+      "trial_seconds": [
+        0.05986817700249958,
+        0.05971264199979487,
+        0.06215332400097395
+      ],
+      "batches_per_s": 6681.345917436228,
+      "lookups_per_s": 27366792.87781879,
+      "latency_p50_ms": 0.46044899863773026,
+      "latency_p95_ms": 0.8480489996145479,
+      "reference_vram_bytes": 268435456,
+      "reference_upload_bytes": 268435456,
+      "all_owners_startup_s": 2.0890905129999737
+    },
+    {
+      "mode": "shared",
+      "clients": 4,
+      "batch_words": 64,
+      "batches_per_client_per_trial": 100,
+      "trial_seconds": [
+        0.09967955699903541,
+        0.08901101100127562,
+        0.15259908599909977
+      ],
+      "batches_per_s": 4012.8589255655575,
+      "lookups_per_s": 256822.97123619568,
+      "latency_p50_ms": 0.8345735004695598,
+      "latency_p95_ms": 2.52644400097779,
+      "reference_vram_bytes": 67108864,
+      "reference_upload_bytes": 67108864,
+      "all_owners_startup_s": 0.31517987299957895
+    },
+    {
+      "mode": "shared",
+      "clients": 4,
+      "batch_words": 4096,
+      "batches_per_client_per_trial": 100,
+      "trial_seconds": [
+        0.15642349100016872,
+        0.11207083900080761,
+        0.11370883700146805
+      ],
+      "batches_per_s": 3517.7564958723106,
+      "lookups_per_s": 14408730.607092984,
+      "latency_p50_ms": 0.9954489996744087,
+      "latency_p95_ms": 2.7434260009613354,
+      "reference_vram_bytes": 67108864,
+      "reference_upload_bytes": 67108864,
+      "all_owners_startup_s": 0.31517987299957895
+    },
+    {
+      "mode": "cpu",
+      "clients": 4,
+      "batch_words": 64,
+      "batches_per_client_per_trial": 100,
+      "trial_seconds": [
+        0.0007380009992630221,
+        0.0014127799986454193,
+        0.0007710830032010563
+      ],
+      "batches_per_s": 518750.8975550611,
+      "lookups_per_s": 33200057.44352391,
+      "latency_p50_ms": 0.003306002327008173,
+      "latency_p95_ms": 0.003697001375257969,
+      "reference_vram_bytes": 0,
+      "reference_upload_bytes": 0,
+      "all_owners_startup_s": 2.1740015654359013e-06
+    },
+    {
+      "mode": "cpu",
+      "clients": 4,
+      "batch_words": 4096,
+      "batches_per_client_per_trial": 100,
+      "trial_seconds": [
+        0.019983533002232434,
+        0.040296029997989535,
+        0.03202764000161551
+      ],
+      "batches_per_s": 12489.212442122604,
+      "lookups_per_s": 51155814.162934184,
+      "latency_p50_ms": 0.18879300114349462,
+      "latency_p95_ms": 0.2426309984002728,
+      "reference_vram_bytes": 0,
+      "reference_upload_bytes": 0,
+      "all_owners_startup_s": 2.1740015654359013e-06
+    }
+  ],
+  "gpu_after": "1274 MiB, 10628 MiB, 17 %"
+}

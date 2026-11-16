@@ -1,0 +1,289 @@
+{
+  "scope": "64 MiB synthetic uint32 gather, not alignment; CPU is compiled -O3 -march=native (not Python lookup); GPU includes shared-service IPC and completion; identical index streams and bounds validation; three trials of 100 batches per worker; no CPU affinity or GPU exclusivity",
+  "timing": "throughput includes generating changing indices and first/last output checks; per-batch latency excludes generation/checks; full warmup/final validation and process/session setup/teardown excluded",
+  "cpu": "AMD Ryzen 7 5800X 8-Core Processor",
+  "visible_cpu_count": 16,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15
+  ],
+  "gpu": "NVIDIA GeForce RTX 3060, 580.142, 1239 MiB, 10662 MiB, 3 %",
+  "compiler": "g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+  "reference_bytes": 67108864,
+  "rows": [
+    {
+      "mode": "cpu",
+      "workers": 1,
+      "pattern": "warm",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.0015085779996297788,
+        0.0019103719969280064,
+        0.0018008570004894864
+      ],
+      "lookups_per_s": 227447265.3234919,
+      "latency_p50_ms": 0.016280499039567076,
+      "latency_p95_ms": 0.020438001229194924
+    },
+    {
+      "mode": "gpu",
+      "workers": 1,
+      "pattern": "warm",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.016024813001422444,
+        0.016813060999993468,
+        0.017580910000106087
+      ],
+      "lookups_per_s": 24362012.36646671,
+      "latency_p50_ms": 0.1408694988640491,
+      "latency_p95_ms": 0.23168500047177076
+    },
+    {
+      "mode": "cpu",
+      "workers": 1,
+      "pattern": "warm",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.06130144500275492,
+        0.022045529000024544,
+        0.020473663000302622
+      ],
+      "lookups_per_s": 297275697.03556234,
+      "latency_p50_ms": 0.20447350107133389,
+      "latency_p95_ms": 0.5133630002092104
+    },
+    {
+      "mode": "gpu",
+      "workers": 1,
+      "pattern": "warm",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.03151619500204106,
+        0.030541015999915544,
+        0.035813532002066495
+      ],
+      "lookups_per_s": 207943884.07533252,
+      "latency_p50_ms": 0.2974679991893936,
+      "latency_p95_ms": 0.4010319971712306
+    },
+    {
+      "mode": "gpu",
+      "workers": 1,
+      "pattern": "changing",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.016034771000704495,
+        0.03740297100011958,
+        0.0139107499999227
+      ],
+      "lookups_per_s": 25544487.038948298,
+      "latency_p50_ms": 0.1341815022897208,
+      "latency_p95_ms": 0.571491000300739
+    },
+    {
+      "mode": "cpu",
+      "workers": 1,
+      "pattern": "changing",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.008215071000449825,
+        0.006904043002577964,
+        0.00809766100064735
+      ],
+      "lookups_per_s": 50582507.71022095,
+      "latency_p50_ms": 0.056054999731713906,
+      "latency_p95_ms": 0.185617998795351
+    },
+    {
+      "mode": "gpu",
+      "workers": 1,
+      "pattern": "changing",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.04805736499838531,
+        0.039661976999923354,
+        0.041234224001527764
+      ],
+      "lookups_per_s": 158935936.31729758,
+      "latency_p50_ms": 0.29553399872384034,
+      "latency_p95_ms": 0.42487600148888305
+    },
+    {
+      "mode": "cpu",
+      "workers": 1,
+      "pattern": "changing",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.07304487099827384,
+        0.06716071999835549,
+        0.07441150300292065
+      ],
+      "lookups_per_s": 89720194.04558702,
+      "latency_p50_ms": 0.612363000982441,
+      "latency_p95_ms": 0.7379139969998505
+    },
+    {
+      "mode": "gpu",
+      "workers": 8,
+      "pattern": "warm",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.057085741998889716,
+        0.06526272200062522,
+        0.05827481199958129
+      ],
+      "lookups_per_s": 56230125.63341335,
+      "latency_p50_ms": 0.3251194993936224,
+      "latency_p95_ms": 1.8560799981059972
+    },
+    {
+      "mode": "cpu",
+      "workers": 8,
+      "pattern": "warm",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.010842695999599528,
+        0.013462479997542687,
+        0.015256662001775112
+      ],
+      "lookups_per_s": 243402404.35626394,
+      "latency_p50_ms": 0.014948000170988962,
+      "latency_p95_ms": 0.027522000891622156
+    },
+    {
+      "mode": "gpu",
+      "workers": 8,
+      "pattern": "warm",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.19589306299894815,
+        0.15275687299799756,
+        0.18733583099674433
+      ],
+      "lookups_per_s": 279865307.77932787,
+      "latency_p50_ms": 1.2235685007908614,
+      "latency_p95_ms": 3.24053499934962
+    },
+    {
+      "mode": "cpu",
+      "workers": 8,
+      "pattern": "warm",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.140070689998538,
+        0.11957508600244182,
+        0.1600082580007438
+      ],
+      "lookups_per_s": 374302432.5827711,
+      "latency_p50_ms": 0.2988500000355998,
+      "latency_p95_ms": 3.837042997474782
+    },
+    {
+      "mode": "cpu",
+      "workers": 8,
+      "pattern": "changing",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.03693327099972521,
+        0.0363213540003926,
+        0.0246611739967193
+      ],
+      "lookups_per_s": 90216901.05398,
+      "latency_p50_ms": 0.06346900045173243,
+      "latency_p95_ms": 0.30747599885216914
+    },
+    {
+      "mode": "gpu",
+      "workers": 8,
+      "pattern": "changing",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.04182275800121715,
+        0.055347453999274876,
+        0.06110434699803591
+      ],
+      "lookups_per_s": 59204168.633356296,
+      "latency_p50_ms": 0.23608799892826937,
+      "latency_p95_ms": 1.1511679986142553
+    },
+    {
+      "mode": "cpu",
+      "workers": 8,
+      "pattern": "changing",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.34481087300082436,
+        0.31486294800197356,
+        0.40813263000018196
+      ],
+      "lookups_per_s": 152050889.6477712,
+      "latency_p50_ms": 0.9589169985702028,
+      "latency_p95_ms": 8.089435003057588
+    },
+    {
+      "mode": "gpu",
+      "workers": 8,
+      "pattern": "changing",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.34948704300040845,
+        0.191187495001941,
+        0.16400593599973945
+      ],
+      "lookups_per_s": 274227140.218913,
+      "latency_p50_ms": 1.3036694981565233,
+      "latency_p95_ms": 4.337693000707077
+    }
+  ],
+  "admitted_cpu_budget": 8,
+  "reference_sha256": "5649505a95389a72aeadf79e46bd0d93238e46d5aaaab7dcef3fa78a56de344d",
+  "owner": {
+    "device_uuid": "162c80e2a9e6da6b3234a5988103eca0",
+    "driver_uuid": "39c7349db177509caed0a302b37d2085",
+    "object_sha256": "5649505a95389a72aeadf79e46bd0d93238e46d5aaaab7dcef3fa78a56de344d",
+    "object_bytes": 67108864,
+    "reference_allocation_bytes": 67108864,
+    "segments": 4,
+    "reference_upload_bytes": 67108864,
+    "query_batches": 11124,
+    "io_bytes": 8912896,
+    "parallelism": 4,
+    "peak_pending_submissions": 4,
+    "native_shared_batches": 11124,
+    "spin_us": 0,
+    "max_queries": 65536,
+    "profile": {
+      "samples": 0,
+      "total_ns": 0,
+      "validation_ns": 0,
+      "capacity_wait_ns": 0,
+      "record_ns": 0,
+      "submit_ns": 0,
+      "fence_wait_ns": 0,
+      "gpu_span_ns": 0
+    },
+    "query_upload_copy_bytes": 0,
+    "result_readback_copy_bytes": 0,
+    "owner_pid": 987931,
+    "session_slots": 16,
+    "shared_batches": 11124,
+    "socket_batches": 0,
+    "socket_payload_bytes": 0
+  },
+  "gpu_after": "1234 MiB, 10668 MiB, 2 %"
+}

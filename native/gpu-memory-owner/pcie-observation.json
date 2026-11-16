@@ -1,0 +1,10 @@
+{
+  "observed_at": "2026-11-16T03:31:17.817883+00:00",
+  "command": [
+    "nvidia-smi",
+    "--query-gpu=pci.bus_id,pcie.link.gen.gpucurrent,pcie.link.gen.gpumax,pcie.link.gen.hostmax,pcie.link.width.current,pcie.link.width.max,pstate,utilization.gpu",
+    "--format=csv,noheader"
+  ],
+  "result": "00000000:04:00.0, 1, 4, 4, 4, 16, P8, 32 %",
+  "scope": "Read-only snapshot during bounded benchmark; no hardware configuration changed"
+}

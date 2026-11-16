@@ -1,0 +1,49 @@
+{
+  "observed_at": "2026-11-16T03:45:58.048334+00:00",
+  "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/app-com.microsoft.VSCode-27081.scope",
+  "nice": 0,
+  "load_average": [
+    55.0,
+    39.30712890625,
+    33.68115234375
+  ],
+  "hierarchy": [
+    {
+      "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-com.microsoft.VSCode-27081.scope",
+      "cpu.max": "max 100000",
+      "cpu.weight": "100",
+      "cpu.stat": "usage_usec 9886591211\nuser_usec 7933212559\nsystem_usec 1953378651\nnice_usec 2505000\ncore_sched.force_idle_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0"
+    },
+    {
+      "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice",
+      "cpu.max": "max 100000",
+      "cpu.weight": "100",
+      "cpu.stat": "usage_usec 129247642338\nuser_usec 101985222562\nsystem_usec 27262419775\nnice_usec 1205998000\ncore_sched.force_idle_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0"
+    },
+    {
+      "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service",
+      "cpu.max": "max 100000",
+      "cpu.weight": "100",
+      "cpu.stat": "usage_usec 134816462651\nuser_usec 105155097188\nsystem_usec 29661365463\nnice_usec 1242940000\ncore_sched.force_idle_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0"
+    },
+    {
+      "path": "/sys/fs/cgroup/user.slice/user-1000.slice",
+      "cpu.max": "max 100000",
+      "cpu.weight": "100",
+      "cpu.stat": "usage_usec 134816567425\nuser_usec 105155141568\nsystem_usec 29661425857\nnice_usec 1242940000\ncore_sched.force_idle_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0"
+    },
+    {
+      "path": "/sys/fs/cgroup/user.slice",
+      "cpu.max": "max 100000",
+      "cpu.weight": "100",
+      "cpu.stat": "usage_usec 134824875026\nuser_usec 105159802340\nsystem_usec 29665072685\nnice_usec 1242940000\ncore_sched.force_idle_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0",
+      "cpuset.cpus.effective": "0-15"
+    },
+    {
+      "path": "/sys/fs/cgroup",
+      "cpu.stat": "usage_usec 320990724000\nuser_usec 233438251000\nsystem_usec 87552473000\nnice_usec 1321240000\ncore_sched.force_idle_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0",
+      "cpuset.cpus.effective": "0-15"
+    }
+  ],
+  "scope": "Read-only CPU scheduling constraints after paired run; no settings changed"
+}
