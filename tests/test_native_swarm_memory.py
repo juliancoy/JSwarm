@@ -10,6 +10,7 @@ from pathlib import Path
 import socket
 import ssl
 import subprocess
+import sys
 import threading
 import time
 
@@ -134,8 +135,13 @@ def test_actual_fuse_mmap_peer_only_reads_and_binary_admission(environment,tmp_p
             while not os.path.ismount(mount) and p.poll() is None and time.monotonic()<deadline:time.sleep(.05)
             log.seek(0);assert os.path.ismount(mount),log.read()
         a=Path(env['configs']['a.local'][1]['objects'][0]['mountpoint']);b=Path(env['configs']['b.local'][1]['objects'][0]['mountpoint'])
-        with (a/'object').open('rb') as f,mmap.mmap(f.fileno(),0,access=mmap.ACCESS_READ) as m:
-            assert m[3:30000]==env['data'][3:30000]
+        # Fault in a separate process: a Python mmap slice holds the GIL while
+        # faulting, which would deadlock this process's Python TLS fixture.
+        result=subprocess.run([sys.executable,'-c',
+            'import mmap,sys; f=open(sys.argv[1],"rb"); m=mmap.mmap(f.fileno(),0,access=mmap.ACCESS_READ); sys.stdout.buffer.write(m[3:30000])',
+            str(a/'object')],capture_output=True,timeout=25)
+        assert result.returncode==0,result.stderr.decode()
+        assert result.stdout==env['data'][3:30000]
         # B has no authoritative sources at all. Its read must come from A's
         # real native binary cache, using inventory hints and enrolled mTLS.
         with (b/'object').open('rb',buffering=0) as f:

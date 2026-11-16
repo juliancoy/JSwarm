@@ -25,7 +25,7 @@ int dial(const Json& discovery,const std::string& name,int port,Counters& stats)
     // Python's control plane supplies freshly discovered AF_UNSPEC/DNS-SD
     // candidates; addresses locate peers and never replace TLS authentication.
     auto now=seconds_now();auto updated=discovery.at("updated").get<uint64_t>();
-    if(updated>now+5||now-updated>30)throw std::runtime_error("Discovery snapshot expired");
+    if(updated>now+5||(now>updated&&now-updated>30))throw std::runtime_error("Discovery snapshot expired");
     const auto& rows=discovery.at("hosts").at(name);
     std::vector<pollfd> sockets;std::vector<int> families;
     auto close_all=[&]{for(auto p:sockets)if(p.fd>=0)::close(p.fd);};
