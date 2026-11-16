@@ -149,8 +149,14 @@ class SubmissionQueue:
         """
         if not 2<=len(requests)<=64 or set(resources)!={'cpus','memory_mb'} or any(type(v) is not int or v<=0 for v in resources.values()):
             raise ValueError('Invalid bounded batch reservation')
-        batch=next(iter(requests.values())).get('gpu_batch')
-        if not isinstance(batch,dict) or set(batch.get('members',[]))!=set(requests) or any(r.get('gpu_batch')!=batch for r in requests.values()):
+        # Keep accepted GPU contracts readable while admitting ordinary CPU
+        # batches through the same fencing and physical resource accounting.
+        first=next(iter(requests.values()))
+        key='batch' if 'batch' in first else 'gpu_batch'
+        batch=first.get(key)
+        if (not isinstance(batch,dict) or set(batch.get('members',[]))!=set(requests)
+                or len(batch['members'])!=len(requests)
+                or any(r.get(key)!=batch or ({'batch','gpu_batch'} & set(r))!={key} for r in requests.values())):
             raise ValueError('Batch members must share one durable owner')
         if capacity.get('accepting_jobs') is False:return []
         remaining=dict(capacity)

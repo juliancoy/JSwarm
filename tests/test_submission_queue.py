@@ -136,3 +136,20 @@ def test_batch_claim_race_leaves_every_other_member_unclaimed(tmp_path):
     group={'id':'group','members':['a','b']}
     assert q.claim_batch('node',{'available_cpus':4,'available_mb':4096},{i:{'gpu_batch':group} for i in group['members']},{'cpus':2,'memory_mb':1024})==[]
     with q.connect() as db:assert db.execute("SELECT state FROM submissions WHERE id='a'").fetchone()[0]=='queued'
+
+
+def test_cpu_batch_uses_the_same_atomic_fencing_and_capacity(tmp_path):
+    q=SubmissionQueue('cpu',tmp_path/'queue.sqlite')
+    for ident in ['a','b']:q.submit({'id':ident,'resources':{'cpus':4,'memory_mb':2048}})
+    group={'id':'cpu-batch','members':['a','b']}
+    requests={i:{'batch':group} for i in group['members']}
+    assert q.claim_batch('node',{'available_mb':1000},requests,{'cpus':4,'memory_mb':4096})==[]
+    assert q.claim_batch('node',{'accepting_jobs':False},requests,{'cpus':4,'memory_mb':4096})==[]
+    with pytest.raises(ValueError):
+        q.claim_batch('node',{},dict(a={'batch':group,'gpu_batch':group},b={'batch':group}),{'cpus':4,'memory_mb':4096})
+    claims=q.claim_batch('node',{'available_cpus':4,'available_mb':4096},requests,{'cpus':4,'memory_mb':4096})
+    assert len(claims)==2
+    assert sum(json.loads(row['request'])['resources']['memory_mb'] for row in claims)==4096
+    for row in claims:
+        q.update(row['id'],row['token'],state='completed',result='{}')
+    assert q.snapshot()=={'completed':2}

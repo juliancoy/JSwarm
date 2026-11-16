@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import socket
 import shutil
 import sqlite3
 import ssl
@@ -423,6 +424,59 @@ def validate(request,registry=None):
     return {**request,'parameters':parameters,'resources':resources,'buffer_bytes':buffer,'namespace':request.get('namespace','stream-work')}
 
 
+_DISCOVERY=None
+_DISCOVERY_LOCK=threading.Lock()
+
+
+def peer_addresses(node,refresh=False):
+    """Discover enrolled LAN endpoints inside minimal worker images.
+
+    DNS-SD supplies addresses, never trust: the transport still pins the exact
+    enrolled certificate. Scope-qualified IPv6 link-local addresses are retained.
+    """
+    global _DISCOVERY
+    if not isinstance(node,str) or not node.endswith('.local'):return []
+    try:
+        from zeroconf import Zeroconf,IPVersion
+    except ImportError:return []
+    with _DISCOVERY_LOCK:
+        if refresh and _DISCOVERY is not None:
+            _DISCOVERY.close();_DISCOVERY=None
+        if _DISCOVERY is None:
+            import atexit
+            _DISCOVERY=Zeroconf(unicast=True,ip_version=IPVersion.All)
+            atexit.register(_DISCOVERY.close)
+        info=_DISCOVERY.get_service_info('_lifetech._tcp.local.',node+'._lifetech._tcp.local.',timeout=2000)
+    if (not info or info.port!=8790 or info.properties.get(b'node')!=node.encode()
+            or info.properties.get(b'protocol')!=b'lifetech-launcher.v1'):return []
+    addresses=info.parsed_scoped_addresses(IPVersion.All)
+    import ipaddress
+    return list(dict.fromkeys(address for address in addresses
+        if not (ipaddress.ip_address(address.split('%')[0]).version==6
+                and ipaddress.ip_address(address.split('%')[0]).is_link_local and '%' not in address)))
+
+
+def peer_https_connection(peer,port,context,node):
+    """Resolve each connection anew; bound attempts and refresh after path loss."""
+    connection=http.client.HTTPSConnection(peer['address'],port,context=context,timeout=60)
+    def connect(address,timeout=60,source_address=None):
+        last=None
+        for refresh in (False,True):
+            try:addresses=peer_addresses(node,refresh)
+            except OSError:addresses=[]
+            for candidate in addresses:
+                try:return socket.create_connection((candidate,port),timeout=min(5,timeout),source_address=source_address)
+                except OSError as error:last=error
+        # Ordinary DNS/TCP compatibility remains available, including both
+        # families returned by getaddrinfo and its scoped IPv6 socket tuples.
+        try:return socket.create_connection(address,timeout=min(5,timeout),source_address=source_address)
+        except OSError:
+            if last is not None:raise last
+            raise
+    connection._create_connection=connect
+    return connection
+
+
 class RangeReader(io.RawIOBase):
     """Immutable range reader using only enrolled peer addresses and certificate pins."""
     def __init__(self,obj,peer,tls,port,buffer_bytes=BUFFER):
@@ -440,7 +494,7 @@ class RangeReader(io.RawIOBase):
         self.offset=target;return target
     def connect(self):
         if self.connection is None:
-            connection=http.client.HTTPSConnection(self.peer['address'],self.port,context=self.context,timeout=60);connection.connect()
+            connection=peer_https_connection(self.peer,self.port,self.context,self.obj.get('peer'));connection.connect()
             if hashlib.sha256(connection.sock.getpeercert(binary_form=True)).hexdigest()!=self.peer['certificate_sha256']:
                 connection.close();raise ValueError('Enrolled source certificate differs')
             self.connection=connection
@@ -582,7 +636,7 @@ def publish_outputs(job,files,tls='/tls',attempts=3):
         before=path.stat();identity=(before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns)
         with path.open('rb') as stream:checksum=hashlib.file_digest(stream,'sha256').hexdigest()
         for attempt in range(attempts):
-            connection=http.client.HTTPSConnection(peer['address'],peer.get('output_port',config['port']),context=context,timeout=60)
+            connection=peer_https_connection(peer,peer.get('output_port',config['port']),context,output['peer'])
             try:
                 connection.connect()
                 if hashlib.sha256(connection.sock.getpeercert(binary_form=True)).hexdigest()!=peer['certificate_sha256']:raise ValueError('Output peer certificate differs')

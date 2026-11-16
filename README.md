@@ -65,6 +65,37 @@ HarborGenetics. Legacy links rely on the adjacent workspace layout.
 
 ## Shared node memory
 
+Immutable data can also use the generic `scripts.swarm_memory` object interface.
+`seal(path, expected_sha256)` creates a content-addressed manifest with per-page
+hashes from an existing read-only original. `scripts.deploy_swarm_memory`
+publishes enrolled mTLS grants and creates a separate, versioned `SwarmMemory`
+mount on each selected node. Its `object` file supports normal read-only `mmap`;
+applications need not implement transport, cache placement or integrity checks.
+The index/reference representation must itself be mmap-compatible: copying it
+into a private heap still creates private allocations.
+
+Pages are fetched on demand, checked against the publisher's manifest, cached
+in bounded local tmpfs and offered asynchronously to two enrolled RAM peers.
+Peer cache admission and eviction remain authoritative. Corrupt replicas are
+discarded; unavailable routes fall back to other peers and the original source.
+The object view can list multiple authoritative sources of the same bytes.
+Metadata is available without contacting an origin, so cached pages remain
+readable during an origin outage. Uncached pages still require a reachable
+replica or source; opportunistic replicas are not a durability guarantee.
+The default local copy cache is at most 256 MiB, reduced for available memory;
+peer donations currently use the existing bounded filesystem cache. Kernel
+mapping pages are separately reclaimable and are not included in that tmpfs
+budget. Job cgroup limits and node admission still apply.
+
+Run `python -m scripts.deploy_swarm_memory --source ENROLLED.local --path
+/absolute/immutable/file --sha256 EXPECTED_SHA256 --output deployment.json`
+on one line. Omit `--node` to include all enrolled nodes. No existing filesystem,
+accepted worker or owner policy is replaced. Verify mounts from actual compute
+containers with `tests/swarm_memory_live.py`; each mount exposes `metrics.json`
+with page hits, source bytes, replica outcomes and observed address families.
+Scientific applications must separately qualify their mapped representation
+and private-memory budgets before dispatching production work.
+
 Each updated node has one bounded RAM cache keeper, managed by its agent through
 controller-signed `resource.cache.*` operations. Immutable object sets live in
 separate directories of one Docker tmpfs volume. Jobs mount only their required

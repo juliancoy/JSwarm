@@ -27,6 +27,18 @@ class InputCache:
         self.root=Path(root); self.root.mkdir(parents=True,exist_ok=True,mode=0o700)
         self.budget=budget; self.reserve=reserve
 
+    def invalidate(self, identity, total, offset):
+        """Discard a page rejected by an external immutable-content manifest."""
+        if not re.fullmatch('[0-9a-f]{32}', identity) or not 0 <= offset < total or offset % BLOCK:
+            raise ValueError('Invalid cache object/range')
+        length = min(BLOCK, total-offset)
+        key = hashlib.sha256(f'{identity}:{total}:{offset}:{length}'.encode()).hexdigest()
+        with (self.root/('lock-'+key[:2])).open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            with (self.root/'eviction.lock').open('a') as eviction:
+                fcntl.flock(eviction, fcntl.LOCK_EX)
+                (self.root/(key+'.block')).unlink(missing_ok=True)
+
     def lookup(self,identity,total,offset):
         if not re.fullmatch('[0-9a-f]{32}',identity) or not 0<=offset<total or offset%BLOCK:
             raise ValueError('Invalid cache object/range')
