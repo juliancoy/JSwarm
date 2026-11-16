@@ -1,0 +1,12 @@
+{
+  "date": "2026-11-16T14:36:07.927936-05:00",
+  "capture": "/tmp/vram-profile-20261116-135639.qdstrm",
+  "capture_sha256": "5ef583a6c4a18dd9f472e374c67287784222f759aa9f829f52dcc20649c4e97e",
+  "import_command": "/usr/lib/nsight-systems/host-linux-x64/QdstrmImporter -i /tmp/vram-profile-20261116-135639.qdstrm -o /tmp/vram-profile-20261116-135639.nsys-rep",
+  "import_result": 0,
+  "export_command": "nsys export --type sqlite --output /tmp/vram-profile-20261116-135639.sqlite /tmp/vram-profile-20261116-135639.nsys-rep",
+  "export_result": 0,
+  "gpu_metric_samples": 36103,
+  "benchmark_test_log": "631a3414f8874924855165f7035c6658.log",
+  "note": "Converted existing capture; no benchmark rerun. Device-wide metrics include other workloads; no per-case attribution established."
+}

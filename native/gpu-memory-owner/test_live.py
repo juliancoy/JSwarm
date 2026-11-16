@@ -50,6 +50,8 @@ def main():
                         err.seek(0);raise RuntimeError(err.read())
                     info=json.loads(ready.read_text()); path=info['socket']
                     indices=[0,1,524287,524288,1048575,1048576,1572863,1572864,len(words)-1]+[(i*7919)%len(words) for i in range(1000)]
+                    segment=int([command[i+1] for i,value in enumerate(command) if value=='--segment'][-1])//4
+                    indices.extend(i for i in (segment-1,segment,2*segment-1,2*segment) if i<len(words))
                     batches=[[((i+batch*131)%len(words)) for i in indices] for batch in range(6)]
                     with concurrent.futures.ProcessPoolExecutor(max_workers=3) as pool:
                         results=list(pool.map(client_task,[(path,digest,batch) for batch in batches]))
@@ -57,7 +59,7 @@ def main():
                     after=request(path,digest)
                     assert after['reference_upload_bytes']==source.stat().st_size
                     assert after['reference_allocation_bytes']==info['reference_allocation_bytes']
-                    assert after['segments']==4 and after['query_batches']==6
+                    assert after['segments']==info['segments'] and after['query_batches']==6
                     assert after['query_upload_copy_bytes']==after['result_readback_copy_bytes']
                     assert (after['query_upload_copy_bytes']==0)==(after['device_io']=='mapped')
                     assert after['parallelism']==4
@@ -65,6 +67,8 @@ def main():
                     # Direct shared views: no payload packing, socket send, or list
                     # result creation is required by the Session API.
                     with Session(path,digest) as direct:
+                        assert direct.metadata['device_io']==after['device_io']
+                        assert direct.metadata['gpu_payload_zero_copy']==(after['device_io']=='mapped')
                         assert fcntl.fcntl(direct._fd,fcntl.F_GETFD)&fcntl.FD_CLOEXEC
                         try:os.ftruncate(direct._fd,0)
                         except PermissionError:pass

@@ -1,0 +1,87 @@
+{
+  "date": "2026-11-16T14:37:02.345331-05:00",
+  "source": "/tmp/vram-profile-20261116-135639.sqlite",
+  "method": "Metrics sampled inside CPU fence-wait windows trimmed 100 us at each end. Windows identified by command order and durations matching benchmark output. Approximate device-wide attribution, not exact GPU start/end or isolated process counters. No new benchmark run.",
+  "rows": [
+    {
+      "case": "transfer-copy",
+      "fence_wait_indices": [
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "samples": 2972,
+      "mean_counter_percent": {
+        "DRAM Read Throughput": 41.46,
+        "DRAM Write Throughput": 41.47,
+        "SM Active": 94.1,
+        "SM Issue": 4.76,
+        "Compute Warps In Flight": 27.15,
+        "PCIe RX Throughput": 0.44,
+        "PCIe TX Throughput": 1.03
+      }
+    },
+    {
+      "case": "compute-copy",
+      "fence_wait_indices": [
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "samples": 2729,
+      "mean_counter_percent": {
+        "DRAM Read Throughput": 44.96,
+        "DRAM Write Throughput": 44.78,
+        "SM Active": 97.8,
+        "SM Issue": 32.34,
+        "Compute Warps In Flight": 84.87,
+        "PCIe RX Throughput": 0.21,
+        "PCIe TX Throughput": 1.0
+      }
+    },
+    {
+      "case": "random-gather-1M",
+      "fence_wait_indices": [
+        47,
+        48,
+        49,
+        50,
+        51
+      ],
+      "samples": 535,
+      "mean_counter_percent": {
+        "DRAM Read Throughput": 31.92,
+        "DRAM Write Throughput": 4.21,
+        "SM Active": 96.92,
+        "SM Issue": 3.7,
+        "Compute Warps In Flight": 61.04,
+        "PCIe RX Throughput": 0.41,
+        "PCIe TX Throughput": 1.0
+      }
+    },
+    {
+      "case": "random-gather-2M",
+      "fence_wait_indices": [
+        65,
+        66,
+        67,
+        68,
+        69
+      ],
+      "samples": 1070,
+      "mean_counter_percent": {
+        "DRAM Read Throughput": 32.3,
+        "DRAM Write Throughput": 4.28,
+        "SM Active": 96.97,
+        "SM Issue": 3.76,
+        "Compute Warps In Flight": 61.19,
+        "PCIe RX Throughput": 0.35,
+        "PCIe TX Throughput": 1.0
+      }
+    }
+  ]
+}

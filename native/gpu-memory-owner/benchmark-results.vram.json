@@ -1,0 +1,170 @@
+{
+  "scope": "Standalone device-only Vulkan timing; no production service changes; 256 MiB reference plus 256 MiB I/O in DEVICE_LOCAL; all setup and correctness readbacks excluded from timed regions",
+  "metric_warning": "Read+write GB/s for sequential copy; gather bandwidth is requested logical bytes (index+reference+result), NOT measured DRAM transactions; random access can fetch larger cache sectors; no hardware stall counters collected",
+  "gpu_before": "NVIDIA GeForce RTX 3060, 580.142, 12288 MiB, 10446 MiB, 1995 MHz, 7301 MHz, 1 %",
+  "load_before": [
+    6.16064453125,
+    5.671875,
+    5.67626953125
+  ],
+  "rows": [
+    {
+      "case": "transfer-copy",
+      "count": 67108864,
+      "repetitions": 32,
+      "gpu_seconds": [
+        0.0557365,
+        0.0561288,
+        0.0554429,
+        0.0559299,
+        0.0614694
+      ],
+      "logical_bytes_per_iteration": 536870912,
+      "verified": true,
+      "gpu_us_per_dispatch": 1747.8093749999998,
+      "logical_gb_per_s": 307.16788665812027,
+      "lookups_per_s": null
+    },
+    {
+      "case": "compute-copy",
+      "count": 67108864,
+      "repetitions": 32,
+      "gpu_seconds": [
+        0.0541107,
+        0.054721,
+        0.0543725,
+        0.0541332,
+        0.0535788
+      ],
+      "logical_bytes_per_iteration": 536870912,
+      "verified": true,
+      "gpu_us_per_dispatch": 1691.6625,
+      "logical_gb_per_s": 317.362897149993,
+      "lookups_per_s": null
+    },
+    {
+      "case": "sequential-gather",
+      "count": 65536,
+      "repetitions": 32,
+      "gpu_seconds": [
+        0.000108032,
+        0.000109056,
+        9.8912e-05,
+        0.000100928,
+        9.9392e-05
+      ],
+      "logical_bytes_per_iteration": 786432,
+      "verified": true,
+      "gpu_us_per_dispatch": 3.1540000000000004,
+      "logical_gb_per_s": 249.34432466708938,
+      "lookups_per_s": 20778693722.25745
+    },
+    {
+      "case": "random-gather",
+      "count": 65536,
+      "repetitions": 32,
+      "gpu_seconds": [
+        0.000744,
+        0.000741824,
+        0.00075888,
+        0.000742592,
+        0.00074512
+      ],
+      "logical_bytes_per_iteration": 786432,
+      "verified": true,
+      "gpu_us_per_dispatch": 23.25,
+      "logical_gb_per_s": 33.82503225806452,
+      "lookups_per_s": 2818752688.1720433
+    },
+    {
+      "case": "sequential-gather",
+      "count": 1048576,
+      "repetitions": 32,
+      "gpu_seconds": [
+        0.00140227,
+        0.00140362,
+        0.00140326,
+        0.00140483,
+        0.00140301
+      ],
+      "logical_bytes_per_iteration": 12582912,
+      "verified": true,
+      "gpu_us_per_dispatch": 43.851875,
+      "logical_gb_per_s": 286.9412539372604,
+      "lookups_per_s": 23911771161.438366
+    },
+    {
+      "case": "random-gather",
+      "count": 1048576,
+      "repetitions": 32,
+      "gpu_seconds": [
+        0.0104381,
+        0.0108528,
+        0.0141284,
+        0.0119608,
+        0.0121961
+      ],
+      "logical_bytes_per_iteration": 12582912,
+      "verified": true,
+      "gpu_us_per_dispatch": 373.77500000000003,
+      "logical_gb_per_s": 33.66440238111163,
+      "lookups_per_s": 2805366865.0926356
+    },
+    {
+      "case": "sequential-gather",
+      "count": 2097152,
+      "repetitions": 32,
+      "gpu_seconds": [
+        0.00272963,
+        0.00284979,
+        0.00307827,
+        0.00273014,
+        0.00273066
+      ],
+      "logical_bytes_per_iteration": 25165824,
+      "verified": true,
+      "gpu_us_per_dispatch": 85.33312500000001,
+      "logical_gb_per_s": 294.9127200017578,
+      "lookups_per_s": 24576060000.146484
+    },
+    {
+      "case": "random-gather",
+      "count": 2097152,
+      "repetitions": 32,
+      "gpu_seconds": [
+        0.0213563,
+        0.0216715,
+        0.0213142,
+        0.0213693,
+        0.0214065
+      ],
+      "logical_bytes_per_iteration": 25165824,
+      "verified": true,
+      "gpu_us_per_dispatch": 667.790625,
+      "logical_gb_per_s": 37.68520110625991,
+      "lookups_per_s": 3140433425.5216594
+    }
+  ],
+  "command": [
+    "/home/julian/Documents/Organization/JSwarm/native/gpu-memory-owner/vram-benchmark",
+    "/home/julian/Documents/Organization/JSwarm/native/gpu-memory-owner/gather.spv",
+    "/home/julian/Documents/Organization/JSwarm/native/gpu-memory-owner/resident_setup.spv"
+  ],
+  "exit_code": 0,
+  "device": {
+    "device": "NVIDIA GeForce RTX 3060",
+    "device_uuid": "162c80e2a9e6da6b3234a5988103eca0",
+    "device_allocation_bytes": 536870912,
+    "reference_bytes": 268435456,
+    "host_readback_bytes": 16777216,
+    "timestamp_period_ns": 1,
+    "timed_host_payload_copies": 0,
+    "timed_host_roundtrips_between_dispatches": 0
+  },
+  "gpu_after": "NVIDIA GeForce RTX 3060, 580.142, 12288 MiB, 10444 MiB, 1972 MHz, 7301 MHz, 15 %",
+  "load_after": [
+    6.16064453125,
+    5.671875,
+    5.67626953125
+  ]
+}

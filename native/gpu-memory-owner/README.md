@@ -391,3 +391,227 @@ as test sources. The successful captured output is
 `12c57ca33e0b4350a9a87dde160e9ad5.log`; adjacent logs record command, date, and
 exact code/binary fingerprints. Reuse this run for unchanged code/configuration/
 inputs instead of rerunning it.
+
+## Command reuse and measured I/O optimization
+
+The default now reuses each slot's executable Vulkan command buffer when its
+batch count is unchanged. The cached command includes the host/GPU barriers,
+descriptors, dispatch, and optional profiling timestamps. It is submitted again
+only after that slot's prior fence has completed. A changed count or replacement
+session buffer invalidates the cache. Input contents may change every request;
+CPU index validation and the shader bounds check remain in place. This does not
+cache results or assume repeated reference indices. `--command-reuse off` keeps
+an uncached control path for reproducible measurement.
+
+Mapped I/O remains the default (`--device-io mapped`) and retains zero GPU payload
+copies. An explicit experimental `--device-io staged` path copies the active
+input range to a per-slot device-local buffer, computes there, and copies the
+active output range back. The client still uses shared pages and no socket payload
+copies, but GPU upload/readback copies are real and counted. The session handshake
+reports `device_io` and `gpu_payload_zero_copy`; callers can distinguish them.
+Staging adds 8 MiB of VRAM for sixteen 512 KiB slots, apart from the reference and
+driver overhead. It is not selected automatically because it lost the multi-client
+comparison on this RTX 3060.
+
+### Interleaved A/B results
+
+`benchmark_optimization.py` rotated configuration order across three trials of
+100 batches per client, with the same source, seeded producer, validation, and
+persistent native control path as the paired CPU/GPU comparison. It measured one
+and eight workers, warm and changing index sets, and 4,096/65,536-word batches.
+Each configuration had a private 64 MiB reference owner for isolation, 192 MiB
+of total test reference VRAM; only one configuration ran requests at a time.
+A normal deployment still has one reference allocation per shared owner.
+
+Eight-worker median-trial throughput, million lookups/sec, using the same original
+divide/modulo shader for all three configurations:
+
+| Pattern | Batch lookups | Caching off, mapped | Caching on, mapped | Caching on, staged |
+| --- | ---: | ---: | ---: | ---: |
+| Warm | 4,096 | 81.2 | 81.3 | 54.2 |
+| Warm | 65,536 | 367.9 | 374.8 | 265.4 |
+| Changing | 4,096 | 90.5 | 103.0 | 72.7 |
+| Changing | 65,536 | 339.4 | 355.3 | 259.1 |
+
+Caching improved changing-index throughput about 14% for small batches and 5%
+for large batches in this controlled run. Per eight-worker case, recording count
+fell from 2,472 to 24, with 2,448 command reuses (including warmups). Cache hits
+were asserted, not inferred from throughput. Every configuration's output was
+checked, staged copy counts matched the exact active byte ranges, and mapped copy
+counts stayed zero. The caching benefit was not universal: the single-worker,
+changing large-batch case measured 142.7 M/s cached versus 150.0 M/s uncached.
+Other single-worker cases improved 8–12%. Host load averaged about 30 before and
+29 after; timings remain subject to unrelated activity.
+
+The full results and the tested binary/source fingerprints are retained in
+`benchmark-results.optimization.json` and adjacent logged run
+`1aa5718ac11245e890304dd560d7054f.log`. The uncached control uses the same new
+recording/barrier implementation with caching disabled, isolating reuse rather
+than treating an older run on a different host load as a baseline.
+
+### Rejected shader experiment
+
+A power-of-two segment-addressing experiment replaced divide/modulo with shifts
+and masks, retaining division for other segment sizes. It was correct on both
+power-of-two and non-power-of-two test segments, but the profiled interleaved
+comparison showed no convincing GPU execution-time benefit. Eight-worker changing
+large batches averaged 145.88 us of GPU command span with the baseline shader and
+144.33 us with the experiment, while throughput regressed from 366.7 to 314.4 M/s
+in that run. Single-worker warm small-batch throughput also regressed; other cases
+varied. This did not justify keeping the shader change.
+
+The production `gather.comp` and `gather.spv` therefore retain the original shader.
+The rejected source remains explicitly experimental in
+`gather_experiment_shift.comp` / `gather-shift.spv`; the baseline is retained as
+`gather_baseline.comp` / `gather-baseline.spv`. Build those optional artifacts with
+`make gather-baseline.spv gather-shift.spv`. `benchmark-results.shader.json` and
+logged run `77910edf78cd438dada768daef84335e.log` retain the measurements. The
+benchmark's `cached-optimized-shader` label denotes the experimental candidate,
+not a production recommendation.
+
+### Final paired CPU/GPU check
+
+The kept configuration (command reuse on, mapped I/O, original shader, blocking
+fence waits) was compared again with the optimized native Ryzen 7 5800X baseline.
+The same workload, three-trial method, and eight-worker admission were retained.
+These values are a new contended-host comparison, not a claimed speedup against
+an earlier run with different background load:
+
+| Eight workers | Batch lookups | CPU M lookups/s | GPU M lookups/s |
+| --- | ---: | ---: | ---: |
+| Warm | 4,096 | 215.7 | 42.0 |
+| Warm | 65,536 | 305.9 | 210.2 |
+| Changing | 4,096 | 102.6 | 28.4 |
+| Changing | 65,536 | 119.0 | 323.3 |
+
+The large/changing case favored the GPU by 2.72x in this run; CPU execution still
+won the other eight-worker cases. The wide differences from the short interleaved
+A/B run show why these are not peak throughput guarantees. The pure cache effect
+is supported by the matched A/B comparison above, not by cross-run ratios.
+`benchmark-results.cpu-gpu.optimized.json` contains all one/eight-worker cases,
+latencies, trial durations, and final owner statistics. The owner recorded 108
+command recordings and 11,016 reuses across 11,124 successful batches; reference
+upload happened once and both GPU copy counters and shared socket payload bytes
+stayed zero. The successful logged comparison is
+`edefc54b9fea4802b67dbaa810739db3.log`.
+
+Final kept-backend correctness tests passed in
+`6e7ccafead5c41da9bff5cbc10fbb03a.log` (mapped) and
+`b7869903b54b4f99840fae201d5cf636.log` (staged). Coverage includes full maximum-size
+outputs, changing data with cache hits, sizes around workgroup/batch boundaries,
+cache invalidation on count and session changes, invalid inputs, fragmented
+controls, concurrent clients, stale retained FDs, and resize seals. A separate
+non-power-of-two segment run is recorded in
+`380e351fe7854608942e5122a879410b.log`. Adjacent logs associate each run with the
+actual code, library, and shader fingerprints; the post-run host snapshot is in
+`optimization-host-context.json`. All temporary owners were stopped and their
+reservations released. Other jobs and alternate validation were not reconfigured
+or stopped. These optimizations apply to synthetic index gather; minimap2 alignment
+integration remains pending.
+
+
+## Device-resident ceiling probe — 2026-11-16
+
+`vram_benchmark.cpp` is an isolated Vulkan benchmark reusing the production gather
+shader and owner allocation helpers. It does not change the running owner or
+implement minimap2 alignment. Build with `make vram-benchmark resident_setup.spv`.
+`benchmark_vram.py` acquires a low-priority local resource reservation and releases
+it in `finally`. It uses 256 MiB of device-local reference plus 256 MiB of
+device-local I/O, with a separate 16 MiB host readback buffer. Reference and query
+initialization run on the GPU. Setup and correctness readbacks are outside timing.
+Each sample submits 32 operations in one command buffer, with GPU timestamps and
+no host payload transfer or CPU round trip between operations. Five samples per
+case follow warmup. These are repeated, fixed-query batches, not changing-query
+end-to-end service measurements. The device was shared with existing workloads.
+
+Results in `benchmark-results.vram.json` (medians):
+
+| Operation | Batch | GPU time/operation | Throughput |
+| --- | ---: | ---: | ---: |
+| Transfer copy | 256 MiB | 1.890 ms | 284.0 GB/s read + write |
+| Compute copy | 256 MiB | 1.800 ms | 298.2 GB/s read + write |
+| Sequential gather | 2,097,152 | 91.55 us | 22.91 billion lookups/s |
+| Random gather | 65,536 | 23.29 us | 2.81 billion lookups/s |
+| Random gather | 1,048,576 | 357.63 us | 2.93 billion lookups/s |
+| Random gather | 2,097,152 | 707.85 us | 2.96 billion lookups/s |
+
+All gather outputs were checked after warmup and after the timed samples. Copy
+correctness checks sampled eight 4 KiB windows covering both ends of every
+reference segment. The logged test passed:
+`.test-output/90d6bb8d9a664d13bbc296ad1a48209f.log`; adjacent test logs contain
+the command, date and source/binary/shader fingerprints.
+
+The large random gather requests 35.55 GB/s of logical index/reference/result
+bytes. This is **not physical DRAM bandwidth**: scattered 4-byte loads fetch
+larger cache sectors, and repeated queries may benefit from caching. Therefore
+35.55 / 298.2 does not measure VRAM utilization or available optimization headroom.
+Small sequential batches also benefit from caching. The copy tests provide an
+empirical streaming reference, not a proven random-access ceiling. The existing
+host-mapped service still has PCIe, IPC and synchronization overhead absent here;
+its earlier results have different reference sizes and timing boundaries.
+
+Hardware-counter preflight found `RmProfilingAdminOnly: 1` in
+`/proc/driver/nvidia/params`. `nsys profile --gpu-metrics-device=help` recognizes
+the RTX 3060, but counters are restricted to administrator access. The available
+Vulkan device extensions do not expose `VK_KHR_performance_query`; Nsight Compute
+is a CUDA profiler, and Nsight Graphics is unavailable. No hardware stall counters
+were collected and no profiling permissions, driver settings, clocks or other
+jobs were changed. Thus this run demonstrates device-resident throughput but does
+not establish VRAM saturation or identify specific shader stall reasons.
+
+
+## Cache-locality experiment — 2026-11-16
+
+`cache_group.comp`, `cache_benchmark.cpp`, and `benchmark_cache.py` add an
+experimental device-resident bucketed gather. This is not a software cache or
+proof of improved hardware cache hit rates: it reorganizes queries so nearby
+reference locations are processed together, to encourage hardware cache reuse.
+Production `owner.cpp`, `gather.comp`, and service defaults are unchanged.
+
+The 256 MiB reference is split into 256 one-MiB locality regions. GPU histogram,
+prefix and scatter passes group the query indices and retain an inverse position
+map. The gather writes contiguous grouped results. A separate GPU pass restores
+original request order. Index bounds remain checked, including UINT32_MAX. All
+scratch resides inside the existing 256 MiB device I/O allocation (512 MiB total
+device reference + I/O); the largest batch uses about 40 MiB of I/O space. No host
+payload copies occur between timed operations. Grouping uses additional scratch
+traffic and atomics; it does not eliminate memory costs.
+
+Build: `make cache-benchmark cache_group.spv`. Execute the admitted harness via
+`JSwarm/run.py --test ...`, fingerprinting the harness, cache C++/shader/binary,
+resident benchmark helper, owner and input SPIR-V files as in the adjacent logs.
+The harness uses a low-priority local capacity lease and releases it in `finally`.
+It runs eight operations per sample, five samples per mode, with original uniform
+random queries retained across samples. The direct baseline is rerun here because
+this comparison has different repetition counts and adjacent grouping work.
+
+Two candidates were measured. The first scattered gathered results directly to
+original positions and was slower even with preprocessing excluded. Its results
+are retained in `benchmark-results.cache.json.scatter-output`, with test log
+`c8f22c54344947d98d0f4bff416e9247.log`. The final candidate adds a separate order
+restoration pass, improving the large reused batch:
+
+| Queries | Direct | Group every batch, all GPU passes | Reuse grouped queries, gather + restore |
+| --- | ---: | ---: | ---: |
+| 65,536 | 24.17 us | 103.17 us | 29.60 us |
+| 1,048,576 | 326.52 us | 1,027.07 us | 326.82 us |
+| 2,097,152 | 648.48 us | 1,779.08 us | 520.17 us |
+
+For the largest batch that is 3.23 billion direct lookups/s versus 4.03 billion
+with reused grouping, but only 1.18 billion when grouping is charged every time.
+The estimated preprocessing cost is 1,258.91 us (total minus reused median),
+yielding an estimated break-even near ten uses of an unchanged query batch. This
+is an estimate from separate median timings, not a measured repeated-use service
+speedup. Uniform random inputs have little reuse; real alignment query locality
+and repetition must be measured before deciding whether to integrate this path.
+Small batches regress, and no automatic production selection is enabled.
+
+Final results: `benchmark-results.cache.json`; passing test:
+`.test-output/084ebd939f5d4638a97bac7d0776d2b8.log`. Adjacent test logs record date,
+command and content fingerprints. Every output was checked in original request
+order after each mode for sizes 1, 63, 64, 65, 4095, 65536, 1048576 and 2097152.
+Separate full checks at sizes 1, 65 and 4097 cover repeated identical indices,
+reverse reference order and mixed valid/out-of-range indices. Existing correctness
+readbacks are outside timing. No cache-hit or detailed stall counters were
+collected, so the timing gain does not itself prove a particular cache mechanism.
+The alternate validation and other GPU jobs were not stopped or reconfigured.

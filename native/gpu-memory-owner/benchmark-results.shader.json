@@ -1,0 +1,497 @@
+{
+  "scope": "64 MiB synthetic gather, not alignment; same direct-view producer/checks as paired CPU/GPU benchmark; configurations rotate order each of three trials; host not isolated",
+  "gpu": "NVIDIA GeForce RTX 3060, 580.142, 1383 MiB, 10519 MiB, 38 %",
+  "load_before": [
+    28.88671875,
+    25.48779296875,
+    21.4892578125
+  ],
+  "rows": [
+    {
+      "configuration": "cached-baseline-shader",
+      "workers": 1,
+      "pattern": "warm",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.016139658000611234,
+        0.014962980996642727,
+        0.01824697000120068
+      ],
+      "lookups_per_s": 25378480.75742917,
+      "latency_p50_ms": 0.14502199701382779,
+      "latency_p95_ms": 0.2743840013863519,
+      "command_recordings": 3,
+      "command_reuses": 306,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0,
+      "profile_delta": {
+        "samples": 309,
+        "total_ns": 41700375,
+        "validation_ns": 1411257,
+        "capacity_wait_ns": 23410,
+        "record_ns": 350108,
+        "submit_ns": 1992608,
+        "fence_wait_ns": 37785504,
+        "gpu_span_ns": 4931808
+      }
+    },
+    {
+      "configuration": "cached-optimized-shader",
+      "workers": 1,
+      "pattern": "warm",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.01821374699648004,
+        0.024469239004247356,
+        0.023460768003133126
+      ],
+      "lookups_per_s": 17458933.993350048,
+      "latency_p50_ms": 0.12448349662008695,
+      "latency_p95_ms": 0.5191430027480237,
+      "command_recordings": 3,
+      "command_reuses": 306,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0,
+      "profile_delta": {
+        "samples": 309,
+        "total_ns": 42406315,
+        "validation_ns": 1374232,
+        "capacity_wait_ns": 27870,
+        "record_ns": 369215,
+        "submit_ns": 2015307,
+        "fence_wait_ns": 38472213,
+        "gpu_span_ns": 5019776
+      }
+    },
+    {
+      "configuration": "cached-baseline-shader",
+      "workers": 1,
+      "pattern": "warm",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.0875099839977338,
+        0.03156449499510927,
+        0.038226498996664304
+      ],
+      "lookups_per_s": 171441282.14754575,
+      "latency_p50_ms": 0.33522400190122426,
+      "latency_p95_ms": 1.0116880002897233,
+      "command_recordings": 3,
+      "command_reuses": 306,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0,
+      "profile_delta": {
+        "samples": 309,
+        "total_ns": 143174288,
+        "validation_ns": 21265947,
+        "capacity_wait_ns": 28159,
+        "record_ns": 1019625,
+        "submit_ns": 2943579,
+        "fence_wait_ns": 117770455,
+        "gpu_span_ns": 42320992
+      }
+    },
+    {
+      "configuration": "cached-optimized-shader",
+      "workers": 1,
+      "pattern": "warm",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.04098902000259841,
+        0.03823537599964766,
+        0.03531052099424414
+      ],
+      "lookups_per_s": 171401479.0925658,
+      "latency_p50_ms": 0.3268585023761261,
+      "latency_p95_ms": 0.5788459966424853,
+      "command_recordings": 3,
+      "command_reuses": 306,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0,
+      "profile_delta": {
+        "samples": 309,
+        "total_ns": 104803982,
+        "validation_ns": 22616375,
+        "capacity_wait_ns": 29921,
+        "record_ns": 453214,
+        "submit_ns": 2258856,
+        "fence_wait_ns": 79316337,
+        "gpu_span_ns": 42092448
+      }
+    },
+    {
+      "configuration": "cached-baseline-shader",
+      "workers": 1,
+      "pattern": "changing",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.015098536001460161,
+        0.012767693995556328,
+        0.020130130993493367
+      ],
+      "lookups_per_s": 27128458.014763027,
+      "latency_p50_ms": 0.10691100033000112,
+      "latency_p95_ms": 0.28369199571898207,
+      "command_recordings": 3,
+      "command_reuses": 306,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0,
+      "profile_delta": {
+        "samples": 309,
+        "total_ns": 37402726,
+        "validation_ns": 1349831,
+        "capacity_wait_ns": 19955,
+        "record_ns": 1137122,
+        "submit_ns": 1502271,
+        "fence_wait_ns": 33276087,
+        "gpu_span_ns": 4936288
+      }
+    },
+    {
+      "configuration": "cached-optimized-shader",
+      "workers": 1,
+      "pattern": "changing",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.015242205001413822,
+        0.011741098998754751,
+        0.01277993799885735
+      ],
+      "lookups_per_s": 32050233.736393888,
+      "latency_p50_ms": 0.10170100358664058,
+      "latency_p95_ms": 0.1879920018836856,
+      "command_recordings": 3,
+      "command_reuses": 306,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0,
+      "profile_delta": {
+        "samples": 309,
+        "total_ns": 30585112,
+        "validation_ns": 1249451,
+        "capacity_wait_ns": 22371,
+        "record_ns": 1136767,
+        "submit_ns": 1493691,
+        "fence_wait_ns": 26556654,
+        "gpu_span_ns": 4890784
+      }
+    },
+    {
+      "configuration": "cached-baseline-shader",
+      "workers": 1,
+      "pattern": "changing",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.04542432800371898,
+        0.06216329999733716,
+        0.0651181209977949
+      ],
+      "lookups_per_s": 105425548.51947582,
+      "latency_p50_ms": 0.3293625013611745,
+      "latency_p95_ms": 1.1958629984292202,
+      "command_recordings": 3,
+      "command_reuses": 306,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0,
+      "profile_delta": {
+        "samples": 309,
+        "total_ns": 107442499,
+        "validation_ns": 23685288,
+        "capacity_wait_ns": 39884,
+        "record_ns": 336823,
+        "submit_ns": 4984361,
+        "fence_wait_ns": 78238270,
+        "gpu_span_ns": 41983840
+      }
+    },
+    {
+      "configuration": "cached-optimized-shader",
+      "workers": 1,
+      "pattern": "changing",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.05138737100060098,
+        0.05068141700030537,
+        0.045662655000342056
+      ],
+      "lookups_per_s": 129309723.12712789,
+      "latency_p50_ms": 0.32803499925648794,
+      "latency_p95_ms": 0.6624020024901256,
+      "command_recordings": 3,
+      "command_reuses": 306,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0,
+      "profile_delta": {
+        "samples": 309,
+        "total_ns": 108028949,
+        "validation_ns": 21967451,
+        "capacity_wait_ns": 36112,
+        "record_ns": 454712,
+        "submit_ns": 4894046,
+        "fence_wait_ns": 80525392,
+        "gpu_span_ns": 42111840
+      }
+    },
+    {
+      "configuration": "cached-baseline-shader",
+      "workers": 8,
+      "pattern": "warm",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.05852666000282625,
+        0.04495619999943301,
+        0.04880750199663453
+      ],
+      "lookups_per_s": 67137220.01642182,
+      "latency_p50_ms": 0.2570569995441474,
+      "latency_p95_ms": 1.112126003135927,
+      "command_recordings": 24,
+      "command_reuses": 2448,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0,
+      "profile_delta": {
+        "samples": 2472,
+        "total_ns": 826474254,
+        "validation_ns": 28308726,
+        "capacity_wait_ns": 263920086,
+        "record_ns": 3590653,
+        "submit_ns": 87666319,
+        "fence_wait_ns": 441699517,
+        "gpu_span_ns": 41174240
+      }
+    },
+    {
+      "configuration": "cached-optimized-shader",
+      "workers": 8,
+      "pattern": "warm",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.04579781800566707,
+        0.0505192429991439,
+        0.048003775998950005
+      ],
+      "lookups_per_s": 68261296.77947989,
+      "latency_p50_ms": 0.2438475021335762,
+      "latency_p95_ms": 1.1476020008558407,
+      "command_recordings": 24,
+      "command_reuses": 2448,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0,
+      "profile_delta": {
+        "samples": 2472,
+        "total_ns": 805926138,
+        "validation_ns": 12479093,
+        "capacity_wait_ns": 273905865,
+        "record_ns": 17046062,
+        "submit_ns": 82377112,
+        "fence_wait_ns": 419180520,
+        "gpu_span_ns": 41701408
+      }
+    },
+    {
+      "configuration": "cached-baseline-shader",
+      "workers": 8,
+      "pattern": "warm",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.1996813790028682,
+        0.1438068529969314,
+        0.14202636400295887
+      ],
+      "lookups_per_s": 364577896.7231745,
+      "latency_p50_ms": 1.2918075008201413,
+      "latency_p95_ms": 3.355732995260041,
+      "command_recordings": 24,
+      "command_reuses": 2448,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0,
+      "profile_delta": {
+        "samples": 2472,
+        "total_ns": 3448937509,
+        "validation_ns": 237018959,
+        "capacity_wait_ns": 1443557400,
+        "record_ns": 1439767,
+        "submit_ns": 112935113,
+        "fence_wait_ns": 1651890288,
+        "gpu_span_ns": 359872544
+      }
+    },
+    {
+      "configuration": "cached-optimized-shader",
+      "workers": 8,
+      "pattern": "warm",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.15348007399734342,
+        0.15948525600106223,
+        0.14949108300061198
+      ],
+      "lookups_per_s": 341600043.80052286,
+      "latency_p50_ms": 1.2995974975638092,
+      "latency_p95_ms": 2.6349819963797927,
+      "command_recordings": 24,
+      "command_reuses": 2448,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0,
+      "profile_delta": {
+        "samples": 2472,
+        "total_ns": 3417370502,
+        "validation_ns": 203655945,
+        "capacity_wait_ns": 1433370354,
+        "record_ns": 1500116,
+        "submit_ns": 128264103,
+        "fence_wait_ns": 1649302904,
+        "gpu_span_ns": 369233504
+      }
+    },
+    {
+      "configuration": "cached-baseline-shader",
+      "workers": 8,
+      "pattern": "changing",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.04532260799896903,
+        0.03682774600019911,
+        0.038913627999136224
+      ],
+      "lookups_per_s": 84207003.26561008,
+      "latency_p50_ms": 0.2699060023587663,
+      "latency_p95_ms": 0.7367719954345375,
+      "command_recordings": 24,
+      "command_reuses": 2448,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0,
+      "profile_delta": {
+        "samples": 2472,
+        "total_ns": 784175423,
+        "validation_ns": 10734634,
+        "capacity_wait_ns": 292141428,
+        "record_ns": 1553895,
+        "submit_ns": 93725848,
+        "fence_wait_ns": 384961946,
+        "gpu_span_ns": 40118656
+      }
+    },
+    {
+      "configuration": "cached-optimized-shader",
+      "workers": 8,
+      "pattern": "changing",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.03622390399686992,
+        0.03889467200497165,
+        0.043625154001347255
+      ],
+      "lookups_per_s": 84248043.01167902,
+      "latency_p50_ms": 0.25747300242073834,
+      "latency_p95_ms": 0.6331879994831979,
+      "command_recordings": 24,
+      "command_reuses": 2448,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0,
+      "profile_delta": {
+        "samples": 2472,
+        "total_ns": 780144647,
+        "validation_ns": 9943086,
+        "capacity_wait_ns": 284689997,
+        "record_ns": 1270716,
+        "submit_ns": 104161095,
+        "fence_wait_ns": 379030301,
+        "gpu_span_ns": 39911232
+      }
+    },
+    {
+      "configuration": "cached-baseline-shader",
+      "workers": 8,
+      "pattern": "changing",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.1414111199992476,
+        0.1429855120004504,
+        0.15557813800114673
+      ],
+      "lookups_per_s": 366672114.3036845,
+      "latency_p50_ms": 1.1727194978448097,
+      "latency_p95_ms": 2.070382994133979,
+      "command_recordings": 24,
+      "command_reuses": 2448,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0,
+      "profile_delta": {
+        "samples": 2472,
+        "total_ns": 2837224401,
+        "validation_ns": 194820919,
+        "capacity_wait_ns": 959937282,
+        "record_ns": 2457280,
+        "submit_ns": 117747800,
+        "fence_wait_ns": 1560939862,
+        "gpu_span_ns": 360607968
+      }
+    },
+    {
+      "configuration": "cached-optimized-shader",
+      "workers": 8,
+      "pattern": "changing",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.18856067399610765,
+        0.1667726829982712,
+        0.1406445020038518
+      ],
+      "lookups_per_s": 314372828.0760674,
+      "latency_p50_ms": 1.1544250010047108,
+      "latency_p95_ms": 3.1894220010144636,
+      "command_recordings": 24,
+      "command_reuses": 2448,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0,
+      "profile_delta": {
+        "samples": 2472,
+        "total_ns": 2795104960,
+        "validation_ns": 212791210,
+        "capacity_wait_ns": 849981853,
+        "record_ns": 5130868,
+        "submit_ns": 141390752,
+        "fence_wait_ns": 1584436561,
+        "gpu_span_ns": 356792512
+      }
+    }
+  ],
+  "admitted_cpu_budget": 8,
+  "load_after": [
+    27.673828125,
+    25.33935546875,
+    21.4833984375
+  ]
+}

@@ -1,0 +1,497 @@
+{
+  "scope": "64 MiB synthetic gather, not alignment; same direct-view producer/checks as paired CPU/GPU benchmark; configurations rotate order each of three trials; host not isolated",
+  "gpu": "NVIDIA GeForce RTX 3060, 580.142, 1406 MiB, 10496 MiB, 20 %",
+  "load_before": [
+    30.11767578125,
+    24.02294921875,
+    20.41015625
+  ],
+  "rows": [
+    {
+      "configuration": "baseline",
+      "workers": 1,
+      "pattern": "warm",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.013444033000268973,
+        0.012096624996047467,
+        0.014881948998663574
+      ],
+      "lookups_per_s": 30467048.094259005,
+      "latency_p50_ms": 0.10850300168385729,
+      "latency_p95_ms": 0.23336799495154992,
+      "command_recordings": 309,
+      "command_reuses": 0,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0
+    },
+    {
+      "configuration": "cached-mapped",
+      "workers": 1,
+      "pattern": "warm",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.01206825199915329,
+        0.011440123998909257,
+        0.012940418004291132
+      ],
+      "lookups_per_s": 33940292.26674564,
+      "latency_p50_ms": 0.09947100261342712,
+      "latency_p95_ms": 0.2659390011103824,
+      "command_recordings": 3,
+      "command_reuses": 306,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0
+    },
+    {
+      "configuration": "cached-staged",
+      "workers": 1,
+      "pattern": "warm",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.011315149997244589,
+        0.013642433994391467,
+        0.011205023001821246
+      ],
+      "lookups_per_s": 36199254.98996866,
+      "latency_p50_ms": 0.09801899796002544,
+      "latency_p95_ms": 0.26304299535695463,
+      "command_recordings": 3,
+      "command_reuses": 306,
+      "upload_copy_bytes": 5062656,
+      "readback_copy_bytes": 5062656,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 8388608
+    },
+    {
+      "configuration": "baseline",
+      "workers": 1,
+      "pattern": "warm",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.03358655700139934,
+        0.03340664000279503,
+        0.035396991996094584
+      ],
+      "lookups_per_s": 195125686.73612338,
+      "latency_p50_ms": 0.3068605001317337,
+      "latency_p95_ms": 0.501069996971637,
+      "command_recordings": 309,
+      "command_reuses": 0,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0
+    },
+    {
+      "configuration": "cached-mapped",
+      "workers": 1,
+      "pattern": "warm",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.030094206995272543,
+        0.030037200995138846,
+        0.032472827995661646
+      ],
+      "lookups_per_s": 217769486.36757553,
+      "latency_p50_ms": 0.27977950230706483,
+      "latency_p95_ms": 0.48882700502872467,
+      "command_recordings": 3,
+      "command_reuses": 306,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0
+    },
+    {
+      "configuration": "cached-staged",
+      "workers": 1,
+      "pattern": "warm",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.04181350499857217,
+        0.036931880000338424,
+        0.0439931630025967
+      ],
+      "lookups_per_s": 156734050.40366238,
+      "latency_p50_ms": 0.3591384993342217,
+      "latency_p95_ms": 0.599744998908136,
+      "command_recordings": 3,
+      "command_reuses": 306,
+      "upload_copy_bytes": 81002496,
+      "readback_copy_bytes": 81002496,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 8388608
+    },
+    {
+      "configuration": "baseline",
+      "workers": 1,
+      "pattern": "changing",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.01281503200152656,
+        0.014846162004687358,
+        0.013230671997007448
+      ],
+      "lookups_per_s": 30958367.049885638,
+      "latency_p50_ms": 0.10527199992793612,
+      "latency_p95_ms": 0.2686439984245226,
+      "command_recordings": 309,
+      "command_reuses": 0,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0
+    },
+    {
+      "configuration": "cached-mapped",
+      "workers": 1,
+      "pattern": "changing",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.013086913000734057,
+        0.011836817997391336,
+        0.012199459000839852
+      ],
+      "lookups_per_s": 33575259.35959961,
+      "latency_p50_ms": 0.09481799861532636,
+      "latency_p95_ms": 0.23907799914013594,
+      "command_recordings": 3,
+      "command_reuses": 306,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0
+    },
+    {
+      "configuration": "cached-staged",
+      "workers": 1,
+      "pattern": "changing",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.013818405001075007,
+        0.014980243002355564,
+        0.012523516001238022
+      ],
+      "lookups_per_s": 29641626.509581607,
+      "latency_p50_ms": 0.10153050243388861,
+      "latency_p95_ms": 0.27933299861615524,
+      "command_recordings": 3,
+      "command_reuses": 306,
+      "upload_copy_bytes": 5062656,
+      "readback_copy_bytes": 5062656,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 8388608
+    },
+    {
+      "configuration": "baseline",
+      "workers": 1,
+      "pattern": "changing",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.04277105100482004,
+        0.04368545600300422,
+        0.04551533800258767
+      ],
+      "lookups_per_s": 150017891.5277733,
+      "latency_p50_ms": 0.30308900386444293,
+      "latency_p95_ms": 0.5299839976942167,
+      "command_recordings": 309,
+      "command_reuses": 0,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0
+    },
+    {
+      "configuration": "cached-mapped",
+      "workers": 1,
+      "pattern": "changing",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.04215669899713248,
+        0.045974658998602536,
+        0.04594036500202492
+      ],
+      "lookups_per_s": 142654504.37128952,
+      "latency_p50_ms": 0.2914870019594673,
+      "latency_p95_ms": 0.4934660028084181,
+      "command_recordings": 3,
+      "command_reuses": 306,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0
+    },
+    {
+      "configuration": "cached-staged",
+      "workers": 1,
+      "pattern": "changing",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.05066358200565446,
+        0.05105343300238019,
+        0.05170454500330379
+      ],
+      "lookups_per_s": 128367469.42550291,
+      "latency_p50_ms": 0.3616735011746641,
+      "latency_p95_ms": 0.631504000921268,
+      "command_recordings": 3,
+      "command_reuses": 306,
+      "upload_copy_bytes": 81002496,
+      "readback_copy_bytes": 81002496,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 8388608
+    },
+    {
+      "configuration": "baseline",
+      "workers": 8,
+      "pattern": "warm",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.04037033899658127,
+        0.03832182799669681,
+        0.04514576400106307
+      ],
+      "lookups_per_s": 81168503.446986,
+      "latency_p50_ms": 0.24623149874969386,
+      "latency_p95_ms": 0.8677269943291321,
+      "command_recordings": 2472,
+      "command_reuses": 0,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0
+    },
+    {
+      "configuration": "cached-mapped",
+      "workers": 8,
+      "pattern": "warm",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.03689738600223791,
+        0.041675806998682674,
+        0.04032109599938849
+      ],
+      "lookups_per_s": 81267632.21043634,
+      "latency_p50_ms": 0.2436720023979433,
+      "latency_p95_ms": 0.7548549983766861,
+      "command_recordings": 24,
+      "command_reuses": 2448,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0
+    },
+    {
+      "configuration": "cached-staged",
+      "workers": 8,
+      "pattern": "warm",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.05369108099694131,
+        0.060455926999566145,
+        0.06408165599714266
+      ],
+      "lookups_per_s": 54201468.12112426,
+      "latency_p50_ms": 0.35876249967259355,
+      "latency_p95_ms": 1.4164169988362119,
+      "command_recordings": 24,
+      "command_reuses": 2448,
+      "upload_copy_bytes": 40501248,
+      "readback_copy_bytes": 40501248,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 8388608
+    },
+    {
+      "configuration": "baseline",
+      "workers": 8,
+      "pattern": "warm",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.14998520600056509,
+        0.142507251999632,
+        0.1366608179960167
+      ],
+      "lookups_per_s": 367902680.4905016,
+      "latency_p50_ms": 1.2232090011821128,
+      "latency_p95_ms": 2.389109999057837,
+      "command_recordings": 2472,
+      "command_reuses": 0,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0
+    },
+    {
+      "configuration": "cached-mapped",
+      "workers": 8,
+      "pattern": "warm",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.13986809200287098,
+        0.18494998700043652,
+        0.13924363200203516
+      ],
+      "lookups_per_s": 374844607.1526008,
+      "latency_p50_ms": 1.1960679985349998,
+      "latency_p95_ms": 2.997461997438222,
+      "command_recordings": 24,
+      "command_reuses": 2448,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0
+    },
+    {
+      "configuration": "cached-staged",
+      "workers": 8,
+      "pattern": "warm",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.19758256900240667,
+        0.20971786600421183,
+        0.19695233600214124
+      ],
+      "lookups_per_s": 265351342.8067705,
+      "latency_p50_ms": 1.7995995003730059,
+      "latency_p95_ms": 3.0689359991811216,
+      "command_recordings": 24,
+      "command_reuses": 2448,
+      "upload_copy_bytes": 648019968,
+      "readback_copy_bytes": 648019968,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 8388608
+    },
+    {
+      "configuration": "baseline",
+      "workers": 8,
+      "pattern": "changing",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.034791395999491215,
+        0.036911602001055144,
+        0.03621823200228391
+      ],
+      "lookups_per_s": 90473770.22140026,
+      "latency_p50_ms": 0.20658699941122904,
+      "latency_p95_ms": 0.6360429979395121,
+      "command_recordings": 2472,
+      "command_reuses": 0,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0
+    },
+    {
+      "configuration": "cached-mapped",
+      "workers": 8,
+      "pattern": "changing",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.04057647500303574,
+        0.03181888200197136,
+        0.0314777619933011
+      ],
+      "lookups_per_s": 102982876.63900271,
+      "latency_p50_ms": 0.2003110021178145,
+      "latency_p95_ms": 0.5597199997282587,
+      "command_recordings": 24,
+      "command_reuses": 2448,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0
+    },
+    {
+      "configuration": "cached-staged",
+      "workers": 8,
+      "pattern": "changing",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.04556732600030955,
+        0.040551498997956514,
+        0.04505223999876762
+      ],
+      "lookups_per_s": 72733342.45066695,
+      "latency_p50_ms": 0.2651169961609412,
+      "latency_p95_ms": 0.628870002401527,
+      "command_recordings": 24,
+      "command_reuses": 2448,
+      "upload_copy_bytes": 40501248,
+      "readback_copy_bytes": 40501248,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 8388608
+    },
+    {
+      "configuration": "baseline",
+      "workers": 8,
+      "pattern": "changing",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.13251996300095925,
+        0.15446164100285387,
+        0.1579359269962879
+      ],
+      "lookups_per_s": 339429256.7371553,
+      "latency_p50_ms": 1.1020720048691146,
+      "latency_p95_ms": 2.480291004758328,
+      "command_recordings": 2472,
+      "command_reuses": 0,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0
+    },
+    {
+      "configuration": "cached-mapped",
+      "workers": 8,
+      "pattern": "changing",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.13634011700196424,
+        0.16510238600312732,
+        0.1475485760020092
+      ],
+      "lookups_per_s": 355332470.2997206,
+      "latency_p50_ms": 1.1303350001981016,
+      "latency_p95_ms": 2.363712999795098,
+      "command_recordings": 24,
+      "command_reuses": 2448,
+      "upload_copy_bytes": 0,
+      "readback_copy_bytes": 0,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 0
+    },
+    {
+      "configuration": "cached-staged",
+      "workers": 8,
+      "pattern": "changing",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.20236144000227796,
+        0.19889674300065963,
+        0.21513361299730605
+      ],
+      "lookups_per_s": 259084932.38341165,
+      "latency_p50_ms": 1.6992215023492463,
+      "latency_p95_ms": 2.9867019984521903,
+      "command_recordings": 24,
+      "command_reuses": 2448,
+      "upload_copy_bytes": 648019968,
+      "readback_copy_bytes": 648019968,
+      "reference_bytes": 67108864,
+      "device_io_bytes": 8388608
+    }
+  ],
+  "admitted_cpu_budget": 8,
+  "load_after": [
+    28.76708984375,
+    24.02197265625,
+    20.46826171875
+  ]
+}

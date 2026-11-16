@@ -1,0 +1,30 @@
+#version 450
+// An initial read-only index-lookup primitive. All clients use one owner/device.
+layout(local_size_x=64) in;
+layout(set=0,binding=0,std430) readonly buffer Reference0 { uint a0[]; };
+layout(set=0,binding=1,std430) readonly buffer Reference1 { uint a1[]; };
+layout(set=0,binding=2,std430) readonly buffer Reference2 { uint a2[]; };
+layout(set=0,binding=3,std430) readonly buffer Reference3 { uint a3[]; };
+layout(set=0,binding=4,std430) buffer Requests { uint io[]; };
+layout(push_constant) uniform Limits { uint count; uint segment_words; uint output_offset; uint object_words; } p;
+void main() {
+    uint i=gl_GlobalInvocationID.x;
+    if(i>=p.count) return;
+    uint index=io[i];
+    if(index>=p.object_words) {io[p.output_offset+i]=0u;return;}
+    // Rejected experiment retained for reproducible A/B measurement.
+    uint segment, offset;
+    if((p.segment_words & (p.segment_words-1u))==0u) {
+        segment=index >> uint(findMSB(p.segment_words));
+        offset=index & (p.segment_words-1u);
+    } else {
+        segment=index/p.segment_words;
+        offset=index%p.segment_words;
+    }
+    uint value=0u;
+    if(segment==0u) value=a0[offset];
+    else if(segment==1u) value=a1[offset];
+    else if(segment==2u) value=a2[offset];
+    else if(segment==3u) value=a3[offset];
+    io[p.output_offset+i]=value;
+}

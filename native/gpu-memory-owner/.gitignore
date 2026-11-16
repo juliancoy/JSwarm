@@ -2,3 +2,9 @@
 *.spv
 .test-output/
 *.test-log.jsonl.lock
+vram-benchmark
+cache-benchmark
+
+# Raw benchmark streams are retained locally; structured results are versioned.
+*-native.stdout*
+*-native.stderr*

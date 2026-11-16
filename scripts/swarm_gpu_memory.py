@@ -262,7 +262,7 @@ def serve(args):
                             if transport=='socket':
                                 io=memoryview((C.c_ubyte*(MAX_QUERIES*8)).from_address(native.lib.gm_slot_io(native.ptr,slot))).cast('B')
                             if persistent:
-                                header(connection,{'accepted':True,'transport':transport,'control':control if transport=='shared' else 'json','mapping_bytes':native.lib.gm_slot_mapping_bytes(native.ptr,slot) if transport=='shared' else 0})
+                                header(connection,{'accepted':True,'transport':transport,'control':control if transport=='shared' else 'json','device_io':args.device_io,'gpu_payload_zero_copy':args.device_io=='mapped','mapping_bytes':native.lib.gm_slot_mapping_bytes(native.ptr,slot) if transport=='shared' else 0})
                                 if transport=='shared':send_fd(connection,native.lib.gm_slot_fd(native.ptr,slot))
                             else:header(connection,{'accepted':True})
                             if persistent and transport=='shared' and control=='native':

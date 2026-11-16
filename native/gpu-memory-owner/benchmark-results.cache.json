@@ -1,0 +1,385 @@
+{
+  "scope": "Standalone device-only Vulkan timing; no production service changes; 256 MiB reference plus 256 MiB I/O in DEVICE_LOCAL; all setup and correctness readbacks excluded from timed regions",
+  "metric_warning": "GPU-only fixed random query batches; group-every-batch includes GPU histogram, prefix, scatter and result reorder. grouped-reuse excludes grouping and is amortized-only. No cache hit or stall counters collected.",
+  "gpu_before": "NVIDIA GeForce RTX 3060, 580.142, 12288 MiB, 10534 MiB, 210 MHz, 405 MHz, 18 %",
+  "load_before": [
+    8.2705078125,
+    7.71484375,
+    6.6513671875
+  ],
+  "rows": [
+    {
+      "count": 1,
+      "mode": "direct",
+      "repetitions": 8,
+      "gpu_seconds": [
+        2.2144e-05,
+        2.0544e-05,
+        2.0928e-05,
+        2.0512e-05,
+        2.1024e-05
+      ],
+      "verified": true,
+      "gpu_us_per_batch": 2.616,
+      "lookups_per_s": 382262.99694189604
+    },
+    {
+      "count": 1,
+      "mode": "group-every-batch",
+      "repetitions": 8,
+      "gpu_seconds": [
+        0.000276704,
+        0.000274336,
+        0.000266944,
+        0.00026544,
+        0.000266848
+      ],
+      "verified": true,
+      "gpu_us_per_batch": 33.368,
+      "lookups_per_s": 29968.832414289136
+    },
+    {
+      "count": 1,
+      "mode": "grouped-reuse",
+      "repetitions": 8,
+      "gpu_seconds": [
+        3.5616e-05,
+        3.6224e-05,
+        3.648e-05,
+        3.5584e-05,
+        3.5872e-05
+      ],
+      "verified": true,
+      "gpu_us_per_batch": 4.484,
+      "lookups_per_s": 223015.16503122213
+    },
+    {
+      "count": 63,
+      "mode": "direct",
+      "repetitions": 8,
+      "gpu_seconds": [
+        2.1376e-05,
+        2.1696e-05,
+        2.2272e-05,
+        2.1952e-05,
+        2.192e-05
+      ],
+      "verified": true,
+      "gpu_us_per_batch": 2.74,
+      "lookups_per_s": 22992700.729927007
+    },
+    {
+      "count": 63,
+      "mode": "group-every-batch",
+      "repetitions": 8,
+      "gpu_seconds": [
+        0.000269888,
+        0.00027008,
+        0.000269664,
+        0.000270112,
+        0.000269568
+      ],
+      "verified": true,
+      "gpu_us_per_batch": 33.736,
+      "lookups_per_s": 1867441.308987432
+    },
+    {
+      "count": 63,
+      "mode": "grouped-reuse",
+      "repetitions": 8,
+      "gpu_seconds": [
+        3.84e-05,
+        3.8176e-05,
+        3.8432e-05,
+        3.7952e-05,
+        3.7792e-05
+      ],
+      "verified": true,
+      "gpu_us_per_batch": 4.772,
+      "lookups_per_s": 13202011.735121543
+    },
+    {
+      "count": 64,
+      "mode": "direct",
+      "repetitions": 8,
+      "gpu_seconds": [
+        2.224e-05,
+        2.1856e-05,
+        2.1408e-05,
+        2.2048e-05,
+        2.1952e-05
+      ],
+      "verified": true,
+      "gpu_us_per_batch": 2.7439999999999998,
+      "lookups_per_s": 23323615.160349853
+    },
+    {
+      "count": 64,
+      "mode": "group-every-batch",
+      "repetitions": 8,
+      "gpu_seconds": [
+        0.000268416,
+        0.000268896,
+        0.000268576,
+        0.000268896,
+        0.000269504
+      ],
+      "verified": true,
+      "gpu_us_per_batch": 33.612,
+      "lookups_per_s": 1904081.8755206473
+    },
+    {
+      "count": 64,
+      "mode": "grouped-reuse",
+      "repetitions": 8,
+      "gpu_seconds": [
+        3.8304e-05,
+        3.8048e-05,
+        3.808e-05,
+        3.792e-05,
+        3.8176e-05
+      ],
+      "verified": true,
+      "gpu_us_per_batch": 4.76,
+      "lookups_per_s": 13445378.151260504
+    },
+    {
+      "count": 65,
+      "mode": "direct",
+      "repetitions": 8,
+      "gpu_seconds": [
+        2.1504e-05,
+        2.2144e-05,
+        2.112e-05,
+        2.1696e-05,
+        2.128e-05
+      ],
+      "verified": true,
+      "gpu_us_per_batch": 2.6879999999999997,
+      "lookups_per_s": 24181547.61904762
+    },
+    {
+      "count": 65,
+      "mode": "group-every-batch",
+      "repetitions": 8,
+      "gpu_seconds": [
+        0.000269856,
+        0.00026992,
+        0.000269824,
+        0.00026976,
+        0.000270848
+      ],
+      "verified": true,
+      "gpu_us_per_batch": 33.732,
+      "lookups_per_s": 1926953.634531009
+    },
+    {
+      "count": 65,
+      "mode": "grouped-reuse",
+      "repetitions": 8,
+      "gpu_seconds": [
+        3.8592e-05,
+        3.7952e-05,
+        3.7792e-05,
+        3.8464e-05,
+        3.8592e-05
+      ],
+      "verified": true,
+      "gpu_us_per_batch": 4.808000000000001,
+      "lookups_per_s": 13519134.775374375
+    },
+    {
+      "count": 4095,
+      "mode": "direct",
+      "repetitions": 8,
+      "gpu_seconds": [
+        2.368e-05,
+        2.3136e-05,
+        2.336e-05,
+        2.3072e-05,
+        2.3072e-05
+      ],
+      "verified": true,
+      "gpu_us_per_batch": 2.892,
+      "lookups_per_s": 1415975103.7344398
+    },
+    {
+      "count": 4095,
+      "mode": "group-every-batch",
+      "repetitions": 8,
+      "gpu_seconds": [
+        0.00029664,
+        0.000296896,
+        0.000296896,
+        0.000296736,
+        0.000296992
+      ],
+      "verified": true,
+      "gpu_us_per_batch": 37.112,
+      "lookups_per_s": 110341668.46303083
+    },
+    {
+      "count": 4095,
+      "mode": "grouped-reuse",
+      "repetitions": 8,
+      "gpu_seconds": [
+        4.544e-05,
+        4.528e-05,
+        4.5056e-05,
+        4.5184e-05,
+        4.6464e-05
+      ],
+      "verified": true,
+      "gpu_us_per_batch": 5.66,
+      "lookups_per_s": 723498233.2155477
+    },
+    {
+      "count": 65536,
+      "mode": "direct",
+      "repetitions": 8,
+      "gpu_seconds": [
+        0.000193536,
+        0.000193856,
+        0.000193376,
+        0.000192768,
+        0.00019328
+      ],
+      "verified": true,
+      "gpu_us_per_batch": 24.172,
+      "lookups_per_s": 2711236140.9895744
+    },
+    {
+      "count": 65536,
+      "mode": "group-every-batch",
+      "repetitions": 8,
+      "gpu_seconds": [
+        0.000823776,
+        0.000825344,
+        0.000826752,
+        0.000824672,
+        0.000825504
+      ],
+      "verified": true,
+      "gpu_us_per_batch": 103.16799999999999,
+      "lookups_per_s": 635235732.0099256
+    },
+    {
+      "count": 65536,
+      "mode": "grouped-reuse",
+      "repetitions": 8,
+      "gpu_seconds": [
+        0.00023712,
+        0.000236416,
+        0.00024816,
+        0.000236512,
+        0.0002368
+      ],
+      "verified": true,
+      "gpu_us_per_batch": 29.6,
+      "lookups_per_s": 2214054054.054054
+    },
+    {
+      "count": 1048576,
+      "mode": "direct",
+      "repetitions": 8,
+      "gpu_seconds": [
+        0.00261245,
+        0.00261219,
+        0.0026112,
+        0.00262934,
+        0.00261162
+      ],
+      "verified": true,
+      "gpu_us_per_batch": 326.52375,
+      "lookups_per_s": 3211331488.1383057
+    },
+    {
+      "count": 1048576,
+      "mode": "group-every-batch",
+      "repetitions": 8,
+      "gpu_seconds": [
+        0.00821315,
+        0.0082463,
+        0.00819101,
+        0.00822874,
+        0.00821658
+      ],
+      "verified": true,
+      "gpu_us_per_batch": 1027.0725,
+      "lookups_per_s": 1020936691.4214917
+    },
+    {
+      "count": 1048576,
+      "mode": "grouped-reuse",
+      "repetitions": 8,
+      "gpu_seconds": [
+        0.00259587,
+        0.00259898,
+        0.0029464,
+        0.00261456,
+        0.00262429
+      ],
+      "verified": true,
+      "gpu_us_per_batch": 326.82,
+      "lookups_per_s": 3208420537.2988186
+    },
+    {
+      "count": 2097152,
+      "mode": "direct",
+      "repetitions": 8,
+      "gpu_seconds": [
+        0.00520403,
+        0.00518784,
+        0.00518749,
+        0.00520973,
+        0.00518634
+      ],
+      "verified": true,
+      "gpu_us_per_batch": 648.48,
+      "lookups_per_s": 3233950160.375031
+    },
+    {
+      "count": 2097152,
+      "mode": "group-every-batch",
+      "repetitions": 8,
+      "gpu_seconds": [
+        0.0142326,
+        0.0142652,
+        0.0142597,
+        0.0142326,
+        0.0142286
+      ],
+      "verified": true,
+      "gpu_us_per_batch": 1779.075,
+      "lookups_per_s": 1178787853.2383401
+    },
+    {
+      "count": 2097152,
+      "mode": "grouped-reuse",
+      "repetitions": 8,
+      "gpu_seconds": [
+        0.00415629,
+        0.00416886,
+        0.0041257,
+        0.00416134,
+        0.00420573
+      ],
+      "verified": true,
+      "gpu_us_per_batch": 520.1675,
+      "lookups_per_s": 4031685947.3150473
+    }
+  ],
+  "command": [
+    "/home/julian/Documents/Organization/JSwarm/native/gpu-memory-owner/cache-benchmark",
+    "/home/julian/Documents/Organization/JSwarm/native/gpu-memory-owner/gather.spv",
+    "/home/julian/Documents/Organization/JSwarm/native/gpu-memory-owner/resident_setup.spv",
+    "/home/julian/Documents/Organization/JSwarm/native/gpu-memory-owner/cache_group.spv"
+  ],
+  "exit_code": 0,
+  "gpu_after": "NVIDIA GeForce RTX 3060, 580.142, 12288 MiB, 10538 MiB, 1987 MHz, 7301 MHz, 0 %",
+  "load_after": [
+    8.2705078125,
+    7.71484375,
+    6.6513671875
+  ]
+}

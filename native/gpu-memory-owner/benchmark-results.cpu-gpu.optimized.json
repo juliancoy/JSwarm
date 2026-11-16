@@ -1,0 +1,294 @@
+{
+  "scope": "64 MiB synthetic uint32 gather, not alignment; CPU is compiled -O3 -march=native (not Python lookup); GPU includes shared-service IPC and completion; identical index streams and bounds validation; three trials of 100 batches per worker; no CPU affinity or GPU exclusivity",
+  "timing": "throughput includes generating changing indices and first/last output checks; per-batch latency excludes generation/checks; full warmup/final validation and process/session setup/teardown excluded",
+  "cpu": "AMD Ryzen 7 5800X 8-Core Processor",
+  "visible_cpu_count": 16,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15
+  ],
+  "gpu": "NVIDIA GeForce RTX 3060, 580.142, 1383 MiB, 10519 MiB, 33 %",
+  "compiler": "g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+  "reference_bytes": 67108864,
+  "rows": [
+    {
+      "mode": "cpu",
+      "workers": 1,
+      "pattern": "warm",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.002399969001999125,
+        0.0009691029990790412,
+        0.001852002002124209
+      ],
+      "lookups_per_s": 221166067.60154527,
+      "latency_p50_ms": 0.0160509989655111,
+      "latency_p95_ms": 0.018876002286560833
+    },
+    {
+      "mode": "gpu",
+      "workers": 1,
+      "pattern": "warm",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.051967060993774794,
+        0.027155746996868402,
+        0.02437026899860939
+      ],
+      "lookups_per_s": 15083363.387029458,
+      "latency_p50_ms": 0.12413950025802478,
+      "latency_p95_ms": 1.0028069955296814
+    },
+    {
+      "mode": "cpu",
+      "workers": 1,
+      "pattern": "warm",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.036420397998881526,
+        0.11697019299754174,
+        0.05953356999816606
+      ],
+      "lookups_per_s": 110082429.12699313,
+      "latency_p50_ms": 0.2545514980738517,
+      "latency_p95_ms": 3.7684170019929297
+    },
+    {
+      "mode": "gpu",
+      "workers": 1,
+      "pattern": "warm",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.07185109399870271,
+        0.039442000997951254,
+        0.06290591500146547
+      ],
+      "lookups_per_s": 104180982.02446185,
+      "latency_p50_ms": 0.3776739977183752,
+      "latency_p95_ms": 1.0107620037160814
+    },
+    {
+      "mode": "gpu",
+      "workers": 1,
+      "pattern": "changing",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.03363718299806351,
+        0.05655612600094173,
+        0.02823987600277178
+      ],
+      "lookups_per_s": 12177000.672844116,
+      "latency_p50_ms": 0.1508249988546595,
+      "latency_p95_ms": 1.014558998576831
+    },
+    {
+      "mode": "cpu",
+      "workers": 1,
+      "pattern": "changing",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.02597099499689648,
+        0.029839531001925934,
+        0.013368851999985054
+      ],
+      "lookups_per_s": 15771440.410694584,
+      "latency_p50_ms": 0.05559000055654906,
+      "latency_p95_ms": 0.4804989948752336
+    },
+    {
+      "mode": "gpu",
+      "workers": 1,
+      "pattern": "changing",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.06294359599996824,
+        0.05329407699900912,
+        0.05509653500485001
+      ],
+      "lookups_per_s": 118947588.98037967,
+      "latency_p50_ms": 0.33493350201752037,
+      "latency_p95_ms": 0.9724789997562766
+    },
+    {
+      "mode": "cpu",
+      "workers": 1,
+      "pattern": "changing",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.10129379099817015,
+        0.0966893410004559,
+        0.08513053099886747
+      ],
+      "lookups_per_s": 67779963.46018223,
+      "latency_p50_ms": 0.761796000006143,
+      "latency_p95_ms": 1.1390240033506416
+    },
+    {
+      "mode": "gpu",
+      "workers": 8,
+      "pattern": "warm",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.09130081000330392,
+        0.06419294600345893,
+        0.07806086300115567
+      ],
+      "lookups_per_s": 41977501.5804205,
+      "latency_p50_ms": 0.4021009990538005,
+      "latency_p95_ms": 2.177819005737547
+    },
+    {
+      "mode": "cpu",
+      "workers": 8,
+      "pattern": "warm",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.004581173998303711,
+        0.015188974000921007,
+        0.021314748002623674
+      ],
+      "lookups_per_s": 215735440.7085894,
+      "latency_p50_ms": 0.015028002962935716,
+      "latency_p95_ms": 0.02917499659815803
+    },
+    {
+      "mode": "gpu",
+      "workers": 8,
+      "pattern": "warm",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.2688020990026416,
+        0.2494143579970114,
+        0.18173357599880546
+      ],
+      "lookups_per_s": 210207625.6597394,
+      "latency_p50_ms": 1.808745499147335,
+      "latency_p95_ms": 4.9795070008258335
+    },
+    {
+      "mode": "cpu",
+      "workers": 8,
+      "pattern": "warm",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.2158795569994254,
+        0.14096543800405925,
+        0.1713894399945275
+      ],
+      "lookups_per_s": 305904494.4757044,
+      "latency_p50_ms": 0.3233464994991664,
+      "latency_p95_ms": 6.776123998861294
+    },
+    {
+      "mode": "cpu",
+      "workers": 8,
+      "pattern": "changing",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.031937585001287516,
+        0.02322223300143378,
+        0.03565602500020759
+      ],
+      "lookups_per_s": 102600118.32040215,
+      "latency_p50_ms": 0.04891300341114402,
+      "latency_p95_ms": 0.27322600362822413
+    },
+    {
+      "mode": "gpu",
+      "workers": 8,
+      "pattern": "changing",
+      "batch_words": 4096,
+      "trial_seconds": [
+        0.11551039900223259,
+        0.13535400299588218,
+        0.10818261899839854
+      ],
+      "lookups_per_s": 28368008.666792553,
+      "latency_p50_ms": 0.6470184998761397,
+      "latency_p95_ms": 3.320617994177155
+    },
+    {
+      "mode": "cpu",
+      "workers": 8,
+      "pattern": "changing",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.4406088239993551,
+        0.3111966339929495,
+        0.5822494540043408
+      ],
+      "lookups_per_s": 118991715.88101636,
+      "latency_p50_ms": 1.0552860003372189,
+      "latency_p95_ms": 11.041799996746704
+    },
+    {
+      "mode": "gpu",
+      "workers": 8,
+      "pattern": "changing",
+      "batch_words": 65536,
+      "trial_seconds": [
+        0.29034119300195016,
+        0.1621449979938916,
+        0.15283586200530408
+      ],
+      "lookups_per_s": 323345158.0293283,
+      "latency_p50_ms": 1.1470940044091549,
+      "latency_p95_ms": 5.971200997009873
+    }
+  ],
+  "admitted_cpu_budget": 8,
+  "reference_sha256": "5649505a95389a72aeadf79e46bd0d93238e46d5aaaab7dcef3fa78a56de344d",
+  "owner": {
+    "device_uuid": "162c80e2a9e6da6b3234a5988103eca0",
+    "driver_uuid": "39c7349db177509caed0a302b37d2085",
+    "object_sha256": "5649505a95389a72aeadf79e46bd0d93238e46d5aaaab7dcef3fa78a56de344d",
+    "object_bytes": 67108864,
+    "reference_allocation_bytes": 67108864,
+    "segments": 4,
+    "reference_upload_bytes": 67108864,
+    "query_batches": 11124,
+    "io_bytes": 8912896,
+    "parallelism": 4,
+    "peak_pending_submissions": 4,
+    "native_shared_batches": 11124,
+    "spin_us": 0,
+    "max_queries": 65536,
+    "profile": {
+      "samples": 0,
+      "total_ns": 0,
+      "validation_ns": 0,
+      "capacity_wait_ns": 0,
+      "record_ns": 0,
+      "submit_ns": 0,
+      "fence_wait_ns": 0,
+      "gpu_span_ns": 0
+    },
+    "command_reuse_enabled": true,
+    "device_io": "mapped",
+    "device_io_allocation_bytes": 0,
+    "command_recordings": 108,
+    "command_reuses": 11016,
+    "query_upload_copy_bytes": 0,
+    "result_readback_copy_bytes": 0,
+    "owner_pid": 1850079,
+    "session_slots": 16,
+    "shared_batches": 11124,
+    "socket_batches": 0,
+    "socket_payload_bytes": 0
+  },
+  "gpu_after": "1387 MiB, 10515 MiB, 5 %"
+}

@@ -1,5 +1,6 @@
 """Paired native CPU vs full shared GPU-service uint32 gather, not alignment."""
 import array
+import argparse
 import concurrent.futures as futures
 import ctypes as C
 import hashlib
@@ -72,6 +73,9 @@ def worker(task):
 
 
 def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output',type=Path,default=BASE/'benchmark-results.cpu-gpu.json')
+    args=parser.parse_args()
     global WORDS,BARRIER
     info=subprocess.check_output(['lscpu'],text=True)
     result={'scope':'64 MiB synthetic uint32 gather, not alignment; CPU is compiled -O3 -march=native (not Python lookup); GPU includes shared-service IPC and completion; identical index streams and bounds validation; three trials of 100 batches per worker; no CPU affinity or GPU exclusivity',
@@ -135,7 +139,7 @@ def main():
                     try:process.wait(timeout=5)
                     except subprocess.TimeoutExpired:process.kill();process.wait()
         result['gpu_after']=subprocess.check_output(['nvidia-smi','--query-gpu=memory.used,memory.free,utilization.gpu','--format=csv,noheader'],text=True).strip()
-        (BASE/'benchmark-results.cpu-gpu.json').write_text(json.dumps(result,indent=2)+'\n')
+        args.output.write_text(json.dumps(result,indent=2)+'\n')
     finally:
         try:
             if lease is not None:agent.call('resource.release',{'id':lease},timeout=15)
