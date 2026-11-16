@@ -21,6 +21,7 @@ class Engine {
     std::array<std::mutex,256> stripes_;
     std::mutex peer_mutex_,error_mutex_;
     std::unordered_map<std::string,Summary> summaries_;
+    std::set<std::string> inventory_pending_;
     std::unordered_map<std::string,Clock::time_point> cooldown_;
     std::string last_error_;
     Pool replicas_{2,16};

@@ -46,6 +46,11 @@ std::shared_ptr<const Bytes> Engine::peer_page(const Object& object,uint64_t pag
             std::lock_guard<std::mutex> l(peer_mutex_);auto now=Clock::now();
             if(cooldown_[peer]>now)continue;
             auto i=summaries_.find(key);query=refresh||i==summaries_.end()||i->second.expires<now;
+            // A cold or unavailable peer must not hold every mapper thread.
+            // One caller refreshes its inventory; other faults use the source.
+            if(query && !inventory_pending_.insert(key).second) {
+                counters.add("inventory_coalesced");continue;
+            }
             if(!query)present=i->second.bits[page/8]&(1u<<(page%8));
         }
         try {
@@ -54,14 +59,20 @@ std::shared_ptr<const Bytes> Engine::peer_page(const Object& object,uint64_t pag
                 auto r=transport.request(peer,port,"/v1/cache/"+object.id+"/inventory");counters.add("inventory_requests");
                 if(r.status!=200||r.body.size()!=(object.hashes.size()+7)/8)throw std::runtime_error("Peer inventory unavailable");
                 present=r.body[page/8]&(1u<<(page%8));
-                std::lock_guard<std::mutex> l(peer_mutex_);summaries_[key]={std::move(r.body),Clock::now()+std::chrono::seconds(2)};
+                std::lock_guard<std::mutex> l(peer_mutex_);
+                summaries_[key]={std::move(r.body),Clock::now()+std::chrono::seconds(30)};
+                inventory_pending_.erase(key);
             }
             if(!present){counters.add("peer_probes_avoided");continue;}
             auto r=transport.request(peer,port,"/v1/cache/"+object.id+"/"+std::to_string(page));counters.add("peer_requests");
             if(r.status==404){counters.add("peer_misses");continue;}
             if(r.status!=200||!object.verify(page,r.body)){counters.add("corrupt_peer_pages");throw std::runtime_error("Peer page rejected");}
             counters.add("peer_hits");return std::make_shared<const Bytes>(std::move(r.body));
-        } catch(const std::exception&) {counters.add("peer_errors");std::lock_guard<std::mutex> l(peer_mutex_);cooldown_[peer]=Clock::now()+std::chrono::seconds(5);}
+        } catch(const std::exception&) {
+            counters.add("peer_errors");std::lock_guard<std::mutex> l(peer_mutex_);
+            if(query)inventory_pending_.erase(key);
+            cooldown_[peer]=Clock::now()+std::chrono::seconds(30);
+        }
     }
     return {};
 }
@@ -78,7 +89,7 @@ void Engine::publish(const Object& object,uint64_t page,std::shared_ptr<const By
                 int port=config_.value("peer_ports",Json::object()).value(peer,config_.at("peer_port").get<int>());
                 auto r=transport.request(peer,port,"/v1/cache/"+object_id+"/"+std::to_string(page),{},*data,true);
                 if(r.status==201){counters.add("replicas_stored");if(++stored>=count)break;}else counters.add("replica_admission_denied");
-            } catch(const std::exception&) {std::lock_guard<std::mutex> l(peer_mutex_);cooldown_[peer]=Clock::now()+std::chrono::seconds(5);counters.add("replica_errors");}
+            } catch(const std::exception&) {std::lock_guard<std::mutex> l(peer_mutex_);cooldown_[peer]=Clock::now()+std::chrono::seconds(30);counters.add("replica_errors");}
         }
     }))counters.add("replication_backpressure");
 }
